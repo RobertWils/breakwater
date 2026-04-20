@@ -124,6 +124,36 @@ breakwater-plan-01/
 
 ---
 
+## Conventions — Dependency pinning policy
+
+The frozen spec (§3.1) and this plan's Tech Stack section call out specific major versions for core infrastructure. To prevent `pnpm add` drifting onto a newer major (as happened on the first A.2 attempt, which installed Prisma 7 despite the spec saying Prisma 5), every subagent installing a spec-named dependency MUST use exact pinning.
+
+### Exact-pin (required, use `pnpm add -E`)
+
+| Package | Pinned version | Source of constraint |
+|---|---|---|
+| `next` | 14.2.35 | A.1 install (committed `package.json`) |
+| `prisma` (devDep) | 5.22.0 | Plan §Tech Stack ("Prisma 5") |
+| `@prisma/client` | 5.22.0 | Plan §Tech Stack ("Prisma 5") |
+| `next-auth` | 4.x exact (e.g. 4.24.11) | Spec §6.1, plan Tech Stack ("NextAuth 4") — pin during Task C.1 |
+| `@auth/prisma-adapter` | compatible with next-auth 4 | Plan §Tech Stack — pin during Task C.1 |
+
+### Caret-range (acceptable, default `pnpm add`)
+
+Packages with no explicit major-version constraint in the spec/plan may use caret ranges: `react`, `react-dom`, `typescript`, `tsx`, `zod`, `@react-email/components`, `framer-motion`, `viem`, `vitest`, `eslint`, `tailwindcss`, `postcss`, `@types/*`.
+
+### Subagent checklist (for any task that runs `pnpm add`)
+
+1. Before installing, check this table and the Tech Stack line for the package.
+2. If the package appears in the exact-pin table, use `pnpm add -E <pkg>@<exact-version>`.
+3. If not, caret range is fine.
+4. The commit message must name the installed version(s) for spec-bound deps.
+5. If a spec-bound dep is already installed on a wrong version, flag to the controller — do not silently upgrade/downgrade outside your task's scope.
+
+Rationale: the first A.2 attempt blocked on a Prisma 7 P1012 error because `pnpm add prisma` resolved `^7.7.0`. Exact pinning + this checklist prevents the same class of failure in C.1 (NextAuth) and beyond.
+
+---
+
 ## Phase A — Foundation (3 commits)
 
 **Goal:** Working empty Next.js 14 app on Node 22 with pnpm, Prisma initialized against an empty Railway database, deployed to Vercel at a preview URL. Everything is a skeleton — no business logic, no schema beyond Prisma's defaults.
