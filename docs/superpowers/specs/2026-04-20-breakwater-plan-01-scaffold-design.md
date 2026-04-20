@@ -178,11 +178,11 @@ enum SubscriptionTier { FREE PAID }
 - Seeded row `system-breakwater` owns all CURATED Protocols.
 
 **User**
-- `id` (cuid), `email` (unique, lowercase), `emailVerifiedAt` (nullable), `organizationId` (nullable FK — 1:1 for Plan 01; pivot table deferred), `createdAt`, `updatedAt`.
+- `id` (cuid), `email` (unique, lowercase), `emailVerified` (nullable `DateTime` — **exact field name required by `@auth/prisma-adapter`; do not rename**), `organizationId` (nullable FK — 1:1 for Plan 01; pivot table deferred), `createdAt`, `updatedAt`.
 - On magic-link verification: create User (if missing) and link pre-existing anonymous Scans whose `submittedEmail` matches, setting `Scan.submittedByUserId = user.id`.
 
 **Protocol**
-- `id` (cuid), `slug` (unique), `displayName`, `chain`, `primaryContractAddress` (normalized), `extraContractAddresses` (JSON `string[]`), `domain` (nullable), `logoUrl` (nullable), `ownershipStatus`, `organizationId` (nullable FK), `knownMultisigs` (JSON `string[]`), `expectedRiskProfile` (nullable `Grade`, only set on CURATED), `createdAt`, `updatedAt`.
+- `id` (cuid), `slug` (unique), `displayName`, `chain`, `primaryContractAddress` (normalized), `extraContractAddresses` (JSON `string[]`), `domain` (nullable), `logoUrl` (nullable), `ownershipStatus`, `organizationId` (nullable FK), `knownMultisigs` (JSON `string[]`), `expectedRiskProfile` (nullable `Grade`, only set on CURATED), `latestDemoScanId` (nullable FK to `Scan` — most recent cached demo scan for CURATED protocols; null in Plan 01, populated by Plan 03+ scheduled refresh), `createdAt`, `updatedAt`.
 - Unique index: `(chain, primaryContractAddress)`.
 - Address normalization: EVM → lowercase. Solana → preserve case.
 
@@ -195,10 +195,11 @@ enum SubscriptionTier { FREE PAID }
 - Index on `expiresAt` for EXPIRED cron.
 
 **ScanAttempt**
-- `id`, `ipHash`, `userId` (nullable FK), `attemptedAt`, `status`, `reason` (string), `userAgent`, `inputPayloadHash`, `scanId` (nullable FK, set when `status = ACCEPTED`).
+- `id`, `ipHash`, `userId` (nullable FK), `attemptedAt`, `status`, `reason` (string), `userAgent`, `inputPayloadHash`, `cooldownKey` (string — `Protocol.id` when known, else `pending:{chain}:{normalizedAddress}`), `scanId` (nullable FK, set when `status = ACCEPTED`).
 - Index on `(ipHash, attemptedAt)` for unauth rate-limit window queries.
 - Index on `(userId, attemptedAt)` for auth rate-limit window queries.
 - Index on `(inputPayloadHash, ipHash, attemptedAt)` for 5-minute duplicate detection.
+- Index on `(cooldownKey, attemptedAt)` for per-protocol cooldown window queries (stable across "protocol exists" and "about to be created" cases).
 
 **ModuleRun**
 - `id`, `scanId` (FK), `module`, `status`, `grade` (nullable), `score` (nullable int 0–100), `findingsCount` (nullable int), `startedAt` (nullable), `completedAt` (nullable), `attemptCount` (default 0), `errorMessage` (nullable), `errorStack` (nullable), `detectorVersions` (JSON snapshot), `inputSnapshot` (JSON), `rpcCallsUsed` (int default 0), `idempotencyKey` (string, unique).
@@ -260,19 +261,41 @@ Input schema (zod):
 }
 ```
 
-Flow:
+Flow (lookup-first — curated check precedes any state change, cooldown key stays consistent whether Protocol exists or not):
 
-1. Parse + validate input. Invalid → write `ScanAttempt(INVALID)`, return 400.
-2. Compute `ipHash = sha256(req.ip + SCAN_IP_SALT)`.
-3. Compute `inputPayloadHash = sha256(chain + sorted(contractAddresses) + domain + sorted(multisigs))`.
-4. Check duplicate: last 5 minutes, same `ipHash` + `inputPayloadHash` → write `ScanAttempt(DUPLICATE)`, return existing `{ scanId }` 200.
-5. Check rate limit: unauth 3 ACCEPTED/hour per ipHash, auth 10 ACCEPTED/hour per userId. Exceeded → write `ScanAttempt(RATE_LIMITED)`, return 429.
-6. Check per-protocol cooldown: 1 ACCEPTED scan per protocolId per 10 minutes regardless of submitter. Blocked → write `ScanAttempt(RATE_LIMITED, reason='protocol_cooldown')`, return 429.
-7. Upsert Protocol by `(chain, primaryContractAddress)` with `ownershipStatus = UNCLAIMED`, `organizationId = null`. If an existing CURATED Protocol matches, reject the submission with 409 and body: `{ error: "protocol_is_curated", message: "This protocol is curated; demo scan only" }`. Write `ScanAttempt(INVALID, reason='protocol_is_curated')`. CURATED protocols do not accept on-demand scans — their results come from scheduled refresh in a later plan.
-8. Create `Scan` row with `status = QUEUED`, `submittedByUserId = session?.user?.id ?? null`, `submittedEmail`, `submittedEmailHash`, `ipHash`, `userAgent`.
-9. Create 4 `ModuleRun` rows (one per ModuleName) with `status = QUEUED`, `idempotencyKey`, `inputSnapshot = { chain, primaryContractAddress, extraContractAddresses, domain, multisigs }`. SKIP precedence (any of these → `status = SKIPPED`): (a) module not present in `modulesEnabled`; (b) required input missing — FRONTEND requires `domain`, others require at least `primaryContractAddress`. SKIPPED rows carry `inputSnapshot` so later plans can explain *why* a module was skipped.
-10. Write `ScanAttempt(ACCEPTED, scanId)`.
-11. Return `{ scanId }` 202.
+1. **Parse + validate input** (zod). Invalid → write `ScanAttempt(INVALID, reason='schema')`, return 400.
+2. **Normalize and hash**:
+   - `normalizedAddress = normalize(chain, primaryContractAddress)` (EVM → lowercase; Solana → preserve case).
+   - `ipHash = sha256(req.ip + SCAN_IP_SALT)`.
+   - `payloadHash = sha256(chain + normalizedAddress + sorted(extraContractAddresses) + domain + sorted(multisigs))`.
+3. **IP-based rate limit** (no Protocol context required):
+   - Unauthenticated: ≥ 3 ACCEPTED `ScanAttempt`s from this `ipHash` in the last hour → write `ScanAttempt(RATE_LIMITED, reason='ip_hour')`, return 429.
+   - Authenticated: ≥ 10 ACCEPTED `ScanAttempt`s from this `userId` in the last hour → write `ScanAttempt(RATE_LIMITED, reason='user_hour')`, return 429.
+4. **Protocol lookup (read-only)**: `SELECT * FROM Protocol WHERE chain = ? AND primaryContractAddress = ?`. Do **not** upsert yet.
+5. **Curated check — must precede any state change**: if the lookup returns a row with `ownershipStatus = CURATED`, write `ScanAttempt(INVALID, reason='protocol_is_curated')` and return 409 with body:
+   ```json
+   {
+     "error": "curated_protocol",
+     "message": "This protocol is a Breakwater demo. Cached results available.",
+     "demoUrl": "/scan/<latestDemoScanId> | /demo/<slug>"
+   }
+   ```
+   `demoUrl` resolves to `/scan/${latestDemoScanId}` if `latestDemoScanId` is set; otherwise it falls back to `/demo/${slug}` (the Plan 01 info page).
+6. **Per-protocol cooldown** (normalized key — works whether the Protocol row exists yet or not):
+   - `cooldownKey = existingProtocol?.id ?? 'pending:' + chain + ':' + normalizedAddress`.
+   - ≥ 1 ACCEPTED `ScanAttempt` whose `cooldownKey` matches within the last 10 minutes → write `ScanAttempt(RATE_LIMITED, reason='protocol_cooldown')`, return 429.
+   - `cooldownKey` must be stored on each `ScanAttempt` row (add field `cooldownKey: string` to `ScanAttempt`; indexed on `(cooldownKey, attemptedAt)`).
+7. **Payload dedupe** (prevents accidental double-submit, e.g. user double-clicks the form): same `ipHash` + same `payloadHash` with status ACCEPTED in the last 5 minutes → write `ScanAttempt(DUPLICATE, reason='payload_recent')`, return the existing `{ scanId }` with 200.
+8. **Upsert Protocol** (only now, after all rejection paths are exhausted): if the lookup in step 4 returned null, create a Protocol with `ownershipStatus = UNCLAIMED`, `organizationId = null`, derived `displayName`, and a generated `slug` (see §16.4 for slug strategy). Otherwise reuse the existing row (which must have `ownershipStatus ≠ CURATED`, guaranteed by step 5).
+9. **Create `Scan`** with `status = QUEUED`, `submittedByUserId = session?.user?.id ?? null`, `submittedEmail`, `submittedEmailHash`, `ipHash`, `userAgent`.
+10. **Create 4 `ModuleRun` rows** with `status = QUEUED`, `idempotencyKey`, `inputSnapshot = { chain, normalizedAddress, extraContractAddresses, domain, multisigs }`. SKIP precedence (any of these → `status = SKIPPED`): (a) module not present in `modulesEnabled`; (b) required input missing — FRONTEND requires `domain`. SKIPPED rows carry `inputSnapshot` so later plans can explain *why* a module was skipped.
+11. **Write `ScanAttempt(ACCEPTED, scanId, cooldownKey, payloadHash, ipHash, userId?)`**.
+12. **Return** `{ scanId }` 202.
+
+**Critical invariants:**
+- Steps 1–7 are read-only or write only to `ScanAttempt`. No `Protocol`, `Scan`, or `ModuleRun` mutations before step 8.
+- Curated-protocol rejection (step 5) is the first thing the handler checks after basic rate limiting. A malicious or misinformed client cannot cause side effects on curated rows.
+- Cooldown (step 6) uses a key that is stable across "protocol exists" and "protocol about to be created" cases, so the rate is the same whether or not this is the first scan for this protocol.
 
 **Plan 01 stops here — no dispatch.** Plan 02 wires Inngest to consume QUEUED rows.
 
@@ -664,6 +687,20 @@ If Codex approves on all five items, the architecture is solid enough to start i
 If Codex flags issues, the spec is updated on `main` (separate commit(s)) before the worktree is created.
 If Codex proposes scope changes that expand Plan 01 meaningfully, we re-scope rather than absorb — extra work lands in Plan 02 or later.
 
+### 16.7 Codex round 1 findings (resolved)
+
+Codex's first review pass did not flag items 16.1–16.5; those focus areas are considered tentatively approved pending any issue raised in round 2. Codex did raise three distinct findings, all resolved in the commit with subject `Address Codex review: emailVerified field, curated protocol protection, normalized cooldown key` (visible in `git log --oneline main`).
+
+| Finding | Severity | Status | Resolution |
+| --- | --- | --- | --- |
+| `User.emailVerifiedAt` incompatible with `@auth/prisma-adapter` contract | P1 | Resolved | Renamed to `emailVerified` (type `DateTime?`) in §4.2. The adapter requires this exact name; an inline note warns future editors not to rename it. |
+| Upsert-first flow in `POST /api/scan` leaks side effects before curated check | P1 | Resolved | Rewrote §5.1 to a lookup-first ordered flow. Curated-protocol check now precedes any write to `Protocol`/`Scan`/`ModuleRun`. All rejection paths write only to `ScanAttempt`. 409 response includes `demoUrl` falling back from `/scan/${latestDemoScanId}` to `/demo/${slug}` so Plan 01 can respond usefully even without cached demo scans. |
+| Per-protocol cooldown key inconsistent between "protocol exists" and "about to be created" cases | P2 | Resolved | Introduced `cooldownKey` on `ScanAttempt` (§4.2) — `Protocol.id` when known, else `pending:{chain}:{normalizedAddress}`. Same rate applies to both paths. `Protocol.latestDemoScanId` added (nullable FK) to support the 409 `demoUrl`. |
+
+### 16.8 Ready for Codex round 2
+
+With round 1 findings resolved, the expected round 2 targets are: (a) confirming the lookup-first flow correctly blocks the leak patterns Codex identified; (b) verifying `cooldownKey` index coverage is sufficient; (c) completing the tentative approval on 16.1–16.5 with an explicit verdict.
+
 ## 17. Decisions recap (for traceability)
 
 | Decision | Choice | Rationale |
@@ -687,3 +724,13 @@ If Codex proposes scope changes that expand Plan 01 meaningfully, we re-scope ra
 | Logo | Break Line (option C) with semantic break marker | Dual reads as wave + chart spike; matches product job. |
 | Seed split | System Org in migration, demo Protocols in idempotent seed script | Prod doesn't auto-reset demos on every deploy. |
 | Railway DB | New Breakwater Railway project, separate from SVH Hub | Formal venture separation. |
+
+### 17.1 Post-Codex revision (round 1 fixes)
+
+Three findings from the Codex review of the initial spec commit on `main` have been addressed in a follow-up commit before implementation begins:
+
+1. **`User.emailVerified` field name** — renamed from `emailVerifiedAt` to `emailVerified` (§4). The exact name is required by `@auth/prisma-adapter`; using anything else would silently break NextAuth's account-linking behavior. Type remains `DateTime?`. Inline note in the schema warns future contributors not to rename.
+2. **Curated protocol protection in `POST /api/scan`** — flow rewritten to lookup-first (§5.1, 12 steps). Protocol lookup and curated check now happen **before** any state change (rate-limit counters, cooldown inserts, upserts). If `status = CURATED`, the handler returns `409 curated_protocol` with a `demoUrl` pointing to `/scan/${latestDemoScanId}` (preferred) or `/demo/${slug}` (fallback). `Protocol.latestDemoScanId` (nullable FK to `Scan`) added for the preferred redirect. No `Scan`, `ModuleRun`, or `ScanAttempt` record is created for curated rejections beyond a single audit-log `ScanAttempt` row.
+3. **Normalized cooldown key** — `ScanAttempt.cooldownKey` field added (§4, §5.1 step 3). Value is `Protocol.id` when the protocol already exists, else `pending:{chain}:{normalizedAddress}`. Indexed as `(cooldownKey, attemptedAt)` for fast lookbacks. Closes the gap where a first-ever submission (no Protocol row yet) could bypass the cooldown by racing a second submission of the same address.
+
+All three items in §16 "Codex review focus areas" that flagged these risks are now marked RESOLVED in §16.7. Ready for Codex round 2 targets listed in §16.8.
