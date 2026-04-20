@@ -7,7 +7,11 @@
 
 ## Phase B: Data model — COMPLETE
 - [x] B.1: Full Prisma schema — commits e93a722 (schema + migration 20260420124707_init) + cfd3053 (remove duplicate-invariant comment)
-- [x] B.2: System org migration + seed — commits 11350e8 (migration 20260420125421_system_org + seed.ts) + e7d7dbe (calibration-hint comment)
+- [x] B.2: System org migration + seed — commits 11350e8 (migration 20260420125421_system_org + seed.ts) + e7d7dbe (calibration-hint comment) + 0604a19 (production guard)
+
+### Codex round 2 fixes (Phase A+B review)
+- [x] B-R1: Homepage placeholder replaces create-next-app default (remove remote images) — commit 55dabc4
+- [x] B-R2: Vitest infrastructure + smoke test (close pnpm test gate left open in A.1) — commit 767356d
 
 ## Phase C: Auth pipeline
 - [ ] C.1: NextAuth + Prisma adapter + Resend provider
