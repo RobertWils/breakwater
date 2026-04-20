@@ -127,7 +127,7 @@ model Protocol {
   organizationId         String?
   organization           Organization?   @relation(fields: [organizationId], references: [id])
   knownMultisigs         Json            @default("[]")
-  expectedRiskProfile    Grade?
+  expectedRiskProfile    Grade? // internal calibration target — never publish as observed grade
   latestDemoScanId       String?
   latestDemoScan         Scan?           @relation("ProtocolLatestDemoScan", fields: [latestDemoScanId], references: [id])
   scans                  Scan[]          @relation("ProtocolScans")
