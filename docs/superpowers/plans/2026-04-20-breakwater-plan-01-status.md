@@ -18,11 +18,12 @@
 - [x] Round 5: Clean — no findings, Phase B closed
 
 ## Phase C: Auth pipeline (re-scoped from frozen plan into 5 sub-tasks)
-- [ ] C.1: NextAuth v4 setup + Prisma adapter (config skeleton only; dev console-log magic link)
+Plan file aligned with this re-scope in commit e9cad07 (Revision log at bottom of the plan doc).
+- [x] C.1: NextAuth v4 setup + Prisma adapter (config skeleton only; dev console-log magic link) — commit bfc007b; `pnpm build` green, `/api/auth/[...nextauth]` registered as dynamic route, `/auth/verify-request` as static. Dev-server E2E (browser) pending user validation.
 - [ ] C.2: Resend magic link provider (real send path)
 - [ ] C.3: Dual email templates (signin vs signup-unlock)
 - [ ] C.4: Post-auth callback + anonymous scan linking
-- [ ] C.5: End-to-end auth test with real Resend delivery
+- [ ] C.5: End-to-end auth test + Lighthouse check
 
 ## Phase D: Scan API
 - [ ] D.1: Pure helpers (normalize, hash, dedupe, scoring, errors)
