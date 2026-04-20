@@ -1,6 +1,6 @@
 # Breakwater Plan 01 — Implementation status
 
-## Phase A: Foundation — IN PROGRESS
+## Phase A: Foundation — COMPLETE
 - [x] A.1: create-next-app + pnpm + Node 22 pin — commit 6b60e4e
 - [x] A.2: Prisma init + dev DB wiring — commits 5a81e4b (Prisma 5 init) + 5779002 (pinning policy)
 - [x] A.3: First Vercel deploy + PORTS.md — commit 2d511e9; preview Ready on `breakwater-robertwils-robertwils-projects.vercel.app`
