@@ -6,7 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { renderMagicLinkEmail } from "@/lib/email";
 
 const fromEmail =
-  process.env.RESEND_FROM_EMAIL ?? "Breakwater <noreply@breakwater.local>";
+  process.env.EMAIL_FROM ?? "Breakwater <noreply@breakwater.local>";
 
 const resend = process.env.RESEND_API_KEY
   ? new Resend(process.env.RESEND_API_KEY)

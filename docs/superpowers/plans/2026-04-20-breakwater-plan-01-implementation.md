@@ -279,7 +279,7 @@ NEXTAUTH_SECRET="<openssl rand -base64 32>"
 
 # Resend
 RESEND_API_KEY=""
-RESEND_FROM_EMAIL="Breakwater <noreply@breakwater.xyz>"
+EMAIL_FROM="Breakwater <noreply@breakwater.xyz>"
 
 # Hash salts (server-side only — never exposed to client)
 SCAN_IP_SALT="<openssl rand -base64 32>"
@@ -365,7 +365,7 @@ pnpm dlx vercel env add SCAN_EMAIL_SALT preview
 pnpm dlx vercel env add NEXT_PUBLIC_SITE_URL preview
 ```
 
-RESEND_API_KEY and RESEND_FROM_EMAIL are set in Phase C.
+RESEND_API_KEY and EMAIL_FROM are set in Phase C.
 
 - [ ] **Step 3: Trigger a preview deploy**
 
@@ -876,7 +876,7 @@ import EmailProvider from "next-auth/providers/email";
 import { prisma } from "@/lib/prisma";
 
 const fromEmail =
-  process.env.RESEND_FROM_EMAIL ?? "Breakwater <noreply@breakwater.local>";
+  process.env.EMAIL_FROM ?? "Breakwater <noreply@breakwater.local>";
 
 export const authOptions: NextAuthOptions = {
   adapter: PrismaAdapter(prisma),
@@ -969,7 +969,7 @@ if (!process.env.RESEND_API_KEY) {
 
 export const resend = new Resend(process.env.RESEND_API_KEY ?? "dev-noop");
 
-export const fromEmail = process.env.RESEND_FROM_EMAIL ?? "Breakwater <noreply@breakwater.local>";
+export const fromEmail = process.env.EMAIL_FROM ?? "Breakwater <noreply@breakwater.local>";
 ```
 
 - [ ] **Step 3: Update `src/lib/auth.ts` — replace console-log with Resend send (minimal HTML)**
@@ -2912,7 +2912,7 @@ Sitemap: https://breakwater.xyz/sitemap.xml
 ```bash
 pnpm dlx vercel env ls preview
 ```
-Expected variables present: `DATABASE_URL`, `NEXTAUTH_URL`, `NEXTAUTH_SECRET`, `SCAN_IP_SALT`, `SCAN_EMAIL_SALT`, `RESEND_API_KEY`, `RESEND_FROM_EMAIL`, `NEXT_PUBLIC_SITE_URL`.
+Expected variables present: `DATABASE_URL`, `NEXTAUTH_URL`, `NEXTAUTH_SECRET`, `SCAN_IP_SALT`, `SCAN_EMAIL_SALT`, `RESEND_API_KEY`, `EMAIL_FROM`, `NEXT_PUBLIC_SITE_URL`.
 
 Any missing → add via `vercel env add <name> preview`.
 
@@ -3038,3 +3038,4 @@ EOF
 Execution-time changes to this plan. The spec on `main` (`docs/superpowers/specs/2026-04-20-breakwater-plan-01-scaffold-design.md`) is frozen and out of scope for this log — if the spec needs to change, open a separate commit against `main` and run it through Codex review first.
 
 - **2026-04-20 — Phase C re-scoped from 2 commits into 5 sub-tasks (C.1–C.5).** Original C.1 bundled NextAuth wiring, Resend integration, both email templates, and the scan-linking stub into a single commit, with C.2 layering the integration test and E2E on top. That's too coarse for a clean Codex round — a regression in any of those layers is hard to isolate. Split so the auth foundation (C.1) ships with a console-log `sendVerificationRequest` and can be validated before Resend (C.2), templates (C.3), post-auth callback (C.4), and automated tests + Lighthouse (C.5) land on top. Status tracker (`docs/superpowers/plans/2026-04-20-breakwater-plan-01-status.md`) updated in commit `7a7b1ba`; this plan file updated in the accompanying commit.
+- **2026-04-20 — Corrected env var name from `RESEND_FROM_EMAIL` to `EMAIL_FROM` to match spec §9 (source of truth).** Plan file originally drifted to `RESEND_FROM_EMAIL` in the A.2 `.env.example`, A.3 Vercel env list, C.2 `src/lib/resend.ts` snippet, and Phase H verification checklist. Spec §9 canonically names the variable `EMAIL_FROM`; Vercel Preview and local `.env` were set up under that name. Drift surfaced during C.2 post-implementation verification — the running code in `src/lib/auth.ts` read `RESEND_FROM_EMAIL` and would have silently fallen through to `"Breakwater <noreply@breakwater.local>"` (an unverified Resend domain) in production. All plan references and `src/lib/auth.ts` + `.env.example` now read `EMAIL_FROM`.
