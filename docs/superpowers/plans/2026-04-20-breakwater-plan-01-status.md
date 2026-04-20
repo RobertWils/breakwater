@@ -5,9 +5,9 @@
 - [x] A.2: Prisma init + dev DB wiring — commits 5a81e4b (Prisma 5 init) + 5779002 (pinning policy)
 - [x] A.3: First Vercel deploy + PORTS.md — commit 2d511e9; preview Ready on `breakwater-robertwils-robertwils-projects.vercel.app`
 
-## Phase B: Data model
-- [ ] B.1: Full Prisma schema
-- [ ] B.2: System org migration + seed
+## Phase B: Data model — COMPLETE
+- [x] B.1: Full Prisma schema — commits e93a722 (schema + migration 20260420124707_init) + cfd3053 (remove duplicate-invariant comment)
+- [x] B.2: System org migration + seed — commits 11350e8 (migration 20260420125421_system_org + seed.ts) + e7d7dbe (calibration-hint comment)
 
 ## Phase C: Auth pipeline
 - [ ] C.1: NextAuth + Prisma adapter + Resend provider
