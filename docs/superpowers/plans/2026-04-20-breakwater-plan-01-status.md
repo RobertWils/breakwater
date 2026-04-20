@@ -2,7 +2,7 @@
 
 ## Phase A: Foundation — IN PROGRESS
 - [x] A.1: create-next-app + pnpm + Node 22 pin — commit 6b60e4e
-- [ ] A.2: Prisma init + dev DB wiring
+- [x] A.2: Prisma init + dev DB wiring — commits 5a81e4b (Prisma 5 init) + 5779002 (pinning policy)
 - [ ] A.3: First Vercel deploy + PORTS.md
 
 ## Phase B: Data model
