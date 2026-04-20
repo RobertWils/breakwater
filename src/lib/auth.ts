@@ -1,16 +1,15 @@
 import type { NextAuthOptions } from "next-auth";
 import { PrismaAdapter } from "@auth/prisma-adapter";
 import EmailProvider from "next-auth/providers/email";
-import { Resend } from "resend";
 import { prisma } from "@/lib/prisma";
-import { renderMagicLinkEmail } from "@/lib/email";
-
-const fromEmail =
-  process.env.EMAIL_FROM ?? "Breakwater <noreply@breakwater.local>";
-
-const resend = process.env.RESEND_API_KEY
-  ? new Resend(process.env.RESEND_API_KEY)
-  : null;
+import { renderSigninEmail, renderSignupUnlockEmail } from "@/lib/email";
+import {
+  resend,
+  fromEmail,
+  isDevMode,
+  assertProductionConfig,
+  shouldUseSignupUnlockTemplate,
+} from "@/lib/resend";
 
 export const authOptions: NextAuthOptions = {
   adapter: PrismaAdapter(prisma),
@@ -19,30 +18,39 @@ export const authOptions: NextAuthOptions = {
     EmailProvider({
       from: fromEmail,
       sendVerificationRequest: async ({ identifier, url, provider }) => {
-        // Production safety rail; integration coverage lands in C.5.
-        if (process.env.NODE_ENV === "production" && !resend) {
-          throw new Error(
-            "[auth] RESEND_API_KEY is required in production. Magic link delivery cannot proceed.",
-          );
-        }
+        assertProductionConfig();
 
-        const devMode =
-          !resend ||
-          (process.env.NODE_ENV === "development" &&
-            process.env.FORCE_RESEND_IN_DEV !== "1");
-
-        if (devMode) {
+        if (isDevMode()) {
           console.log(`[auth] (dev) magic link for ${identifier}: ${url}`);
           return;
         }
 
+        const isScanUnlock = shouldUseSignupUnlockTemplate(url);
+
+        console.log(
+          `[auth] Using template: ${isScanUnlock ? "signup-unlock" : "signin"}`,
+        );
+
+        // TODO (Plan 02): extract protocol context from callbackUrl for
+        // "You scanned <Protocol>" personalization in the signup-unlock template.
+
+        const { html, subject } = isScanUnlock
+          ? {
+              html: await renderSignupUnlockEmail({ url }),
+              subject: "Unlock your Breakwater scan findings",
+            }
+          : {
+              html: await renderSigninEmail({ url }),
+              subject: "Sign in to Breakwater",
+            };
+
         try {
-          const result = await resend.emails.send({
+          const result = await resend!.emails.send({
             from: provider.from,
             to: identifier,
-            subject: "Sign in to Breakwater",
-            html: await renderMagicLinkEmail({ url }),
-            text: `Sign in to Breakwater: ${url}`,
+            subject,
+            html,
+            text: `${subject}: ${url}`,
           });
 
           if (result.error) {
