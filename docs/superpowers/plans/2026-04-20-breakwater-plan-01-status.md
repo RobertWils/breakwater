@@ -9,13 +9,20 @@
 - [x] B.1: Full Prisma schema — commits e93a722 (schema + migration 20260420124707_init) + cfd3053 (remove duplicate-invariant comment)
 - [x] B.2: System org migration + seed — commits 11350e8 (migration 20260420125421_system_org + seed.ts) + e7d7dbe (calibration-hint comment) + 0604a19 (production guard)
 
-### Codex round 2 fixes (Phase A+B review)
-- [x] B-R1: Homepage placeholder replaces create-next-app default (remove remote images) — commit 55dabc4
-- [x] B-R2: Vitest infrastructure + smoke test (close pnpm test gate left open in A.1) — commit 767356d
+### Codex review journey (Phase A+B, 4 rounds total)
+- [x] Round 1: Seed production guard (dev/prod separation) — commit 0604a19
+- [x] Round 2a: Homepage remote-image fix — commit 55dabc4
+- [x] Round 2b: Vitest test infrastructure (close pnpm test gate) — commit 767356d
+- [x] Round 3: Node engine tightened to >=22.12 for Vite 8 compat — commit f2fd665
+- [x] Round 4: `RAILWAY_ENVIRONMENT_NAME` fix in seed guard — commit 3918c4e
+- [x] Round 5: Clean — no findings, Phase B closed
 
-## Phase C: Auth pipeline
-- [ ] C.1: NextAuth + Prisma adapter + Resend provider
-- [ ] C.2: Scan-linking test + sign-in E2E
+## Phase C: Auth pipeline (re-scoped from frozen plan into 5 sub-tasks)
+- [ ] C.1: NextAuth v4 setup + Prisma adapter (config skeleton only; dev console-log magic link)
+- [ ] C.2: Resend magic link provider (real send path)
+- [ ] C.3: Dual email templates (signin vs signup-unlock)
+- [ ] C.4: Post-auth callback + anonymous scan linking
+- [ ] C.5: End-to-end auth test with real Resend delivery
 
 ## Phase D: Scan API
 - [ ] D.1: Pure helpers (normalize, hash, dedupe, scoring, errors)
