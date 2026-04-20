@@ -195,11 +195,11 @@ enum SubscriptionTier { FREE PAID }
 - Index on `expiresAt` for EXPIRED cron.
 
 **ScanAttempt**
-- `id`, `ipHash`, `userId` (nullable FK), `attemptedAt`, `status`, `reason` (string), `userAgent`, `inputPayloadHash`, `cooldownKey` (string — `Protocol.id` when known, else `pending:{chain}:{normalizedAddress}`), `scanId` (nullable FK, set when `status = ACCEPTED`).
+- `id`, `ipHash`, `userId` (nullable FK), `attemptedAt`, `status`, `reason` (string), `userAgent`, `inputPayloadHash`, `cooldownKey` (string — **always** `${chain}:${normalizedAddress}`, single stable format, never references `Protocol.id`), `scanId` (nullable FK, set when `status = ACCEPTED`).
 - Index on `(ipHash, attemptedAt)` for unauth rate-limit window queries.
 - Index on `(userId, attemptedAt)` for auth rate-limit window queries.
 - Index on `(inputPayloadHash, ipHash, attemptedAt)` for 5-minute duplicate detection.
-- Index on `(cooldownKey, attemptedAt)` for per-protocol cooldown window queries (stable across "protocol exists" and "about to be created" cases).
+- Index on `(cooldownKey, attemptedAt)` for per-protocol cooldown window queries. The key is identical whether the Protocol row exists yet or not, so the cooldown cannot be bypassed by racing two submissions of the same address before a Protocol is created.
 
 **ModuleRun**
 - `id`, `scanId` (FK), `module`, `status`, `grade` (nullable), `score` (nullable int 0–100), `findingsCount` (nullable int), `startedAt` (nullable), `completedAt` (nullable), `attemptCount` (default 0), `errorMessage` (nullable), `errorStack` (nullable), `detectorVersions` (JSON snapshot), `inputSnapshot` (JSON), `rpcCallsUsed` (int default 0), `idempotencyKey` (string, unique).
@@ -261,18 +261,20 @@ Input schema (zod):
 }
 ```
 
-Flow (lookup-first — curated check precedes any state change, cooldown key stays consistent whether Protocol exists or not):
+Flow (lookup-first; dedupe before cooldown; single normalized cooldown key across the entire lifecycle):
 
 1. **Parse + validate input** (zod). Invalid → write `ScanAttempt(INVALID, reason='schema')`, return 400.
 2. **Normalize and hash**:
    - `normalizedAddress = normalize(chain, primaryContractAddress)` (EVM → lowercase; Solana → preserve case).
    - `ipHash = sha256(req.ip + SCAN_IP_SALT)`.
    - `payloadHash = sha256(chain + normalizedAddress + sorted(extraContractAddresses) + domain + sorted(multisigs))`.
+   - `cooldownKey = ${chain}:${normalizedAddress}` — single stable format for the entire lifecycle of this address, independent of whether a `Protocol` row currently exists.
 3. **IP-based rate limit** (no Protocol context required):
    - Unauthenticated: ≥ 3 ACCEPTED `ScanAttempt`s from this `ipHash` in the last hour → write `ScanAttempt(RATE_LIMITED, reason='ip_hour')`, return 429.
    - Authenticated: ≥ 10 ACCEPTED `ScanAttempt`s from this `userId` in the last hour → write `ScanAttempt(RATE_LIMITED, reason='user_hour')`, return 429.
-4. **Protocol lookup (read-only)**: `SELECT * FROM Protocol WHERE chain = ? AND primaryContractAddress = ?`. Do **not** upsert yet.
-5. **Curated check — must precede any state change**: if the lookup returns a row with `ownershipStatus = CURATED`, write `ScanAttempt(INVALID, reason='protocol_is_curated')` and return 409 with body:
+4. **Payload dedupe (soft — handles double-clicks before any rejection logic runs)**: query `ScanAttempt` where `ipHash = current AND inputPayloadHash = payloadHash AND status = ACCEPTED AND attemptedAt > NOW() - INTERVAL '5 min'`. If a row with a non-null `scanId` is found → write `ScanAttempt(DUPLICATE, reason='dedupe_recent_identical', scanId = existing.scanId)` and return **200** with `{ scanId: existing.scanId }` (same-scan idempotent reply, not a new scan).
+5. **Protocol lookup (read-only)**: `SELECT * FROM Protocol WHERE chain = ? AND primaryContractAddress = ?`. Do **not** upsert yet.
+6. **Curated check — must precede any state change**: if the lookup returns a row with `ownershipStatus = CURATED`, write `ScanAttempt(INVALID, reason='protocol_is_curated')` and return 409 with body:
    ```json
    {
      "error": "curated_protocol",
@@ -281,21 +283,22 @@ Flow (lookup-first — curated check precedes any state change, cooldown key sta
    }
    ```
    `demoUrl` resolves to `/scan/${latestDemoScanId}` if `latestDemoScanId` is set; otherwise it falls back to `/demo/${slug}` (the Plan 01 info page).
-6. **Per-protocol cooldown** (normalized key — works whether the Protocol row exists yet or not):
-   - `cooldownKey = existingProtocol?.id ?? 'pending:' + chain + ':' + normalizedAddress`.
-   - ≥ 1 ACCEPTED `ScanAttempt` whose `cooldownKey` matches within the last 10 minutes → write `ScanAttempt(RATE_LIMITED, reason='protocol_cooldown')`, return 429.
-   - `cooldownKey` must be stored on each `ScanAttempt` row (add field `cooldownKey: string` to `ScanAttempt`; indexed on `(cooldownKey, attemptedAt)`).
-7. **Payload dedupe** (prevents accidental double-submit, e.g. user double-clicks the form): same `ipHash` + same `payloadHash` with status ACCEPTED in the last 5 minutes → write `ScanAttempt(DUPLICATE, reason='payload_recent')`, return the existing `{ scanId }` with 200.
-8. **Upsert Protocol** (only now, after all rejection paths are exhausted): if the lookup in step 4 returned null, create a Protocol with `ownershipStatus = UNCLAIMED`, `organizationId = null`, derived `displayName`, and a generated `slug` (see §16.4 for slug strategy). Otherwise reuse the existing row (which must have `ownershipStatus ≠ CURATED`, guaranteed by step 5).
+7. **Per-protocol cooldown (hard — rejects a retry of the same protocol within 10 min)**: query `SELECT COUNT(*) FROM ScanAttempt WHERE cooldownKey = ? AND status = 'ACCEPTED' AND attemptedAt > NOW() - INTERVAL '10 min'`. If ≥ 1 → write `ScanAttempt(DUPLICATE, reason='protocol_cooldown')` and return **429** with `Retry-After: 600` (or the remaining seconds to the 10-minute boundary). Because `cooldownKey` uses the normalized `(chain, normalizedAddress)` format from step 2, the check is identical for first-ever submissions (no Protocol row yet) and for subsequent submissions (Protocol now exists) — no bypass via race.
+8. **Upsert Protocol** (only now, after all rejection paths are exhausted): if the lookup in step 5 returned null, create a Protocol with `ownershipStatus = UNCLAIMED`, `organizationId = null`, derived `displayName`, and a generated `slug` (see §16.4 for slug strategy). Otherwise reuse the existing row (which must have `ownershipStatus ≠ CURATED`, guaranteed by step 6).
 9. **Create `Scan`** with `status = QUEUED`, `submittedByUserId = session?.user?.id ?? null`, `submittedEmail`, `submittedEmailHash`, `ipHash`, `userAgent`.
 10. **Create 4 `ModuleRun` rows** with `status = QUEUED`, `idempotencyKey`, `inputSnapshot = { chain, normalizedAddress, extraContractAddresses, domain, multisigs }`. SKIP precedence (any of these → `status = SKIPPED`): (a) module not present in `modulesEnabled`; (b) required input missing — FRONTEND requires `domain`. SKIPPED rows carry `inputSnapshot` so later plans can explain *why* a module was skipped.
-11. **Write `ScanAttempt(ACCEPTED, scanId, cooldownKey, payloadHash, ipHash, userId?)`**.
+11. **Write `ScanAttempt(ACCEPTED, scanId, cooldownKey, inputPayloadHash = payloadHash, ipHash, userId?)`**.
 12. **Return** `{ scanId }` 202.
+
+**Dedupe vs. cooldown — different semantics, order matters:**
+- **Dedupe (step 4)**: window 5 min, scope `ipHash + inputPayloadHash`, meaning *"is this the same client re-submitting the exact same form?"* Resolves to **200** with the existing `scanId` — a soft, idempotent success so a double-click doesn't show the user an error.
+- **Cooldown (step 7)**: window 10 min, scope `cooldownKey` (protocol-wide, any client), meaning *"this protocol was scanned recently, wait before spending RPC budget again."* Resolves to **429 + Retry-After** — a hard rejection.
+- Dedupe precedes cooldown so that a legitimate double-submit is absorbed silently rather than bouncing off the cooldown as a surprise 429.
 
 **Critical invariants:**
 - Steps 1–7 are read-only or write only to `ScanAttempt`. No `Protocol`, `Scan`, or `ModuleRun` mutations before step 8.
-- Curated-protocol rejection (step 5) is the first thing the handler checks after basic rate limiting. A malicious or misinformed client cannot cause side effects on curated rows.
-- Cooldown (step 6) uses a key that is stable across "protocol exists" and "protocol about to be created" cases, so the rate is the same whether or not this is the first scan for this protocol.
+- Curated-protocol rejection (step 6) happens before the per-protocol cooldown check and before any write to `Protocol`/`Scan`/`ModuleRun`. A malicious or misinformed client cannot cause side effects on curated rows.
+- `cooldownKey` is computed once in step 2 and used unchanged through step 11. It never references `Protocol.id`. This is the single property that closes the first-submission race.
 
 **Plan 01 stops here — no dispatch.** Plan 02 wires Inngest to consume QUEUED rows.
 
@@ -687,19 +690,28 @@ If Codex approves on all five items, the architecture is solid enough to start i
 If Codex flags issues, the spec is updated on `main` (separate commit(s)) before the worktree is created.
 If Codex proposes scope changes that expand Plan 01 meaningfully, we re-scope rather than absorb — extra work lands in Plan 02 or later.
 
-### 16.7 Codex round 1 findings (resolved)
+### 16.7 Codex findings (resolved)
 
-Codex's first review pass did not flag items 16.1–16.5; those focus areas are considered tentatively approved pending any issue raised in round 2. Codex did raise three distinct findings, all resolved in the commit with subject `Address Codex review: emailVerified field, curated protocol protection, normalized cooldown key` (visible in `git log --oneline main`).
+Codex's reviews did not flag items 16.1–16.5; those focus areas are considered tentatively approved pending any issue raised in subsequent rounds. The table below lists all findings raised and their resolutions, grouped by review round.
+
+**Round 1 — resolved in commit `Address Codex review: emailVerified field, curated protocol protection, normalized cooldown key`:**
 
 | Finding | Severity | Status | Resolution |
 | --- | --- | --- | --- |
 | `User.emailVerifiedAt` incompatible with `@auth/prisma-adapter` contract | P1 | Resolved | Renamed to `emailVerified` (type `DateTime?`) in §4.2. The adapter requires this exact name; an inline note warns future editors not to rename it. |
 | Upsert-first flow in `POST /api/scan` leaks side effects before curated check | P1 | Resolved | Rewrote §5.1 to a lookup-first ordered flow. Curated-protocol check now precedes any write to `Protocol`/`Scan`/`ModuleRun`. All rejection paths write only to `ScanAttempt`. 409 response includes `demoUrl` falling back from `/scan/${latestDemoScanId}` to `/demo/${slug}` so Plan 01 can respond usefully even without cached demo scans. |
-| Per-protocol cooldown key inconsistent between "protocol exists" and "about to be created" cases | P2 | Resolved | Introduced `cooldownKey` on `ScanAttempt` (§4.2) — `Protocol.id` when known, else `pending:{chain}:{normalizedAddress}`. Same rate applies to both paths. `Protocol.latestDemoScanId` added (nullable FK) to support the 409 `demoUrl`. |
+| Per-protocol cooldown key inconsistent between "protocol exists" and "about to be created" cases | P2 | Resolved (superseded by round 2) | Initial fix introduced `cooldownKey` on `ScanAttempt` that used `Protocol.id` when known, else a `pending:{chain}:{normalizedAddress}` fallback. Round 2 pointed out the format still changed across the lifecycle — see round 2 row below for the final form. `Protocol.latestDemoScanId` added (nullable FK) stands. |
 
-### 16.8 Ready for Codex round 2
+**Round 2 — resolved in commit `Address Codex round 2: consistent cooldown key, dedupe before cooldown`:**
 
-With round 1 findings resolved, the expected round 2 targets are: (a) confirming the lookup-first flow correctly blocks the leak patterns Codex identified; (b) verifying `cooldownKey` index coverage is sufficient; (c) completing the tentative approval on 16.1–16.5 with an explicit verdict.
+| Finding | Severity | Status | Resolution |
+| --- | --- | --- | --- |
+| `cooldownKey` format changes between first and subsequent submissions (bypass window) | P2 | Resolved | `cooldownKey` now has a single stable format `${chain}:${normalizedAddress}` for the entire lifecycle (§4.2, §5.1 step 2). The `pending:` prefix and the `Protocol.id` variant are both removed. A first-ever submission and a second submission 30 seconds later share the same key and hit the same 10-minute cooldown. |
+| Payload dedupe ordered after cooldown, so a double-click returns 429 instead of the original `scanId` | P2 | Resolved | Reordered §5.1 so step 4 (dedupe: 5-min IP + payload window, returns 200 with existing `scanId`) precedes step 7 (cooldown: 10-min protocol-wide, returns 429 + Retry-After). Semantics explicitly documented in the new "Dedupe vs. cooldown" subsection — dedupe is soft/idempotent, cooldown is hard. |
+
+### 16.8 Ready for Codex round 3
+
+With round 2 findings resolved, the expected round 3 targets are: (a) confirming the new `cooldownKey = ${chain}:${normalizedAddress}` format holds across all code paths in §5.1 (no residual references to `Protocol.id` or the `pending:` prefix); (b) verifying the dedupe-before-cooldown ordering closes the double-click edge case without opening a new one (e.g., a fast pair of submissions from different IPs but the same payload); (c) completing the tentative approval on 16.1–16.5 with an explicit verdict.
 
 ## 17. Decisions recap (for traceability)
 
@@ -730,7 +742,14 @@ With round 1 findings resolved, the expected round 2 targets are: (a) confirming
 Three findings from the Codex review of the initial spec commit on `main` have been addressed in a follow-up commit before implementation begins:
 
 1. **`User.emailVerified` field name** — renamed from `emailVerifiedAt` to `emailVerified` (§4). The exact name is required by `@auth/prisma-adapter`; using anything else would silently break NextAuth's account-linking behavior. Type remains `DateTime?`. Inline note in the schema warns future contributors not to rename.
-2. **Curated protocol protection in `POST /api/scan`** — flow rewritten to lookup-first (§5.1, 12 steps). Protocol lookup and curated check now happen **before** any state change (rate-limit counters, cooldown inserts, upserts). If `status = CURATED`, the handler returns `409 curated_protocol` with a `demoUrl` pointing to `/scan/${latestDemoScanId}` (preferred) or `/demo/${slug}` (fallback). `Protocol.latestDemoScanId` (nullable FK to `Scan`) added for the preferred redirect. No `Scan`, `ModuleRun`, or `ScanAttempt` record is created for curated rejections beyond a single audit-log `ScanAttempt` row.
-3. **Normalized cooldown key** — `ScanAttempt.cooldownKey` field added (§4, §5.1 step 3). Value is `Protocol.id` when the protocol already exists, else `pending:{chain}:{normalizedAddress}`. Indexed as `(cooldownKey, attemptedAt)` for fast lookbacks. Closes the gap where a first-ever submission (no Protocol row yet) could bypass the cooldown by racing a second submission of the same address.
+2. **Curated protocol protection in `POST /api/scan`** — flow rewritten to lookup-first (§5.1). Protocol lookup and curated check now happen **before** any state change (rate-limit counters, cooldown inserts, upserts). If `status = CURATED`, the handler returns `409 curated_protocol` with a `demoUrl` pointing to `/scan/${latestDemoScanId}` (preferred) or `/demo/${slug}` (fallback). `Protocol.latestDemoScanId` (nullable FK to `Scan`) added for the preferred redirect. No `Scan`, `ModuleRun`, or `ScanAttempt` record is created for curated rejections beyond a single audit-log `ScanAttempt` row.
+3. **Normalized cooldown key (round-1 form, superseded in round 2)** — `ScanAttempt.cooldownKey` field added (§4). Round 1 used `Protocol.id` when the protocol already existed, else `pending:{chain}:{normalizedAddress}`. Round 2 tightened this to a single stable format — see §17.2.
 
-All three items in §16 "Codex review focus areas" that flagged these risks are now marked RESOLVED in §16.7. Ready for Codex round 2 targets listed in §16.8.
+### 17.2 Post-Codex revision (round 2 fixes)
+
+Two P2 findings from the Codex round 2 review have been addressed in a follow-up commit before implementation begins:
+
+1. **Consistent cooldown key** — `cooldownKey` now has one format, `${chain}:${normalizedAddress}`, used unchanged across the entire lifecycle of an address (§4.2, §5.1 step 2). The round-1 form that switched to `Protocol.id` once a Protocol row existed is removed; the `pending:` prefix is dropped. The key is computed once from user input and never references `Protocol.id`, so a first-ever submission and any subsequent submission within 10 min share the same cooldown row — closing the race where a rapid follow-up could land on a different key and bypass the cooldown.
+2. **Dedupe before cooldown** — §5.1 reordered so the 5-minute IP + payload dedupe check runs at step 4 (before the Protocol lookup, curated check, and per-protocol cooldown). A legitimate double-click now returns **200** with the existing `scanId` (soft/idempotent) rather than bouncing off the cooldown with a **429** (hard rejection). Explicit "Dedupe vs. cooldown" subsection added to §5.1 documenting the distinct windows (5 vs. 10 min), scopes (client-specific vs. protocol-wide), and response codes (200 vs. 429 + Retry-After).
+
+§16.7 tracks the resolution table for each round; §16.8 lists the expected round-3 targets.
