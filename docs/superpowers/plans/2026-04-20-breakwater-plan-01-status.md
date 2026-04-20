@@ -19,8 +19,8 @@
 
 ## Phase C: Auth pipeline (re-scoped from frozen plan into 5 sub-tasks)
 Plan file aligned with this re-scope in commit e9cad07 (Revision log at bottom of the plan doc).
-- [x] C.1: NextAuth v4 setup + Prisma adapter (config skeleton only; dev console-log magic link) — commit bfc007b; `pnpm build` green, `/api/auth/[...nextauth]` registered as dynamic route, `/auth/verify-request` as static. Dev-server E2E (browser) pending user validation.
-- [ ] C.2: Resend magic link provider (real send path)
+- [x] C.1: NextAuth v4 setup + Prisma adapter (config skeleton only; dev console-log magic link) — commit bfc007b; verified E2E by Robert (magic link flow, session cookie, `/api/auth/session`, Prisma Studio rows).
+- [x] C.2: Resend magic link provider (real send path) — commit 18ae68b; resend@4.8.0 + @react-email/components@0.0.42 pinned; single template at `src/emails/magic-link.tsx`; `@vitejs/plugin-react@6.0.1` added so Vitest transforms TSX. Build + 4 tests green. Dev fallback: console.log when `RESEND_API_KEY` unset OR (`NODE_ENV=development` and `FORCE_RESEND_IN_DEV != "1"`). Real-delivery E2E pending user validation with `FORCE_RESEND_IN_DEV=1`.
 - [ ] C.3: Dual email templates (signin vs signup-unlock)
 - [ ] C.4: Post-auth callback + anonymous scan linking
 - [ ] C.5: End-to-end auth test + Lighthouse check
