@@ -29,7 +29,11 @@ Plan file aligned with this re-scope in commit e9cad07 (Revision log at bottom o
   - Part 2 (2ba65d4): `src/emails/_layout.tsx` shared layout (Storm Cyan palette, single `colors` const). `src/emails/magic-link-signin.tsx` and `src/emails/magic-link-signup-unlock.tsx` created. `src/lib/email.ts` replaced with `renderSigninEmail` + `renderSignupUnlockEmail`. Template selection in `sendVerificationRequest` parses `callbackUrl` from magic-link URL; uses signup-unlock template when `/scan/` + `unlock=true` present, signin otherwise. Plan 02 comment marks protocol personalization hook. Old `magic-link.tsx` + test deleted.
   - 23 tests total (4 signin template, 5 signup-unlock template, 7 resend module, 6 template-selection, 1 pre-existing). All green. `pnpm build` clean.
   - Manual E2E pending Robert: (1) normal signin → signin template; (2) `http://localhost:3000/api/auth/signin?callbackUrl=%2Fscan%2Ftest-id%3Funlock%3Dtrue` → signup-unlock template.
-- [ ] C.4: Post-auth callback + anonymous scan linking
+- [x] C.4: Post-auth callbacks + anonymous scan linking — single commit (see below).
+  - `src/lib/scan-linking.ts` created: `linkAnonymousScans({ userId, userEmail })` — `prisma.scan.updateMany` with `submittedByUserId IS NULL` + email match. Never throws; returns `{ linkedCount, failedCount }` sentinel (`failedCount: -1` = DB error). Email normalized with `.toLowerCase().trim()`.
+  - `src/types/next-auth.d.ts` created: augments `Session.user` with `id: string`, `organizationId: string | null`; augments `User` with `organizationId?: string | null` (optional to avoid `@auth/core` vs `next-auth` `AdapterUser` type mismatch).
+  - `src/lib/auth.ts` updated: added `callbacks.signIn` (pass-through), `callbacks.session` (attaches `user.id` + `organizationId` to session), `events.signIn` wired to exported `signInEvent`. `signInEvent` exported for testability, wraps `linkAnonymousScans` in try/catch — link failure never blocks login.
+  - 9 new tests (7 scan-linking scenarios a–g + 2 auth-callback contract tests). All 32 tests green. `pnpm build` clean.
 - [ ] C.5: End-to-end auth test + Lighthouse check
 
 ## Phase D: Scan API
