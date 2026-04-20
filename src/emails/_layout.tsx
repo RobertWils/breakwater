@@ -9,25 +9,39 @@ import {
   Section,
   Text,
 } from "@react-email/components";
+import type { ReactNode } from "react";
 
-type MagicLinkEmailProps = {
-  url: string;
-};
-
-const colors = {
+// Storm Cyan palette — single source of truth for both email templates.
+export const colors = {
   bodyBg: "#0C1C3A",
   containerBg: "#17306B",
   text: "#F1F5F9",
   ctaBg: "#14B8A6",
   ctaText: "#0C1C3A",
   muted: "#A5B4CD",
+} as const;
+
+type EmailLayoutProps = {
+  preview: string;
+  heading: string;
+  bodyText: string;
+  ctaLabel: string;
+  ctaUrl: string;
+  children?: ReactNode;
 };
 
-export function MagicLinkEmail({ url }: MagicLinkEmailProps) {
+export function EmailLayout({
+  preview,
+  heading,
+  bodyText,
+  ctaLabel,
+  ctaUrl,
+  children,
+}: EmailLayoutProps) {
   return (
     <Html>
       <Head />
-      <Preview>Sign in to Breakwater</Preview>
+      <Preview>{preview}</Preview>
       <Body
         style={{
           backgroundColor: colors.bodyBg,
@@ -55,7 +69,7 @@ export function MagicLinkEmail({ url }: MagicLinkEmailProps) {
               margin: "0 0 16px 0",
             }}
           >
-            Sign in to Breakwater
+            {heading}
           </Heading>
           <Text
             style={{
@@ -65,11 +79,11 @@ export function MagicLinkEmail({ url }: MagicLinkEmailProps) {
               margin: "0 0 24px 0",
             }}
           >
-            Click the link below to sign in. This link expires in 24 hours.
+            {bodyText}
           </Text>
           <Section style={{ margin: "0 0 24px 0" }}>
             <Button
-              href={url}
+              href={ctaUrl}
               style={{
                 backgroundColor: colors.ctaBg,
                 borderRadius: "6px",
@@ -81,7 +95,7 @@ export function MagicLinkEmail({ url }: MagicLinkEmailProps) {
                 textDecoration: "none",
               }}
             >
-              Sign in to Breakwater
+              {ctaLabel}
             </Button>
           </Section>
           <Text
@@ -94,10 +108,9 @@ export function MagicLinkEmail({ url }: MagicLinkEmailProps) {
           >
             If you didn&apos;t request this email, you can safely ignore it.
           </Text>
+          {children}
         </Container>
       </Body>
     </Html>
   );
 }
-
-export default MagicLinkEmail;
