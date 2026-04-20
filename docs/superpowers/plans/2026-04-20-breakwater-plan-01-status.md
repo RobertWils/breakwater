@@ -34,7 +34,7 @@ Plan file aligned with this re-scope in commit e9cad07 (Revision log at bottom o
   - `src/types/next-auth.d.ts` created: augments `Session.user` with `id: string`, `organizationId: string | null`; augments `User` with `organizationId?: string | null` (optional to avoid `@auth/core` vs `next-auth` `AdapterUser` type mismatch).
   - `src/lib/auth.ts` updated: added `callbacks.signIn` (pass-through), `callbacks.session` (attaches `user.id` + `organizationId` to session), `events.signIn` wired to exported `signInEvent`. `signInEvent` exported for testability, wraps `linkAnonymousScans` in try/catch — link failure never blocks login.
   - 9 new tests (7 scan-linking scenarios a–g + 2 auth-callback contract tests). All 32 tests green. `pnpm build` clean.
-- [x] C.5: End-to-end auth test + Lighthouse check — commits `7d60e69` (integration test) + `PHASE_C_SHA` (lighthouse + plan/status updates).
+- [x] C.5: End-to-end auth test + Lighthouse check — commits `7d60e69` (integration test) + `d8f6a4d` (lighthouse + plan/status updates).
   - `src/__tests__/auth-integration.test.ts` created: 3 scenarios (single anonymous scan linked; multiple scans linked in one pass; other-user claimed scans not rebound). Uses real Prisma against `DATABASE_URL`. Skips cleanly via `describe.skipIf(!DATABASE_URL)` when no DB. 35/35 tests green (32 unit + 3 integration).
   - `docs/performance/2026-04-20-phase-c-lighthouse.md` created. Lighthouse 13.1.0 against local production build (Vercel preview aliases point at pre-C.3 deploys). Scores: `/` 98/100/100/100; `/api/auth/signin` 100/91/100/90; `/auth/verify-request` 99/100/100/100. All thresholds met including Accessibility ≥ 90 hard gate.
   - Phase C completion summary + deferrals to Plan 02 added to plan file.
