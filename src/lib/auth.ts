@@ -105,10 +105,18 @@ export async function signInEvent(
 ): Promise<void> {
   const { user } = message;
   try {
-    await linkAnonymousScans({
+    const result = await linkAnonymousScans({
       userId: user.id,
       userEmail: user.email,
     });
+
+    if (!result.ok) {
+      console.error(
+        "[auth] Failed to link anonymous scans for user",
+        user.id,
+        result.error,
+      );
+    }
   } catch (err) {
     console.error(
       "[auth] Failed to link anonymous scans for user",

@@ -49,7 +49,7 @@ beforeEach(() => {
 
 describe("signInEvent()", () => {
   it("calls linkAnonymousScans with userId and userEmail", async () => {
-    mockLink.mockResolvedValueOnce({ linkedCount: 2, failedCount: 0 });
+    mockLink.mockResolvedValueOnce({ ok: true, linkedCount: 2 });
 
     await signInEvent({
       user: { id: "u1", email: "a@b.com" },

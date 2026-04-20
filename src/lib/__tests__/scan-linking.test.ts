@@ -31,7 +31,7 @@ describe("linkAnonymousScans()", () => {
       userEmail: "alice@example.com",
     });
 
-    expect(result).toEqual({ linkedCount: 3, failedCount: 0 });
+    expect(result).toEqual({ ok: true, linkedCount: 3 });
     expect(mockUpdateMany).toHaveBeenCalledOnce();
     expect(mockUpdateMany).toHaveBeenCalledWith({
       where: { submittedByUserId: null, submittedEmail: "alice@example.com" },
@@ -47,7 +47,7 @@ describe("linkAnonymousScans()", () => {
       userEmail: "nobody@example.com",
     });
 
-    expect(result).toEqual({ linkedCount: 0, failedCount: 0 });
+    expect(result).toEqual({ ok: true, linkedCount: 0 });
     expect(mockUpdateMany).toHaveBeenCalledOnce();
   });
 
@@ -61,7 +61,7 @@ describe("linkAnonymousScans()", () => {
       userEmail: "mixed@example.com",
     });
 
-    expect(result).toEqual({ linkedCount: 2, failedCount: 0 });
+    expect(result).toEqual({ ok: true, linkedCount: 2 });
     // Confirm the query always includes the null guard.
     expect(mockUpdateMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -104,7 +104,7 @@ describe("linkAnonymousScans()", () => {
     );
   });
 
-  it("(f) DB error: returns failedCount:-1, does not rethrow", async () => {
+  it("(f) DB error: returns { ok: false, error }, does not rethrow", async () => {
     const dbError = new Error("connection refused");
     mockUpdateMany.mockRejectedValueOnce(dbError);
 
@@ -115,7 +115,10 @@ describe("linkAnonymousScans()", () => {
       userEmail: "bob@example.com",
     });
 
-    expect(result).toEqual({ linkedCount: 0, failedCount: -1 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe("connection refused");
+    }
     expect(errorSpy).toHaveBeenCalledWith(
       "[scan-linking] Transaction failed:",
       dbError,
@@ -124,7 +127,7 @@ describe("linkAnonymousScans()", () => {
     errorSpy.mockRestore();
   });
 
-  it("(g) missing email (null): returns zero counts, no DB call", async () => {
+  it("(g) missing email (null): returns { ok: true, linkedCount: 0 }, no DB call", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     const resultNull = await linkAnonymousScans({
@@ -132,7 +135,7 @@ describe("linkAnonymousScans()", () => {
       userEmail: null,
     });
 
-    expect(resultNull).toEqual({ linkedCount: 0, failedCount: 0 });
+    expect(resultNull).toEqual({ ok: true, linkedCount: 0 });
     expect(mockUpdateMany).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalledWith(
       "[scan-linking] No email provided, skipping",
@@ -145,7 +148,7 @@ describe("linkAnonymousScans()", () => {
       userEmail: undefined,
     });
 
-    expect(resultUndefined).toEqual({ linkedCount: 0, failedCount: 0 });
+    expect(resultUndefined).toEqual({ ok: true, linkedCount: 0 });
     expect(mockUpdateMany).not.toHaveBeenCalled();
 
     warnSpy.mockRestore();

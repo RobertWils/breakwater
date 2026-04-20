@@ -1,12 +1,16 @@
 import { prisma } from "@/lib/prisma";
 
+export type LinkResult =
+  | { ok: true; linkedCount: number }
+  | { ok: false; error: string };
+
 export async function linkAnonymousScans(params: {
   userId: string;
   userEmail: string | null | undefined;
-}): Promise<{ linkedCount: number; failedCount: number }> {
+}): Promise<LinkResult> {
   if (!params.userEmail) {
     console.warn("[scan-linking] No email provided, skipping");
-    return { linkedCount: 0, failedCount: 0 };
+    return { ok: true, linkedCount: 0 };
   }
 
   const normalizedEmail = params.userEmail.toLowerCase().trim();
@@ -26,9 +30,10 @@ export async function linkAnonymousScans(params: {
       `[scan-linking] Linked ${result.count} anonymous scans to user ${params.userId}`,
     );
 
-    return { linkedCount: result.count, failedCount: 0 };
+    return { ok: true, linkedCount: result.count };
   } catch (err) {
     console.error("[scan-linking] Transaction failed:", err);
-    return { linkedCount: 0, failedCount: -1 };
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return { ok: false, error: message };
   }
 }
