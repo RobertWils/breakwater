@@ -195,11 +195,22 @@ enum SubscriptionTier { FREE PAID }
 - Index on `expiresAt` for EXPIRED cron.
 
 **ScanAttempt**
-- `id`, `ipHash`, `userId` (nullable FK), `attemptedAt`, `status`, `reason` (string), `userAgent`, `inputPayloadHash`, `cooldownKey` (string — **always** `${chain}:${normalizedAddress}`, single stable format, never references `Protocol.id`), `scanId` (nullable FK, set when `status = ACCEPTED`).
+- `id`, `ipHash`, `userId` (nullable FK), `attemptedAt`, `status`, `reason` (string), `userAgent`, `inputPayloadHash`, `cooldownKey` (string — **always** `${chain}:${normalizedAddress}`, single stable format, never references `Protocol.id`), `scanId` (nullable FK).
+- `scanId` nullability semantics: set when `status IN ('ACCEPTED', 'DUPLICATE')`, NULL otherwise.
+  - `ACCEPTED` rows reference the newly-created `Scan`.
+  - `DUPLICATE` rows (dedupe path, §5.1 step 4) reference the **existing** `Scan` that was returned idempotently.
+  - `RATE_LIMITED`, `INVALID`, `ERROR` rows have `scanId = NULL` — no `Scan` was created or reused.
+- Status taxonomy (`ScanAttemptStatus`, see §4.1):
+  - `ACCEPTED` — the request produced a new `Scan`.
+  - `DUPLICATE` — the request matched a recent identical submission from the same client (`ipHash + inputPayloadHash`, 5-min window); the existing `scanId` was returned with HTTP 200.
+  - `RATE_LIMITED` — a quota was hit. `reason` distinguishes: `ip_hour` (unauth IP quota), `user_hour` (auth user quota), or `protocol_cooldown` (per-protocol 10-min cooldown — §5.1 step 7).
+  - `INVALID` — schema validation failed or the target is a curated protocol.
+  - `ERROR` — unexpected internal error.
 - Index on `(ipHash, attemptedAt)` for unauth rate-limit window queries.
 - Index on `(userId, attemptedAt)` for auth rate-limit window queries.
 - Index on `(inputPayloadHash, ipHash, attemptedAt)` for 5-minute duplicate detection.
 - Index on `(cooldownKey, attemptedAt)` for per-protocol cooldown window queries. The key is identical whether the Protocol row exists yet or not, so the cooldown cannot be bypassed by racing two submissions of the same address before a Protocol is created.
+- **Atomic guard requirement**: the cooldown check and the subsequent `ACCEPTED` insert MUST run in a single Postgres transaction guarded by `pg_advisory_xact_lock(hashtext(cooldownKey))`. See §5.1 step 7. This is not optional — two concurrent requests for the same address would otherwise both pass the `COUNT(*)` check before either writes an `ACCEPTED` row.
 
 **ModuleRun**
 - `id`, `scanId` (FK), `module`, `status`, `grade` (nullable), `score` (nullable int 0–100), `findingsCount` (nullable int), `startedAt` (nullable), `completedAt` (nullable), `attemptCount` (default 0), `errorMessage` (nullable), `errorStack` (nullable), `detectorVersions` (JSON snapshot), `inputSnapshot` (JSON), `rpcCallsUsed` (int default 0), `idempotencyKey` (string, unique).
@@ -267,8 +278,8 @@ Flow (lookup-first; dedupe before cooldown; single normalized cooldown key acros
 2. **Normalize and hash**:
    - `normalizedAddress = normalize(chain, primaryContractAddress)` (EVM → lowercase; Solana → preserve case).
    - `ipHash = sha256(req.ip + SCAN_IP_SALT)`.
-   - `payloadHash = sha256(chain + normalizedAddress + sorted(extraContractAddresses) + domain + sorted(multisigs))`.
-   - `cooldownKey = ${chain}:${normalizedAddress}` — single stable format for the entire lifecycle of this address, independent of whether a `Protocol` row currently exists.
+   - `payloadHash = sha256(deterministicSerialize({ chain, normalizedAddress, extraContractAddresses, domain, multisigs, modulesEnabled }))` — `deterministicSerialize` sorts each array alphabetically, then JSON-serializes the object with keys in a fixed order (the order shown here), so the same logical input always produces the same hash. `modulesEnabled` is included: a scan with `[GOVERNANCE, ORACLE]` is a different request from a scan with all four modules, even for the same address, and must not be deduped into it.
+   - `cooldownKey = ${chain}:${normalizedAddress}` — single stable format for the entire lifecycle of this address, independent of whether a `Protocol` row currently exists, and independent of `modulesEnabled` (the cooldown is protocol-level RPC spend protection, not a per-module throttle).
 3. **IP-based rate limit** (no Protocol context required):
    - Unauthenticated: ≥ 3 ACCEPTED `ScanAttempt`s from this `ipHash` in the last hour → write `ScanAttempt(RATE_LIMITED, reason='ip_hour')`, return 429.
    - Authenticated: ≥ 10 ACCEPTED `ScanAttempt`s from this `userId` in the last hour → write `ScanAttempt(RATE_LIMITED, reason='user_hour')`, return 429.
@@ -283,22 +294,51 @@ Flow (lookup-first; dedupe before cooldown; single normalized cooldown key acros
    }
    ```
    `demoUrl` resolves to `/scan/${latestDemoScanId}` if `latestDemoScanId` is set; otherwise it falls back to `/demo/${slug}` (the Plan 01 info page).
-7. **Per-protocol cooldown (hard — rejects a retry of the same protocol within 10 min)**: query `SELECT COUNT(*) FROM ScanAttempt WHERE cooldownKey = ? AND status = 'ACCEPTED' AND attemptedAt > NOW() - INTERVAL '10 min'`. If ≥ 1 → write `ScanAttempt(DUPLICATE, reason='protocol_cooldown')` and return **429** with `Retry-After: 600` (or the remaining seconds to the 10-minute boundary). Because `cooldownKey` uses the normalized `(chain, normalizedAddress)` format from step 2, the check is identical for first-ever submissions (no Protocol row yet) and for subsequent submissions (Protocol now exists) — no bypass via race.
-8. **Upsert Protocol** (only now, after all rejection paths are exhausted): if the lookup in step 5 returned null, create a Protocol with `ownershipStatus = UNCLAIMED`, `organizationId = null`, derived `displayName`, and a generated `slug` (see §16.4 for slug strategy). Otherwise reuse the existing row (which must have `ownershipStatus ≠ CURATED`, guaranteed by step 6).
+7. **Per-protocol cooldown (hard — rejects a retry of the same protocol within 10 min). Steps 7–11 MUST run inside a single Postgres transaction guarded by an advisory lock on the cooldown key:**
+
+   ```sql
+   BEGIN;
+   SELECT pg_advisory_xact_lock(hashtext($cooldownKey));
+
+   -- Cooldown check (inside lock — cannot race)
+   SELECT COUNT(*) FROM "ScanAttempt"
+   WHERE "cooldownKey" = $cooldownKey
+     AND status = 'ACCEPTED'
+     AND "attemptedAt" > NOW() - INTERVAL '10 minutes';
+
+   -- If count >= 1: write rejection row and return 429
+   INSERT INTO "ScanAttempt" (..., status='RATE_LIMITED',
+                              reason='protocol_cooldown',
+                              "cooldownKey"=$cooldownKey,
+                              "inputPayloadHash"=$payloadHash,
+                              "scanId"=NULL, ...);
+   COMMIT;
+   -- → HTTP 429 with Retry-After: <seconds remaining to the 10-minute boundary>
+
+   -- Otherwise: proceed with steps 8–11 inside the same transaction
+   ```
+
+   Rationale: without the advisory lock + transaction, two concurrent requests for the same address can both pass the `COUNT(*) = 0` check before either writes an `ACCEPTED` row, producing two parallel scans for the same protocol. `pg_advisory_xact_lock` is transaction-scoped (auto-released on COMMIT/ROLLBACK) and does not require schema changes. **This atomic guard is mandatory, not an optimization.**
+
+   Rejection-row status is `RATE_LIMITED` (with `reason='protocol_cooldown'`), not `DUPLICATE` — see §4.2 status taxonomy. `DUPLICATE` is reserved for the step-4 dedupe path where the client is returned an existing `scanId`; cooldown is a hard quota rejection that does not reference any existing scan.
+
+8. **Upsert Protocol** (inside the transaction, only now, after all rejection paths are exhausted): if the lookup in step 5 returned null, create a Protocol with `ownershipStatus = UNCLAIMED`, `organizationId = null`, derived `displayName`, and a generated `slug` (see §16.4 for slug strategy). Otherwise reuse the existing row (which must have `ownershipStatus ≠ CURATED`, guaranteed by step 6).
 9. **Create `Scan`** with `status = QUEUED`, `submittedByUserId = session?.user?.id ?? null`, `submittedEmail`, `submittedEmailHash`, `ipHash`, `userAgent`.
-10. **Create 4 `ModuleRun` rows** with `status = QUEUED`, `idempotencyKey`, `inputSnapshot = { chain, normalizedAddress, extraContractAddresses, domain, multisigs }`. SKIP precedence (any of these → `status = SKIPPED`): (a) module not present in `modulesEnabled`; (b) required input missing — FRONTEND requires `domain`. SKIPPED rows carry `inputSnapshot` so later plans can explain *why* a module was skipped.
-11. **Write `ScanAttempt(ACCEPTED, scanId, cooldownKey, inputPayloadHash = payloadHash, ipHash, userId?)`**.
+10. **Create 4 `ModuleRun` rows** with `status = QUEUED`, `idempotencyKey`, `inputSnapshot = { chain, normalizedAddress, extraContractAddresses, domain, multisigs, modulesEnabled }`. SKIP precedence (any of these → `status = SKIPPED`): (a) module not present in `modulesEnabled`; (b) required input missing — FRONTEND requires `domain`. SKIPPED rows carry `inputSnapshot` so later plans can explain *why* a module was skipped.
+11. **Write `ScanAttempt(ACCEPTED, scanId, cooldownKey, inputPayloadHash = payloadHash, ipHash, userId?)`**, then `COMMIT`.
 12. **Return** `{ scanId }` 202.
 
 **Dedupe vs. cooldown — different semantics, order matters:**
-- **Dedupe (step 4)**: window 5 min, scope `ipHash + inputPayloadHash`, meaning *"is this the same client re-submitting the exact same form?"* Resolves to **200** with the existing `scanId` — a soft, idempotent success so a double-click doesn't show the user an error.
-- **Cooldown (step 7)**: window 10 min, scope `cooldownKey` (protocol-wide, any client), meaning *"this protocol was scanned recently, wait before spending RPC budget again."* Resolves to **429 + Retry-After** — a hard rejection.
+- **Dedupe (step 4)**: window 5 min, scope `ipHash + inputPayloadHash`, meaning *"is this the same client re-submitting the exact same form?"* Resolves to **200** with the existing `scanId` — a soft, idempotent success so a double-click doesn't show the user an error. Rejection row: `status = DUPLICATE`, `reason = dedupe_recent_identical`, `scanId = existing.scanId`.
+- **Cooldown (step 7)**: window 10 min, scope `cooldownKey` (protocol-wide, any client), meaning *"this protocol was scanned recently, wait before spending RPC budget again."* Resolves to **429 + Retry-After** — a hard rejection. Rejection row: `status = RATE_LIMITED`, `reason = protocol_cooldown`, `scanId = NULL`.
 - Dedupe precedes cooldown so that a legitimate double-submit is absorbed silently rather than bouncing off the cooldown as a surprise 429.
 
 **Critical invariants:**
-- Steps 1–7 are read-only or write only to `ScanAttempt`. No `Protocol`, `Scan`, or `ModuleRun` mutations before step 8.
-- Curated-protocol rejection (step 6) happens before the per-protocol cooldown check and before any write to `Protocol`/`Scan`/`ModuleRun`. A malicious or misinformed client cannot cause side effects on curated rows.
+- Steps 1–6 are read-only or write only to `ScanAttempt`. Steps 7–11 run inside a single transaction guarded by an advisory lock on `cooldownKey`. No `Protocol`, `Scan`, or `ModuleRun` mutations happen before step 8.
+- Curated-protocol rejection (step 6) happens before the transaction opens and before any write to `Protocol`/`Scan`/`ModuleRun`. A malicious or misinformed client cannot cause side effects on curated rows.
 - `cooldownKey` is computed once in step 2 and used unchanged through step 11. It never references `Protocol.id`. This is the single property that closes the first-submission race.
+- `payloadHash` includes `modulesEnabled`. Two submissions for the same address with different module selections are distinct requests and do not dedupe into each other.
+- The advisory lock serializes concurrent requests for the same `cooldownKey` at the database level. Requests for different `cooldownKey` values are unaffected.
 
 **Plan 01 stops here — no dispatch.** Plan 02 wires Inngest to consume QUEUED rows.
 
@@ -709,9 +749,21 @@ Codex's reviews did not flag items 16.1–16.5; those focus areas are considered
 | `cooldownKey` format changes between first and subsequent submissions (bypass window) | P2 | Resolved | `cooldownKey` now has a single stable format `${chain}:${normalizedAddress}` for the entire lifecycle (§4.2, §5.1 step 2). The `pending:` prefix and the `Protocol.id` variant are both removed. A first-ever submission and a second submission 30 seconds later share the same key and hit the same 10-minute cooldown. |
 | Payload dedupe ordered after cooldown, so a double-click returns 429 instead of the original `scanId` | P2 | Resolved | Reordered §5.1 so step 4 (dedupe: 5-min IP + payload window, returns 200 with existing `scanId`) precedes step 7 (cooldown: 10-min protocol-wide, returns 429 + Retry-After). Semantics explicitly documented in the new "Dedupe vs. cooldown" subsection — dedupe is soft/idempotent, cooldown is hard. |
 
-### 16.8 Ready for Codex round 3
+**Round 3 — resolved in commit `Address Codex round 3: atomic cooldown, module dedupe key, ScanAttempt invariants, rate limit semantics; defer quota/dedupe ordering to Plan 02`:**
 
-With round 2 findings resolved, the expected round 3 targets are: (a) confirming the new `cooldownKey = ${chain}:${normalizedAddress}` format holds across all code paths in §5.1 (no residual references to `Protocol.id` or the `pending:` prefix); (b) verifying the dedupe-before-cooldown ordering closes the double-click edge case without opening a new one (e.g., a fast pair of submissions from different IPs but the same payload); (c) completing the tentative approval on 16.1–16.5 with an explicit verdict.
+| Finding | Severity | Status | Resolution |
+| --- | --- | --- | --- |
+| Race between concurrent cooldown `COUNT(*)` checks allows two parallel scans of the same protocol | P2 | Resolved | §5.1 step 7 rewritten to wrap the cooldown check and the subsequent `ACCEPTED` insert in a single Postgres transaction guarded by `pg_advisory_xact_lock(hashtext(cooldownKey))`. Explicitly documented as mandatory in both §5.1 and §4.2. Lock is transaction-scoped, auto-released on COMMIT/ROLLBACK, no schema change required. |
+| `modulesEnabled` missing from `payloadHash`, so a 2-module scan dedupes into a prior 4-module scan | P2 | Resolved | §5.1 step 2 updated: `payloadHash = sha256(deterministicSerialize({ chain, normalizedAddress, extraContractAddresses, domain, multisigs, modulesEnabled }))` with explicit alphabetic array sort + fixed-order JSON serialization. `modulesEnabled` is excluded from `cooldownKey` (cooldown is protocol-level RPC protection, not a per-module throttle). |
+| `ScanAttempt.scanId` nullability semantics incomplete — dedupe (DUPLICATE) rows should reference the existing scan | P3 | Resolved | §4.2 ScanAttempt documentation updated: `scanId` is set when `status IN ('ACCEPTED', 'DUPLICATE')`, NULL otherwise. ACCEPTED points at the new scan; DUPLICATE points at the existing scan returned idempotently; RATE_LIMITED/INVALID/ERROR stay NULL. |
+| Protocol-cooldown rejection uses `status = DUPLICATE`, which conflicts with the new DUPLICATE-has-scanId invariant | P3 | Resolved | §5.1 step 7 rejection row changed to `status = RATE_LIMITED, reason = 'protocol_cooldown', scanId = NULL`. §4.2 status taxonomy clarified: DUPLICATE is reserved for the dedupe path (soft 200); RATE_LIMITED covers all hard 429 quota rejections (IP, user, protocol cooldown). Fix 6's atomic-guard pseudocode references the new status value. |
+| Dedupe runs after IP-quota check, so an unauth user hitting 3/hour AND double-clicking gets 429 instead of their original `scanId` | P3 | **Deferred to Plan 02** | See §17.4 for rationale. Not fixed in Plan 01: reordering dedupe before quota turns dedupe into a quota-escape hatch, and the decision benefits from real rate-limit traffic patterns that we will only have once Plan 02 wires up the Inngest dispatcher and receives non-demo traffic. |
+
+### 16.8 Spec review cycle complete
+
+Three rounds of Codex review have been completed. All correctness-impacting findings (P1, P2) have been addressed in the spec on `main`. One P3 trade-off is explicitly deferred with documented rationale (§17.4). Further spec revision rounds have diminishing returns relative to implementation-time validation.
+
+**Implementation begins on the `plan-01-scaffold` worktree after the round-3 commit is pushed. No round 4 is scheduled.** Any issue Codex raises after this point is either (a) fixed in the implementation PR on the worktree and reviewed in the end-of-plan Codex pass, or (b) scoped into a later plan if it expands Plan 01 meaningfully.
 
 ## 17. Decisions recap (for traceability)
 
@@ -752,4 +804,29 @@ Two P2 findings from the Codex round 2 review have been addressed in a follow-up
 1. **Consistent cooldown key** — `cooldownKey` now has one format, `${chain}:${normalizedAddress}`, used unchanged across the entire lifecycle of an address (§4.2, §5.1 step 2). The round-1 form that switched to `Protocol.id` once a Protocol row existed is removed; the `pending:` prefix is dropped. The key is computed once from user input and never references `Protocol.id`, so a first-ever submission and any subsequent submission within 10 min share the same cooldown row — closing the race where a rapid follow-up could land on a different key and bypass the cooldown.
 2. **Dedupe before cooldown** — §5.1 reordered so the 5-minute IP + payload dedupe check runs at step 4 (before the Protocol lookup, curated check, and per-protocol cooldown). A legitimate double-click now returns **200** with the existing `scanId` (soft/idempotent) rather than bouncing off the cooldown with a **429** (hard rejection). Explicit "Dedupe vs. cooldown" subsection added to §5.1 documenting the distinct windows (5 vs. 10 min), scopes (client-specific vs. protocol-wide), and response codes (200 vs. 429 + Retry-After).
 
-§16.7 tracks the resolution table for each round; §16.8 lists the expected round-3 targets.
+§16.7 tracks the resolution table for each round.
+
+### 17.3 Post-Codex revision (round 3 fixes)
+
+Four findings from the Codex round 3 review have been addressed in a follow-up commit; a fifth was explicitly deferred (§17.4). This is the **final** spec revision before implementation begins.
+
+1. **Atomic cooldown guard** — §5.1 step 7 rewritten to wrap the cooldown `COUNT(*)` check and the `ACCEPTED` insert in a single Postgres transaction guarded by `pg_advisory_xact_lock(hashtext(cooldownKey))`. Documented as mandatory in §5.1 and §4.2. Closes the P2 race where two concurrent requests for the same address could both pass the count check before either committed an `ACCEPTED` row, producing two parallel scans for the same protocol. Lock is transaction-scoped (auto-released on COMMIT/ROLLBACK); no schema change required.
+2. **`modulesEnabled` in dedupe key** — §5.1 step 2 updated: `payloadHash = sha256(deterministicSerialize({ chain, normalizedAddress, extraContractAddresses, domain, multisigs, modulesEnabled }))`. Deterministic serialization rule specified (alphabetic array sort + fixed-order JSON keys). `modulesEnabled` is deliberately excluded from `cooldownKey` — the cooldown is protocol-level RPC protection, not a per-module throttle.
+3. **`ScanAttempt.scanId` nullability semantics** — §4.2 updated: `scanId` is set when `status IN ('ACCEPTED', 'DUPLICATE')`, NULL otherwise. ACCEPTED points at the new scan; DUPLICATE points at the existing scan returned idempotently by the dedupe path; RATE_LIMITED/INVALID/ERROR stay NULL.
+4. **Protocol cooldown rejection uses `RATE_LIMITED`** — §5.1 step 7 and §4.2 status taxonomy updated. Cooldown rejection row is now `status = RATE_LIMITED, reason = 'protocol_cooldown', scanId = NULL`. `DUPLICATE` is reserved for the dedupe path (soft 200 with existing scanId); `RATE_LIMITED` covers all hard 429 quota rejections (IP hourly, user hourly, protocol cooldown). This aligns with Fix 3 (scanId invariant) and makes Fix 1's atomic-guard pseudocode internally consistent.
+
+§16.7 tracks the per-round resolution table. §16.8 closes the spec review cycle — no round 4 is scheduled.
+
+### 17.4 Known edge cases deferred to Plan 02
+
+**Dedupe runs after the IP rate-limit check.**
+
+Current ordering in §5.1 places the IP-based rate limit (step 3, 3/hour unauth · 10/hour auth) before the payload dedupe (step 4). If an unauthenticated user reaches their 3/hour quota **and** then double-clicks their last accepted submission, the handler returns 429 `ip_hour` instead of an idempotent 200 with the existing `scanId`.
+
+Deferred to Plan 02, not fixed in Plan 01, because:
+
+- **Edge of an edge case**: requires simultaneously hitting quota and producing a double-click. For the Plan 01 traffic profile (demo + small pilot) the expected incidence is zero.
+- **Reordering has a non-local cost**: moving dedupe before quota turns dedupe into a quota escape hatch. A client could avoid the IP limit entirely by re-submitting identical payloads — technically each would hit dedupe instead of the quota counter, and the dedupe's 5-minute TTL would only force a wait, not a real quota. Designing a safe ordering (e.g. dedupe-before-quota-but-still-counted, or a "soft quota window" that allows idempotent reads) deserves careful thought, not a spec patch.
+- **Implementation surface is in Plan 02**: once Inngest is wired up and we observe real rate-limit traffic patterns, the right ordering becomes an informed call rather than a guess. Plan 02 will revisit with data.
+
+Documented here so the decision is explicit rather than accidental. Not a bug in Plan 01 — a known deferred trade-off.
