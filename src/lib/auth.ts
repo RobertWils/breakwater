@@ -19,6 +19,13 @@ export const authOptions: NextAuthOptions = {
     EmailProvider({
       from: fromEmail,
       sendVerificationRequest: async ({ identifier, url, provider }) => {
+        // Production safety rail; integration coverage lands in C.5.
+        if (process.env.NODE_ENV === "production" && !resend) {
+          throw new Error(
+            "[auth] RESEND_API_KEY is required in production. Magic link delivery cannot proceed.",
+          );
+        }
+
         const devMode =
           !resend ||
           (process.env.NODE_ENV === "development" &&
