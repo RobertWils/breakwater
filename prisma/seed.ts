@@ -2,11 +2,17 @@ import { PrismaClient, Chain, OwnershipStatus, Grade } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
+// Production detection across deployment platforms.
+// - NODE_ENV: standard Node.js convention
+// - VERCEL_ENV: Vercel's environment indicator (production | preview | development)
+// - RAILWAY_ENVIRONMENT_NAME: Railway's environment name per official docs
+//   https://docs.railway.com/variables/reference (note: NOT RAILWAY_ENVIRONMENT,
+//   which is a common mistake — that variable does not exist)
 function assertNotProduction() {
   const isProduction =
     process.env.NODE_ENV === "production" ||
     process.env.VERCEL_ENV === "production" ||
-    process.env.RAILWAY_ENVIRONMENT === "production";
+    process.env.RAILWAY_ENVIRONMENT_NAME === "production";
 
   if (!isProduction) return;
 
@@ -16,7 +22,7 @@ function assertNotProduction() {
   }
 
   console.error(
-    "Seed blocked: NODE_ENV/VERCEL_ENV/RAILWAY_ENVIRONMENT indicates production.\n" +
+    "Seed blocked: NODE_ENV/VERCEL_ENV/RAILWAY_ENVIRONMENT_NAME indicates production.\n" +
       "Seeding is dev/preview only. For production metadata changes, write an explicit migration.\n" +
       "Override with FORCE_SEED=1 if this is intentional.",
   );
