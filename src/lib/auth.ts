@@ -1,4 +1,4 @@
-import type { NextAuthOptions } from "next-auth";
+import type { NextAuthOptions, EventCallbacks } from "next-auth";
 import { PrismaAdapter } from "@auth/prisma-adapter";
 import EmailProvider from "next-auth/providers/email";
 import { prisma } from "@/lib/prisma";
@@ -10,6 +10,7 @@ import {
   assertProductionConfig,
   shouldUseSignupUnlockTemplate,
 } from "@/lib/resend";
+import { linkAnonymousScans } from "@/lib/scan-linking";
 
 export const authOptions: NextAuthOptions = {
   adapter: PrismaAdapter(prisma),
@@ -82,4 +83,37 @@ export const authOptions: NextAuthOptions = {
   pages: {
     verifyRequest: "/auth/verify-request",
   },
+  callbacks: {
+    async signIn() {
+      return true;
+    },
+    async session({ session, user }) {
+      if (session.user && user) {
+        session.user.id = user.id;
+        session.user.organizationId = user.organizationId ?? null;
+      }
+      return session;
+    },
+  },
+  events: {
+    signIn: signInEvent,
+  },
 };
+
+export async function signInEvent(
+  message: Parameters<EventCallbacks["signIn"]>[0],
+): Promise<void> {
+  const { user } = message;
+  try {
+    await linkAnonymousScans({
+      userId: user.id,
+      userEmail: user.email,
+    });
+  } catch (err) {
+    console.error(
+      "[auth] Failed to link anonymous scans for user",
+      user.id,
+      err,
+    );
+  }
+}
