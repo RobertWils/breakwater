@@ -188,7 +188,7 @@ model ScanAttempt {
   userAgent        String
   inputPayloadHash String
   cooldownKey      String // always ${chain}:${normalizedAddress} — NEVER Protocol.id; Phase D uses pg_advisory_xact_lock(hashtext(cooldownKey)) for atomic cooldown
-  scanId           String? // set when status IN ('ACCEPTED', 'DUPLICATE')
+  scanId           String?
   scan             Scan?             @relation(fields: [scanId], references: [id])
 
   @@index([ipHash, attemptedAt])
