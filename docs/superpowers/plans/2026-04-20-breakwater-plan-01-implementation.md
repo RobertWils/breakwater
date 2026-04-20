@@ -852,6 +852,8 @@ Wait for Vercel preview to redeploy successfully.
 
 Spec references: §6 (auth flow), §6.1 (NextAuth config), §6.2 (email templates).
 
+> **Env var scoping note (A.3 fallout):** Vercel CLI 51.8.0 in non-interactive mode forces Preview env vars to be scoped to a specific git branch. The A.3 vars are all scoped to `plan-01-scaffold`. When C.1 adds `RESEND_API_KEY` (live value, replacing the `PLACEHOLDER_SET_IN_C1` placeholder) and updates `NEXTAUTH_URL`, scope them to `plan-01-scaffold` too. If a future task creates a new feature branch, the env vars must be propagated to that branch explicitly (either re-add via CLI or widen the scope via the Vercel dashboard to "all Preview branches"). Assume branch-scoped until explicitly widened.
+
 - [ ] **Step 1: Install dependencies**
 
 ```bash
