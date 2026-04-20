@@ -2,7 +2,30 @@ import { PrismaClient, Chain, OwnershipStatus, Grade } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
+function assertNotProduction() {
+  const isProduction =
+    process.env.NODE_ENV === "production" ||
+    process.env.VERCEL_ENV === "production" ||
+    process.env.RAILWAY_ENVIRONMENT === "production";
+
+  if (!isProduction) return;
+
+  if (process.env.FORCE_SEED === "1") {
+    console.warn("FORCE_SEED=1 set — proceeding with production seed.");
+    return;
+  }
+
+  console.error(
+    "Seed blocked: NODE_ENV/VERCEL_ENV/RAILWAY_ENVIRONMENT indicates production.\n" +
+      "Seeding is dev/preview only. For production metadata changes, write an explicit migration.\n" +
+      "Override with FORCE_SEED=1 if this is intentional.",
+  );
+  process.exit(1);
+}
+
 async function main() {
+  assertNotProduction();
+
   const seeds = [
     {
       slug: "aave-v3-ethereum",
