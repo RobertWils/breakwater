@@ -6,3 +6,284 @@ datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
+
+enum OrganizationKind {
+  SYSTEM
+  USER
+}
+
+enum Chain {
+  ETHEREUM
+  SOLANA
+}
+
+enum OwnershipStatus {
+  CURATED
+  UNCLAIMED
+  CLAIMED
+}
+
+enum ScanStatus {
+  QUEUED
+  RUNNING
+  PARTIAL_COMPLETE
+  COMPLETE
+  FAILED
+  EXPIRED
+}
+
+enum ScanAttemptStatus {
+  ACCEPTED
+  RATE_LIMITED
+  INVALID
+  ERROR
+  DUPLICATE
+}
+
+enum ModuleName {
+  GOVERNANCE
+  ORACLE
+  SIGNER
+  FRONTEND
+}
+
+enum ModuleStatus {
+  QUEUED
+  RUNNING
+  COMPLETE
+  FAILED
+  SKIPPED
+}
+
+enum Severity {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+  INFO
+}
+
+enum Grade {
+  A
+  B
+  C
+  D
+  F
+}
+
+enum ClaimMethod {
+  SIGN_MESSAGE
+  ENS
+  DNS_TXT
+}
+
+enum ClaimStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum SubscriptionTier {
+  FREE
+  PAID
+}
+
+model Organization {
+  id            String           @id @default(cuid())
+  name          String
+  kind          OrganizationKind
+  users         User[]
+  protocols     Protocol[]
+  claims        ProtocolClaim[]
+  subscriptions Subscription[]
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+}
+
+model User {
+  id             String        @id @default(cuid())
+  email          String        @unique
+  emailVerified  DateTime? // EXACT field name required by @auth/prisma-adapter; DO NOT RENAME
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id])
+  scans          Scan[]
+  scanAttempts   ScanAttempt[]
+  accounts       Account[]
+  sessions       Session[]
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+}
+
+model Protocol {
+  id                     String          @id @default(cuid())
+  slug                   String          @unique
+  displayName            String
+  chain                  Chain
+  primaryContractAddress String
+  extraContractAddresses Json            @default("[]")
+  domain                 String?
+  logoUrl                String?
+  ownershipStatus        OwnershipStatus
+  organizationId         String?
+  organization           Organization?   @relation(fields: [organizationId], references: [id])
+  knownMultisigs         Json            @default("[]")
+  expectedRiskProfile    Grade?
+  latestDemoScanId       String?
+  latestDemoScan         Scan?           @relation("ProtocolLatestDemoScan", fields: [latestDemoScanId], references: [id])
+  scans                  Scan[]          @relation("ProtocolScans")
+  claims                 ProtocolClaim[]
+  createdAt              DateTime        @default(now())
+  updatedAt              DateTime        @updatedAt
+
+  @@unique([chain, primaryContractAddress])
+}
+
+model ProtocolClaim {
+  id             String       @id @default(cuid())
+  protocolId     String
+  protocol       Protocol     @relation(fields: [protocolId], references: [id])
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  proofMethod    ClaimMethod
+  proofData      Json
+  status         ClaimStatus  @default(PENDING)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+}
+
+model Scan {
+  id                    String        @id @default(uuid())
+  protocolId            String
+  protocol              Protocol      @relation("ProtocolScans", fields: [protocolId], references: [id])
+  latestDemoForProtocol Protocol[]    @relation("ProtocolLatestDemoScan")
+  submittedByUserId     String?
+  submittedByUser       User?         @relation(fields: [submittedByUserId], references: [id])
+  submittedEmail        String?
+  submittedEmailHash    String?
+  ipHash                String
+  userAgent             String
+  status                ScanStatus    @default(QUEUED)
+  compositeScore        Int?
+  compositeGrade        Grade?
+  isPartialGrade        Boolean       @default(false)
+  expiresAt             DateTime
+  createdAt             DateTime      @default(now())
+  completedAt           DateTime?
+  modules               ModuleRun[]
+  findings              Finding[]
+  scanAttempts          ScanAttempt[]
+
+  @@index([submittedEmail])
+  @@index([expiresAt])
+}
+
+model ScanAttempt {
+  id               String            @id @default(cuid())
+  ipHash           String
+  userId           String?
+  user             User?             @relation(fields: [userId], references: [id])
+  attemptedAt      DateTime          @default(now())
+  status           ScanAttemptStatus
+  reason           String
+  userAgent        String
+  inputPayloadHash String
+  cooldownKey      String // always ${chain}:${normalizedAddress} — NEVER Protocol.id; Phase D uses pg_advisory_xact_lock(hashtext(cooldownKey)) for atomic cooldown
+  scanId           String? // set when status IN ('ACCEPTED', 'DUPLICATE')
+  scan             Scan?             @relation(fields: [scanId], references: [id])
+
+  @@index([ipHash, attemptedAt])
+  @@index([userId, attemptedAt])
+  @@index([inputPayloadHash, ipHash, attemptedAt])
+  @@index([cooldownKey, attemptedAt])
+}
+
+model ModuleRun {
+  id               String       @id @default(cuid())
+  scanId           String
+  scan             Scan         @relation(fields: [scanId], references: [id])
+  module           ModuleName
+  status           ModuleStatus @default(QUEUED)
+  grade            Grade?
+  score            Int?
+  findingsCount    Int?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  attemptCount     Int          @default(0)
+  errorMessage     String?
+  errorStack       String?
+  detectorVersions Json
+  inputSnapshot    Json
+  rpcCallsUsed     Int          @default(0)
+  idempotencyKey   String       @unique
+  findings         Finding[]
+
+  @@unique([scanId, module])
+}
+
+model Finding {
+  id                  String     @id @default(cuid())
+  scanId              String
+  scan                Scan       @relation(fields: [scanId], references: [id])
+  moduleRunId         String
+  moduleRun           ModuleRun  @relation(fields: [moduleRunId], references: [id])
+  module              ModuleName
+  severity            Severity
+  publicTitle         String
+  title               String
+  description         String
+  evidence            Json
+  affectedComponent   String
+  references          Json
+  remediationHint     String
+  remediationDetailed String
+  publicRank          Int
+  detectorId          String
+  detectorVersion     Int
+  createdAt           DateTime   @default(now())
+
+  @@index([scanId, module])
+}
+
+model Subscription {
+  id             String           @id @default(cuid())
+  organizationId String
+  organization   Organization     @relation(fields: [organizationId], references: [id])
+  tier           SubscriptionTier @default(FREE)
+  status         String
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expires      DateTime
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
