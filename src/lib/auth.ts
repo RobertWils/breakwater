@@ -17,7 +17,7 @@ export const authOptions: NextAuthOptions = {
   providers: [
     EmailProvider({
       from: fromEmail,
-      sendVerificationRequest: async ({ identifier, url, provider }) => {
+      sendVerificationRequest: async ({ identifier, url }) => {
         assertProductionConfig();
 
         if (isDevMode()) {
@@ -44,9 +44,21 @@ export const authOptions: NextAuthOptions = {
               subject: "Sign in to Breakwater",
             };
 
+        // Narrowing: assertProductionConfig + isDevMode guarantee `resend`
+        // is non-null here, but TypeScript can't follow that cross-file
+        // invariant. A local check makes the assumption explicit and
+        // surfaces any future flow-control regression loudly instead of
+        // crashing on a null read.
+        const client = resend;
+        if (!client) {
+          throw new Error(
+            "[auth] Resend client unexpectedly null after production/dev checks. This indicates a bug in resend.ts or auth.ts flow control.",
+          );
+        }
+
         try {
-          const result = await resend!.emails.send({
-            from: provider.from,
+          const result = await client.emails.send({
+            from: fromEmail,
             to: identifier,
             subject,
             html,

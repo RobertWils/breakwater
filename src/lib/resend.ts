@@ -4,6 +4,8 @@ export const resend = process.env.RESEND_API_KEY
   ? new Resend(process.env.RESEND_API_KEY)
   : null;
 
+// Module-level (not Strategy B): fromEmail is static per deploy and
+// doesn't need runtime re-evaluation the way the devMode checks do.
 export const fromEmail =
   process.env.EMAIL_FROM ?? "Breakwater <noreply@breakwater.local>";
 
