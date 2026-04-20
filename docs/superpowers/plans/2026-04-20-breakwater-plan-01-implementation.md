@@ -1318,6 +1318,37 @@ git push
 
 ---
 
+## Phase C completion summary (2026-04-20)
+
+Phase C shipped as 5 sub-tasks across ~10 commits. All 35 tests green, `pnpm build` clean, Lighthouse thresholds met on all three audited pages.
+
+**What shipped:**
+- **C.1** — NextAuth v4 + PrismaAdapter wired; `/api/auth/[...nextauth]` route; database session strategy; verified E2E by Robert (magic link flow end-to-end, `/api/auth/session`, Prisma Studio). (commit `bfc007b`)
+- **C.2** — Resend magic-link delivery path; single `magic-link.tsx` template; dev console fallback; production guard that throws when `NODE_ENV=production && !resend`. (commit `18ae68b`)
+- **C.3** — Dual email templates (signin vs signup-unlock); `src/lib/resend.ts` module extraction; `shouldUseSignupUnlockTemplate` URL-parsing heuristic; Storm Cyan palette in `_layout.tsx`. (commits `396cadf`, `2ba65d4`)
+- **C.4** — Post-auth callbacks; `src/lib/scan-linking.ts` with `linkAnonymousScans`; `events.signIn` → `signInEvent`; NextAuth type augmentation for `session.user.id` + `organizationId`; discriminated-union `LinkResult` return shape; `submittedByUserId IS NULL` guard. (commit `f6ebdcc`, refined in `1abf804`)
+- **C.5** — Integration test covering the three signInEvent scan-linking scenarios (single scan linked, multiple scans linked in one pass, other-user scans not rebound); Lighthouse audit of `/`, `/api/auth/signin`, `/auth/verify-request`. (commits added in this slice.)
+
+**Codex review rounds during Phase C:**
+- Round 1 (on C.3): email-verified field on session augmentation, curated protocol protection hint, normalized cooldown key. (commit `f31473b`)
+- Round 2 (on C.4): consistent cooldown key, dedupe-before-cooldown ordering clarified. (commit `f17e972`)
+- Round 3 (on C.4): atomic cooldown, module dedupe key, ScanAttempt invariants; quota/dedupe ordering formally deferred to Plan 02. (commit `04423df`)
+Cross-reference the status file (`docs/superpowers/plans/2026-04-20-breakwater-plan-01-status.md`) for round-by-round SHAs.
+
+**Known deferrals to Plan 02:**
+- **90-day TTL cron** for Scan rows — schema has `expiresAt` + index, but no reaper job yet. Plan 02 adds a Vercel cron.
+- **Protocol personalization hook** in the signup-unlock email — C.3 comment at `src/lib/auth.ts` marks the extraction point; `shouldUseSignupUnlockTemplate` recognises the URL shape but template receives only `{ url }` today.
+- **Email re-verification** (periodic proof-of-email-control) — Plan 02.
+- **Scan-submission symmetry integration test** — paired test that exercises the "anonymous scan POST → later sign-in → link" flow once Phase D ships the POST endpoint. C.5's integration test covers only the signInEvent half (the scan-linking half); the submission half lands with Phase D.
+- **Scan-linking idempotency test** — current integration suite shows the WHERE clause's `submittedByUserId: null` naturally prevents double-linking, but there's no explicit "run twice, linked count stays stable" scenario. Low-risk; re-check in Plan 02 if the flow grows a retry mechanism.
+
+**Performance baseline:**
+See `docs/performance/2026-04-20-phase-c-lighthouse.md` for the full scores. Summary: homepage 98/100/100/100, NextAuth default signin 100/91/100/90 (a11y passes hard gate; Phase F replaces this UI with a branded page), verify-request 99/100/100/100. Audit run against the local production build (`pnpm build` + `pnpm start`) because the Vercel preview aliases point at pre-C.3 deploys — localhost is a conservative lower bound vs Vercel's edge network.
+
+**Ready for Codex review on full Phase C.**
+
+---
+
 ## Phase D — Scan API (3 commits)
 
 **Goal:** `POST /api/scan` implements the full lookup-first flow per §5.1 including the atomic cooldown guard, `GET /api/scan/:id` returns a scan with server-side finding visibility gating per §5.3. Unit tests cover all pure helpers (hash, normalize, dedupe serialization, scoring); an integration test covers the end-to-end happy path and at least the curated and cooldown rejection branches.
