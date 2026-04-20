@@ -24,7 +24,11 @@ Plan file aligned with this re-scope in commit e9cad07 (Revision log at bottom o
   - Post-implementation env var fix: renamed `RESEND_FROM_EMAIL` → `EMAIL_FROM` in `src/lib/auth.ts`, `.env.example`, and the plan file (A.2/A.3/C.2/Phase H) to match spec §9 (source of truth). Plan drift corrected; revision log entry added.
   - Post-implementation safety rail: `sendVerificationRequest` now throws when `NODE_ENV=production && !resend` instead of silently falling back to console.log (plan §C.2 Step 2 specified this throw; C.2 as shipped had the check only on the dev-fallback branch). Unit test skipped — module-level `resend` init + Prisma import make isolated re-import impractical; integration coverage lands in C.5.
   - Deferred to C.3: Plan §C.2 Step 2 specified creating `src/lib/resend.ts` (Resend client + `fromEmail` export). C.2 ships with these inline in `src/lib/auth.ts` instead. C.3 rewrites `sendVerificationRequest` for dual templates and is the natural moment to split Resend client + `fromEmail` into a dedicated module.
-- [ ] C.3: Dual email templates (signin vs signup-unlock)
+- [x] C.3: Dual email templates (signin vs signup-unlock) — commits 396cadf + 2ba65d4.
+  - Part 1 (396cadf): `src/lib/resend.ts` created with `resend` client, `fromEmail`, `isDevMode()`, `assertProductionConfig()`, `shouldUseSignupUnlockTemplate()`. All re-read `process.env` at call time (Strategy B) for testability. `src/lib/auth.ts` updated to import from `@/lib/resend`; all inline Resend code removed.
+  - Part 2 (2ba65d4): `src/emails/_layout.tsx` shared layout (Storm Cyan palette, single `colors` const). `src/emails/magic-link-signin.tsx` and `src/emails/magic-link-signup-unlock.tsx` created. `src/lib/email.ts` replaced with `renderSigninEmail` + `renderSignupUnlockEmail`. Template selection in `sendVerificationRequest` parses `callbackUrl` from magic-link URL; uses signup-unlock template when `/scan/` + `unlock=true` present, signin otherwise. Plan 02 comment marks protocol personalization hook. Old `magic-link.tsx` + test deleted.
+  - 23 tests total (4 signin template, 5 signup-unlock template, 7 resend module, 6 template-selection, 1 pre-existing). All green. `pnpm build` clean.
+  - Manual E2E pending Robert: (1) normal signin → signin template; (2) `http://localhost:3000/api/auth/signin?callbackUrl=%2Fscan%2Ftest-id%3Funlock%3Dtrue` → signup-unlock template.
 - [ ] C.4: Post-auth callback + anonymous scan linking
 - [ ] C.5: End-to-end auth test + Lighthouse check
 
