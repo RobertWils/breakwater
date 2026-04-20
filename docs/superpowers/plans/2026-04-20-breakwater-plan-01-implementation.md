@@ -837,28 +837,122 @@ Wait for Vercel preview to redeploy successfully.
 
 ---
 
-## Phase C — Auth pipeline (2 commits)
+## Phase C — Auth pipeline (5 commits, re-scoped from original 2 — see Revision log)
 
 **Goal:** Magic-link auth works end-to-end. An unauthenticated user who submits `submittedEmail` with a scan, then later visits the magic-link URL, ends up with an account and their prior anonymous scans linked by email match.
 
 **Risk:** Resend delivery fails (sandbox domain, invalid API key, DNS) and auth flow can't be tested. Or the NextAuth Prisma adapter silently mis-matches on a field name (e.g., `emailVerifiedAt` vs `emailVerified`).
-**Rollback:** If Resend is blocking, use the NextAuth `EmailProvider` with a console-logging `sendVerificationRequest` override (logs the magic-link URL to the terminal). This keeps Phase C testable without a working email pipeline. Resend integration can be finalized in Phase H before the PR.
+**Rollback:** C.1 ships with a console-log `sendVerificationRequest`, so the auth foundation is validated before Resend ever enters the picture. If C.2 Resend wiring blocks, the console-log path from C.1 remains available via the `!RESEND_API_KEY` guard for local testing until the delivery issue is resolved.
 
-### Task C.1 — NextAuth + Prisma adapter + Resend provider
+**Re-scope rationale (2026-04-20):** Original Phase C was two bundles (C.1 = NextAuth + Resend + both email templates + scanLinking stub; C.2 = integration test + E2E). That's too coarse for a clean Codex round — if anything breaks, it's unclear whether the failure is in the adapter wiring, Resend, template rendering, or the callback. Split into 5 sub-tasks so the auth foundation (C.1) can be validated before email delivery, templating, and post-auth callbacks are layered on top.
+
+### Task C.1 — NextAuth config skeleton + Prisma adapter (dev console-log magic link)
+
+**Scope:** Wire NextAuth with the Prisma adapter and a console-log `sendVerificationRequest`. No Resend, no email templates, no scan-linking. This slice should build cleanly and `/api/auth/signin` → submit email → paste the console URL → signed-in flow should work entirely offline.
 
 **Files:**
-- Create: `src/lib/auth.ts`, `src/app/api/auth/[...nextauth]/route.ts`, `src/lib/resend.ts`, `src/emails/SigninEmail.tsx`, `src/emails/SignupUnlockEmail.tsx`
-- Modify: `.env.example`, `package.json`
+- Create: `src/lib/auth.ts`, `src/app/api/auth/[...nextauth]/route.ts`, `src/app/auth/verify-request/page.tsx`
+- Modify: `package.json`, `pnpm-lock.yaml` (deps: `next-auth@4`, `@auth/prisma-adapter`)
 
-Spec references: §6 (auth flow), §6.1 (NextAuth config), §6.2 (email templates).
+Spec references: §6 (auth flow), §6.1 (NextAuth config — skeleton slice).
 
-> **Env var scoping note (A.3 fallout):** Vercel CLI 51.8.0 in non-interactive mode forces Preview env vars to be scoped to a specific git branch. The A.3 vars are all scoped to `plan-01-scaffold`. When C.1 adds `RESEND_API_KEY` (live value, replacing the `PLACEHOLDER_SET_IN_C1` placeholder) and updates `NEXTAUTH_URL`, scope them to `plan-01-scaffold` too. If a future task creates a new feature branch, the env vars must be propagated to that branch explicitly (either re-add via CLI or widen the scope via the Vercel dashboard to "all Preview branches"). Assume branch-scoped until explicitly widened.
+> **Env var scoping note (A.3 fallout):** Vercel CLI 51.8.0 in non-interactive mode forces Preview env vars to be scoped to a specific git branch. The A.3 vars are all scoped to `plan-01-scaffold`. When later C tasks add `RESEND_API_KEY` / update `NEXTAUTH_URL`, scope them to `plan-01-scaffold` too. Assume branch-scoped until explicitly widened.
 
-- [ ] **Step 1: Install dependencies**
+- [ ] **Step 1: Install NextAuth + Prisma adapter**
 
 ```bash
-pnpm add next-auth@4 @auth/prisma-adapter resend @react-email/components
-pnpm add -D @types/node
+pnpm add next-auth@4 @auth/prisma-adapter
+```
+Expected: `next-auth@^4.24.x` and `@auth/prisma-adapter@^1.x` in `package.json` dependencies. Resend and `@react-email/components` are deferred to C.2/C.3.
+
+- [ ] **Step 2: Write `src/lib/auth.ts` (skeleton)**
+
+Reference-only: `~/svh-hub/src/lib/auth.ts` for the NextAuth + adapter pattern shape. Do not import from it. Write fresh — keep the skeleton minimal: no Resend, no emails/, no scanLinking, no `events.signIn`. `sendVerificationRequest` just logs to the dev console.
+
+```ts
+import type { NextAuthOptions } from "next-auth";
+import { PrismaAdapter } from "@auth/prisma-adapter";
+import EmailProvider from "next-auth/providers/email";
+import { prisma } from "@/lib/prisma";
+
+const fromEmail =
+  process.env.RESEND_FROM_EMAIL ?? "Breakwater <noreply@breakwater.local>";
+
+export const authOptions: NextAuthOptions = {
+  adapter: PrismaAdapter(prisma),
+  session: { strategy: "database" },
+  providers: [
+    EmailProvider({
+      from: fromEmail,
+      sendVerificationRequest: async ({ identifier, url }) => {
+        console.log(`[auth] (dev) magic link for ${identifier}: ${url}`);
+      },
+      maxAge: 24 * 60 * 60,
+    }),
+  ],
+  pages: {
+    verifyRequest: "/auth/verify-request",
+  },
+};
+```
+
+- [ ] **Step 3: Write `src/app/api/auth/[...nextauth]/route.ts`**
+
+```ts
+import NextAuth from "next-auth";
+import { authOptions } from "@/lib/auth";
+
+const handler = NextAuth(authOptions);
+export { handler as GET, handler as POST };
+```
+
+- [ ] **Step 4: Write `src/app/auth/verify-request/page.tsx`**
+
+```tsx
+export default function VerifyRequestPage() {
+  return (
+    <main style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", padding: 32, textAlign: "center" }}>
+      <h1>Check your email</h1>
+      <p>A sign-in link has been sent to your inbox. The link expires in 24 hours.</p>
+    </main>
+  );
+}
+```
+
+- [ ] **Step 5: Build + dev sanity check**
+
+```bash
+pnpm build
+```
+Expected: builds cleanly.
+
+```bash
+pnpm dev
+```
+Navigate to `http://localhost:3000/api/auth/signin`. Submit an email. Watch the terminal for `[auth] (dev) magic link for <email>: http://localhost:3000/api/auth/callback/email?...`. Paste that URL into the browser — NextAuth sets a session cookie and redirects you. Verify via `pnpm prisma studio`: `User` row with matching email, `Session` row linked to that user, `VerificationToken` row cleared (one-shot).
+
+- [ ] **Step 6: Commit + push**
+
+```bash
+git add -A
+git commit -m "C.1: NextAuth v4 skeleton with Prisma adapter + dev console-log magic link"
+git push
+```
+
+### Task C.2 — Resend integration + production magic-link delivery
+
+**Scope:** Replace the console-log `sendVerificationRequest` with a real Resend send. Use a minimal plain-HTML email for now — dual templates land in C.3. The `!process.env.RESEND_API_KEY` fallback keeps the console path available for local work without network.
+
+**Files:**
+- Create: `src/lib/resend.ts`
+- Modify: `src/lib/auth.ts`, `.env` (local `RESEND_API_KEY`)
+
+Spec references: §6.1 (production send path).
+
+- [ ] **Step 1: Install Resend SDK**
+
+```bash
+pnpm add resend
 ```
 
 - [ ] **Step 2: Write `src/lib/resend.ts`**
@@ -878,11 +972,73 @@ export const resend = new Resend(process.env.RESEND_API_KEY ?? "dev-noop");
 export const fromEmail = process.env.RESEND_FROM_EMAIL ?? "Breakwater <noreply@breakwater.local>";
 ```
 
-- [ ] **Step 3: Write email templates**
+- [ ] **Step 3: Update `src/lib/auth.ts` — replace console-log with Resend send (minimal HTML)**
+
+Replace the local `fromEmail` constant with an import from `@/lib/resend`, and swap the skeleton `sendVerificationRequest` for:
+
+```ts
+import { resend, fromEmail } from "@/lib/resend";
+
+// inside EmailProvider:
+sendVerificationRequest: async ({ identifier, url }) => {
+  if (!process.env.RESEND_API_KEY) {
+    console.log(`[auth] (dev) magic link for ${identifier}: ${url}`);
+    return;
+  }
+  await resend.emails.send({
+    from: fromEmail,
+    to: identifier,
+    subject: "Sign in to Breakwater",
+    html: `<p>Click to sign in: <a href="${url}">${url}</a></p><p>This link expires in 24 hours.</p>`,
+  });
+},
+```
+
+- [ ] **Step 4: Add `RESEND_API_KEY` to local `.env` and Vercel Preview (scoped `plan-01-scaffold`)**
+
+```bash
+# local
+printf 'RESEND_API_KEY="re_..."\n' >> .env
+
+# Vercel (branch-scoped per A.3)
+vercel env add RESEND_API_KEY preview --git-branch plan-01-scaffold
+```
+
+- [ ] **Step 5: Build + manual E2E with real delivery**
+
+```bash
+pnpm build && pnpm dev
+```
+Navigate to `/api/auth/signin`, submit a real email, confirm inbox receipt, click magic link, verify signed-in state.
+
+- [ ] **Step 6: Commit + push**
+
+```bash
+git add -A
+git commit -m "C.2: Wire Resend for production magic-link delivery (minimal HTML)"
+git push
+```
+
+### Task C.3 — Dual email templates (signin vs signup-unlock)
+
+**Scope:** Replace the minimal plain HTML from C.2 with two React Email templates. `sendVerificationRequest` picks between them based on whether a pending anonymous scan exists for the email address (signup-unlock mode) or not (signin mode).
+
+**Files:**
+- Create: `src/emails/SigninEmail.tsx`, `src/emails/SignupUnlockEmail.tsx`
+- Modify: `src/lib/auth.ts`
+
+Spec references: §6.2 (dual template modes).
+
+- [ ] **Step 1: Install `@react-email/components`**
+
+```bash
+pnpm add @react-email/components
+```
+
+- [ ] **Step 2: Write `src/emails/SigninEmail.tsx`**
 
 Reference-only: `~/svh-hub/src/emails/*` if it exists — read one as a structural pattern, then write Breakwater templates fresh with Breakwater copy.
 
-`src/emails/SigninEmail.tsx` — for users signing back in (§6.2 "signin" mode):
 ```tsx
 import { Html, Head, Body, Container, Heading, Text, Button, Hr } from "@react-email/components";
 
@@ -910,7 +1066,8 @@ export function SigninEmail({ magicLink }: { magicLink: string }) {
 }
 ```
 
-`src/emails/SignupUnlockEmail.tsx` — for users unlocking scan findings (§6.2 "signup_unlock" mode):
+- [ ] **Step 3: Write `src/emails/SignupUnlockEmail.tsx`**
+
 ```tsx
 import { Html, Head, Body, Container, Heading, Text, Button, Hr } from "@react-email/components";
 
@@ -938,73 +1095,62 @@ export function SignupUnlockEmail({ magicLink, protocolName }: { magicLink: stri
 }
 ```
 
-- [ ] **Step 4: Write `src/lib/auth.ts`**
+- [ ] **Step 4: Update `src/lib/auth.ts` — branch between templates**
 
-Reference-only: `~/svh-hub/src/lib/auth.ts` for the NextAuth+adapter+Resend pattern shape. Do not import from it. Write fresh:
+Replace C.2's minimal HTML `sendVerificationRequest` with the branching version:
 
 ```ts
-import type { NextAuthOptions } from "next-auth";
-import { PrismaAdapter } from "@auth/prisma-adapter";
-import EmailProvider from "next-auth/providers/email";
 import { render } from "@react-email/render";
-import { prisma } from "@/lib/prisma";
-import { resend, fromEmail } from "@/lib/resend";
 import { SigninEmail } from "@/emails/SigninEmail";
 import { SignupUnlockEmail } from "@/emails/SignupUnlockEmail";
-import { linkAnonymousScans } from "@/lib/scanLinking";
 
-export const authOptions: NextAuthOptions = {
-  adapter: PrismaAdapter(prisma),
-  session: { strategy: "database" },
-  providers: [
-    EmailProvider({
-      from: fromEmail,
-      sendVerificationRequest: async ({ identifier: email, url }) => {
-        const pendingScan = await prisma.scan.findFirst({
-          where: { submittedEmail: email.toLowerCase(), submittedByUserId: null },
-          orderBy: { createdAt: "desc" },
-          include: { protocol: true },
-        });
+// inside EmailProvider:
+sendVerificationRequest: async ({ identifier: email, url }) => {
+  const pendingScan = await prisma.scan.findFirst({
+    where: { submittedEmail: email.toLowerCase(), submittedByUserId: null },
+    orderBy: { createdAt: "desc" },
+    include: { protocol: true },
+  });
 
-        const isUnlock = !!pendingScan;
-        const html = isUnlock
-          ? render(SignupUnlockEmail({ magicLink: url, protocolName: pendingScan!.protocol.displayName }))
-          : render(SigninEmail({ magicLink: url }));
-        const subject = isUnlock ? `Your Breakwater scan is ready` : `Sign in to Breakwater`;
+  const isUnlock = !!pendingScan;
+  const html = isUnlock
+    ? render(SignupUnlockEmail({ magicLink: url, protocolName: pendingScan!.protocol.displayName }))
+    : render(SigninEmail({ magicLink: url }));
+  const subject = isUnlock ? `Your Breakwater scan is ready` : `Sign in to Breakwater`;
 
-        if (!process.env.RESEND_API_KEY) {
-          console.log(`[auth] (dev) magic link for ${email}: ${url}`);
-          return;
-        }
+  if (!process.env.RESEND_API_KEY) {
+    console.log(`[auth] (dev) magic link for ${email} (${isUnlock ? "unlock" : "signin"}): ${url}`);
+    return;
+  }
 
-        await resend.emails.send({ from: fromEmail, to: email, subject, html });
-      },
-      maxAge: 24 * 60 * 60,
-    }),
-  ],
-  events: {
-    async signIn({ user }) {
-      if (!user.email) return;
-      await linkAnonymousScans({ email: user.email, userId: user.id });
-    },
-  },
-  pages: {
-    verifyRequest: "/auth/verify-request",
-  },
-};
+  await resend.emails.send({ from: fromEmail, to: email, subject, html });
+},
 ```
 
-- [ ] **Step 5: Write `src/app/api/auth/[...nextauth]/route.ts`**
+- [ ] **Step 5: Manual E2E — verify both templates**
 
-```ts
-import NextAuth from "next-auth";
-import { authOptions } from "@/lib/auth";
+1. Submit an email with no pending scan → SigninEmail received.
+2. Create a `Scan` with `submittedEmail=<test>` and `submittedByUserId=null`, then sign in → SignupUnlockEmail received with correct `protocolName`.
 
-const handler = NextAuth(authOptions);
-export { handler as GET, handler as POST };
+- [ ] **Step 6: Commit + push**
+
+```bash
+git add -A
+git commit -m "C.3: Add dual email templates (signin vs signup-unlock)"
+git push
 ```
 
-- [ ] **Step 6: Write `src/lib/scanLinking.ts` — placeholder for Task C.2**
+### Task C.4 — Post-auth callback + anonymous scan linking
+
+**Scope:** When a user signs in, retroactively link any prior anonymous scans submitted with the same email to their new user ID.
+
+**Files:**
+- Create: `src/lib/scanLinking.ts`
+- Modify: `src/lib/auth.ts` (add `events.signIn` callback)
+
+Spec references: §6 (post-auth behavior).
+
+- [ ] **Step 1: Write `src/lib/scanLinking.ts`**
 
 ```ts
 import { prisma } from "@/lib/prisma";
@@ -1020,81 +1166,45 @@ export async function linkAnonymousScans({ email, userId }: { email: string; use
 }
 ```
 
-- [ ] **Step 7: Create a minimal `src/app/auth/verify-request/page.tsx`**
+- [ ] **Step 2: Wire `events.signIn` in `src/lib/auth.ts`**
 
-```tsx
-export default function VerifyRequestPage() {
-  return (
-    <main style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", padding: 32, textAlign: "center" }}>
-      <h1>Check your email</h1>
-      <p>A sign-in link has been sent to your inbox. The link expires in 24 hours.</p>
-    </main>
-  );
-}
+```ts
+import { linkAnonymousScans } from "@/lib/scanLinking";
+
+// inside authOptions:
+events: {
+  async signIn({ user }) {
+    if (!user.email) return;
+    await linkAnonymousScans({ email: user.email, userId: user.id });
+  },
+},
 ```
 
-- [ ] **Step 8: Add `RESEND_*` to `.env.example` and local `.env`**
+- [ ] **Step 3: Manual E2E**
 
-Already in `.env.example` from Phase A. Add your actual Resend API key and verified from-address to local `.env`.
+1. Submit a scan with `submittedEmail=<new email>` (anonymous).
+2. Sign in with that email (via NextAuth flow).
+3. Verify `Scan.submittedByUserId` is now set to the new user's ID via Prisma studio.
 
-- [ ] **Step 9: Build + commit**
-
-```bash
-pnpm build
-```
-Expected: builds cleanly.
+- [ ] **Step 4: Commit + push**
 
 ```bash
 git add -A
-git commit -m "Wire NextAuth with Prisma adapter and Resend magic-link provider"
+git commit -m "C.4: Link anonymous scans on sign-in via events.signIn callback"
+git push
 ```
 
-### Task C.2 — Scan-linking test + sign-in E2E
+### Task C.5 — End-to-end auth test + Lighthouse check
+
+**Scope:** Automate the scan-linking logic with an integration test gated on `INTEGRATION_DB` (Vitest is already installed — Phase B Codex round 2b). Run Lighthouse against the verify-request page to catch accessibility regressions from the auth shell. Close out Phase C by documenting ports.
 
 **Files:**
 - Create: `src/lib/scanLinking.test.ts`
-- Modify: `vitest.config.ts`, `package.json`
+- Modify: `PORTS.md` (append Phase C ports table)
 
-- [ ] **Step 1: Install Vitest**
+- [ ] **Step 1: Write `src/lib/scanLinking.test.ts`**
 
-```bash
-pnpm add -D vitest @vitejs/plugin-react jsdom @testing-library/react @testing-library/jest-dom
-```
-
-- [ ] **Step 2: Write `vitest.config.ts`**
-
-```ts
-import { defineConfig } from "vitest/config";
-import react from "@vitejs/plugin-react";
-import path from "node:path";
-
-export default defineConfig({
-  plugins: [react()],
-  resolve: {
-    alias: { "@": path.resolve(__dirname, "./src") },
-  },
-  test: {
-    environment: "jsdom",
-    globals: true,
-    setupFiles: ["./vitest.setup.ts"],
-  },
-});
-```
-
-`vitest.setup.ts`:
-```ts
-import "@testing-library/jest-dom/vitest";
-```
-
-Add script to `package.json`:
-```json
-"test": "vitest run",
-"test:watch": "vitest"
-```
-
-- [ ] **Step 3: Write `src/lib/scanLinking.test.ts`**
-
-This is an integration test that hits the real Prisma client against the Railway dev DB. For CI reliability, gate behind `INTEGRATION_DB` env var. Alternative: use a dedicated test-schema via `prisma migrate deploy --schema=test`.
+Integration test — hits the real Prisma client against the Railway dev DB. Gated behind `INTEGRATION_DB` so unit CI doesn't require a DB.
 
 ```ts
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
@@ -1166,24 +1276,18 @@ describeIf("linkAnonymousScans", () => {
 });
 ```
 
-- [ ] **Step 4: Run the test locally**
+- [ ] **Step 2: Run the test**
 
 ```bash
 INTEGRATION_DB=1 pnpm test src/lib/scanLinking.test.ts
 ```
-Expected: 2 tests pass.
+Expected: 2 passing.
 
-- [ ] **Step 5: Manual E2E sanity check**
+- [ ] **Step 3: Lighthouse audit**
 
-1. `pnpm dev`
-2. Hit `http://localhost:3000/api/auth/signin` — the NextAuth built-in sign-in page appears.
-3. Submit a real email. Check Resend dashboard for the send.
-4. Click the magic link. You should be signed in (NextAuth sets a session cookie).
-5. Verify `User` row exists in Railway via Prisma studio; `Session` row exists.
+Against the Vercel preview (plan-01-scaffold), run Lighthouse mobile on `/auth/verify-request`. Expect Accessibility ≥ 90. Record the score in the commit message; investigate regressions before closing Phase C.
 
-If Resend is unavailable, the dev console prints the magic-link URL — paste it into the browser.
-
-- [ ] **Step 6: Update `PORTS.md`**
+- [ ] **Step 4: Update `PORTS.md`**
 
 Append to the "Phase C ports" section of `PORTS.md`:
 
@@ -1196,20 +1300,21 @@ Append to the "Phase C ports" section of `PORTS.md`:
 | `src/emails/*` (structural) | `src/emails/SigninEmail.tsx`, `SignupUnlockEmail.tsx` | Same React Email component pattern; Breakwater copy and Storm Cyan styling. No SVH template text transferred. |
 ```
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 5: Commit + push**
 
 ```bash
 git add -A
-git commit -m "Add scan-linking event handler with integration tests; document Phase C ports"
+git commit -m "C.5: Scan-linking integration test + Lighthouse audit + Phase C ports"
 git push
 ```
 
 **Phase C exit gate:**
 - `pnpm build` passes
 - `INTEGRATION_DB=1 pnpm test` passes (when run against the dev DB)
-- Magic-link sign-in works end-to-end in local dev (either via Resend or console)
+- Magic-link sign-in works end-to-end in local dev (either via Resend or console fallback)
 - Vercel preview deploy succeeds; `/api/auth/signin` returns the NextAuth UI
-- `PORTS.md` updated
+- Lighthouse mobile on `/auth/verify-request`: Accessibility ≥ 90
+- `PORTS.md` updated with Phase C entries
 
 ---
 
@@ -2925,3 +3030,11 @@ EOF
 - [x] Each phase ends in a green state.
 - [x] Every phase has a risk callout + rollback.
 - [x] SVH Hub references are read-only per PORTS.md policy.
+
+---
+
+## Revision log
+
+Execution-time changes to this plan. The spec on `main` (`docs/superpowers/specs/2026-04-20-breakwater-plan-01-scaffold-design.md`) is frozen and out of scope for this log — if the spec needs to change, open a separate commit against `main` and run it through Codex review first.
+
+- **2026-04-20 — Phase C re-scoped from 2 commits into 5 sub-tasks (C.1–C.5).** Original C.1 bundled NextAuth wiring, Resend integration, both email templates, and the scan-linking stub into a single commit, with C.2 layering the integration test and E2E on top. That's too coarse for a clean Codex round — a regression in any of those layers is hard to isolate. Split so the auth foundation (C.1) ships with a console-log `sendVerificationRequest` and can be validated before Resend (C.2), templates (C.3), post-auth callback (C.4), and automated tests + Lighthouse (C.5) land on top. Status tracker (`docs/superpowers/plans/2026-04-20-breakwater-plan-01-status.md`) updated in commit `7a7b1ba`; this plan file updated in the accompanying commit.
