@@ -8,7 +8,7 @@ Breakwater and SVH Hub are sibling ventures under Singularity Venture Hub. To st
 
 | SVH Hub source | Breakwater target | Rationale |
 | --- | --- | --- |
-| `src/lib/prisma.ts` | `src/lib/prisma.ts` | Same singleton + HMR pattern; Breakwater re-writes with its own log-level defaults. |
+| `src/lib/prisma.ts` | `src/lib/prisma.ts` | Same singleton + HMR pattern, no adaptations. |
 
 ## Phase C ports
 
