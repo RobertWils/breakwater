@@ -1,0 +1,30 @@
+<svg viewBox="0 0 64 32" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="teal-sky" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#14B8A6"/>
+      <stop offset="100%" stop-color="#38BDF8"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Ascending spike (left) -->
+  <path d="M 4 24 L 12 20 L 20 8"
+        stroke="url(#teal-sky)"
+        stroke-width="3"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        fill="none"/>
+
+  <!-- Semantic break marker at peak -->
+  <line x1="24" y1="6" x2="24" y2="14"
+        stroke="url(#teal-sky)"
+        stroke-width="3"
+        stroke-linecap="round"/>
+
+  <!-- Descending spike (right) — different angle, asymmetric -->
+  <path d="M 28 10 L 36 22 L 44 18 L 60 24"
+        stroke="url(#teal-sky)"
+        stroke-width="3"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        fill="none"/>
+</svg>

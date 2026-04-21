@@ -18,7 +18,9 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy",
-    "db:seed": "prisma db seed"
+    "db:seed": "prisma db seed",
+    "generate-favicons": "node scripts/generate-favicons.mjs",
+    "generate-og": "node scripts/generate-og-image.mjs"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
@@ -49,6 +51,7 @@
     "jsdom": "29.0.2",
     "postcss": "^8",
     "prisma": "5.22.0",
+    "sharp": "^0.34.5",
     "tailwindcss": "^3.4.1",
     "tsx": "^4.21.0",
     "typescript": "^5",
