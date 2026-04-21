@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react"
 import { useInView, useMotionValue, animate } from "framer-motion"
+import { ScrollReveal } from "./ScrollReveal"
 
 function CountUp({ to, duration = 1.5 }: { to: number; duration?: number }) {
   const ref = useRef<HTMLSpanElement>(null)
@@ -26,17 +27,20 @@ export function StatsSection() {
   return (
     <section id="stats" className="py-24 border-t border-subtle">
       <div className="container mx-auto px-6 max-w-4xl">
-        <div className="text-center space-y-4">
-          <h2 className="text-4xl md:text-5xl font-semibold text-primary">
-            $<CountUp to={600} />M+ lost to DeFi hacks in 2026
-          </h2>
-          <p className="text-lg text-muted">
-            4 attack patterns dominate the losses
-          </p>
-        </div>
+        <ScrollReveal>
+          <div className="text-center space-y-4">
+            <h2 className="text-4xl md:text-5xl font-semibold text-primary">
+              $<CountUp to={600} />M+ lost to DeFi hacks in 2026
+            </h2>
+            <p className="text-lg text-muted">
+              4 attack patterns dominate the losses
+            </p>
+          </div>
+        </ScrollReveal>
 
-        <div className="mt-10 flex justify-center">
-          <details className="glass-card p-6 w-full max-w-2xl">
+        <ScrollReveal delay={0.2}>
+          <div className="mt-10 flex justify-center">
+            <details className="glass-card p-6 w-full max-w-2xl">
             <summary className="cursor-pointer font-mono text-sm text-teal select-none hover:text-sky transition-colors duration-150">
               How we arrived at $600M+
             </summary>
@@ -88,7 +92,8 @@ export function StatsSection() {
               </p>
             </div>
           </details>
-        </div>
+          </div>
+        </ScrollReveal>
       </div>
     </section>
   )

@@ -135,8 +135,9 @@ export default async function DemoProtocolPage({
           {/* Coming soon placeholder — content discipline §7.2 */}
           <div className="border-t border-subtle pt-6">
             <p className="text-muted text-sm leading-relaxed">
-              Full scan results available in a future release. Plan 01 ships
-              the scanner; graded findings land in Plan 03.
+              Full scan results coming soon. Our detectors are under active
+              development — this protocol will show graded findings in a
+              future release.
             </p>
           </div>
         </div>
