@@ -8,7 +8,7 @@ const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "https://breakwater.vercel.a
 
 export const metadata: Metadata = {
   title: "Breakwater — DeFi Security Monitoring",
-  description: "Continuous security monitoring for DeFi protocols. Governance, oracle, signer, and frontend patterns behind $600M+ in 2026 hacks.",
+  description: "We catch the attacks before they reach shore. The governance, oracle, signer, and frontend patterns behind $600M+ in 2026 DeFi hacks — detected continuously.",
   metadataBase: new URL(siteUrl),
   icons: {
     icon: [
