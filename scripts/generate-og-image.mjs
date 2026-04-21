@@ -15,18 +15,16 @@ const ogSvg = `
 
   <rect width="1200" height="630" fill="url(#bg)"/>
 
-  <!-- Break Line logo centered, scaled (64x32 paths scaled 4x = 256x128) -->
+  <!-- Break Line logo (V2 asymmetric peaks), scaled (64x32 paths scaled 4x = 256x128) -->
   <!-- translate so 256x128 block is centered: x = (1200-256)/2 = 472, y = 192 -->
-  <g transform="translate(472, 192)">
+  <g transform="translate(472, 192)" stroke-linecap="butt" stroke-linejoin="miter">
     <g transform="scale(4)">
-      <path d="M 4 24 L 12 20 L 20 8"
-            stroke="url(#teal-sky)" stroke-width="3"
-            stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-      <line x1="24" y1="6" x2="24" y2="14"
-            stroke="url(#teal-sky)" stroke-width="3" stroke-linecap="round"/>
-      <path d="M 28 10 L 36 22 L 44 18 L 60 24"
-            stroke="url(#teal-sky)" stroke-width="3"
-            stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+      <path d="M 2 26 L 11 4 L 17 18"
+            stroke="url(#teal-sky)" stroke-width="3" fill="none"/>
+      <line x1="21" y1="5" x2="21" y2="19"
+            stroke="url(#teal-sky)" stroke-width="4"/>
+      <path d="M 25 14 L 33 22 L 43 16 L 52 24 L 62 20"
+            stroke="url(#teal-sky)" stroke-width="3" fill="none"/>
     </g>
   </g>
 
