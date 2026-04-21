@@ -44,12 +44,12 @@ export function VectorSection() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           {VECTORS.map((v, index) => (
-            <ScrollReveal key={v.title} delay={index * 0.1}>
-              <div className="glass-card p-6 space-y-4 group">
+            <ScrollReveal key={v.title} delay={index * 0.1} className="h-full">
+              <div className="glass-card p-6 group h-full flex flex-col">
                 <h3 className="text-lg font-semibold text-primary">{v.title}</h3>
-                <p className="text-sm text-muted leading-relaxed">{v.summary}</p>
-                <p className="font-mono text-xs text-teal">{v.example}</p>
-                <div className="flex flex-wrap gap-1.5">
+                <p className="text-sm text-muted leading-relaxed mt-3">{v.summary}</p>
+                <p className="font-mono text-xs text-teal mt-3">{v.example}</p>
+                <div className="flex flex-wrap gap-1.5 mt-auto pt-4">
                   {v.detectorIds.map((id) => (
                     <span
                       key={id}

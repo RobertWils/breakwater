@@ -21,14 +21,20 @@ export function ScrollReveal({ children, delay = 0, className }: ScrollRevealPro
 
   const opacity = useTransform(
     scrollYProgress,
-    [0, 0.2, 0.8, 1],
+    [0, 0.3, 0.75, 1],
     [0, 1, 1, 0]
   )
 
   const y = useTransform(
     scrollYProgress,
-    [0, 0.2, 0.8, 1],
-    [20, 0, 0, -20]
+    [0, 0.3, 0.75, 1],
+    [40, 0, 0, -20]
+  )
+
+  const scale = useTransform(
+    scrollYProgress,
+    [0, 0.3, 0.75, 1],
+    [0.95, 1, 1, 0.98]
   )
 
   if (shouldReduceMotion) {
@@ -38,7 +44,7 @@ export function ScrollReveal({ children, delay = 0, className }: ScrollRevealPro
   return (
     <motion.div
       ref={ref}
-      style={{ opacity, y }}
+      style={{ opacity, y, scale }}
       transition={{ delay }}
       className={className}
     >

@@ -35,7 +35,7 @@ export function HowItWorksSection() {
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {STEPS.map((step, index) => (
-            <ScrollReveal key={step.number} delay={index * 0.1}>
+            <ScrollReveal key={step.number} delay={index * 0.1} className="h-full">
               <div className="glass-card p-6 space-y-3 h-full">
                 <span className="font-mono text-xs text-teal">{step.number}</span>
                 <h3 className="font-semibold text-primary">{step.title}</h3>

@@ -48,8 +48,8 @@ export function DemoProtocolsSection() {
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {DEMO_PROTOCOLS.map((p, index) => (
-            <ScrollReveal key={p.slug} delay={index * 0.1}>
-              <Link href={`/demo/${p.slug}`}>
+            <ScrollReveal key={p.slug} delay={index * 0.1} className="h-full">
+              <Link href={`/demo/${p.slug}`} className="block h-full">
                 <div className="glass-card p-6 space-y-3 hover:border-teal-glow transition-colors duration-200 h-full">
                   <div
                     className="w-12 h-12 rounded-lg flex items-center justify-center border border-subtle"

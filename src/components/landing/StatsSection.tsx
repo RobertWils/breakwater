@@ -40,10 +40,10 @@ export function StatsSection() {
 
         <ScrollReveal delay={0.2}>
           <div className="mt-10 flex justify-center">
-            <details className="glass-card p-6 w-full max-w-2xl">
-            <summary className="cursor-pointer font-mono text-sm text-teal select-none hover:text-sky transition-colors duration-150">
+            <div className="glass-card p-6 w-full max-w-2xl">
+            <p className="font-mono text-sm text-teal">
               How we arrived at $600M+
-            </summary>
+            </p>
             <div className="mt-4 overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
@@ -91,7 +91,7 @@ export function StatsSection() {
                 Sum of named hacks: ~$631M. Headline rounded conservatively to $600M+.
               </p>
             </div>
-          </details>
+          </div>
           </div>
         </ScrollReveal>
       </div>
