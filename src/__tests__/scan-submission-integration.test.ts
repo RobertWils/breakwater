@@ -908,6 +908,99 @@ describe.skipIf(!hasDb)("scan submission integration", () => {
     expect(snapshot.modulesEnabled).toContain("FRONTEND");
   });
 
+  // ── 13b. FIX #3: SCAN_EMAIL_SALT missing + submittedEmail → throws + audit row ──
+
+  it("missing SCAN_EMAIL_SALT with submittedEmail: throws and logs INVALID missing_email_salt attempt", async () => {
+    const savedSalt = process.env.SCAN_EMAIL_SALT;
+    process.env.SCAN_EMAIL_SALT = "";
+
+    const ipHash = uniqueIpHash();
+    createdScanAttemptIpHashes.push(ipHash);
+
+    let caughtErr: unknown;
+    try {
+      await submitScan({
+        input: {
+          chain: "ETHEREUM",
+          primaryContractAddress: uniqueEthAddress(),
+          extraContractAddresses: [],
+          multisigs: [],
+          modulesEnabled: ["GOVERNANCE"],
+          submittedEmail: "user@example.com",
+        },
+        userId: null,
+        userEmail: null,
+        ip: "1.2.3.4",
+        ipHash,
+        userAgent: "integration-test/1.0",
+      });
+    } catch (e) {
+      caughtErr = e;
+    } finally {
+      // Restore salt regardless of outcome
+      process.env.SCAN_EMAIL_SALT = savedSalt;
+    }
+
+    expect(caughtErr).toBeInstanceOf(Error);
+    expect((caughtErr as Error).message).toMatch(/SCAN_EMAIL_SALT required/);
+
+    // Audit row must have been written (uses prisma outside tx — commits despite rollback)
+    const attempt = await prisma.scanAttempt.findFirst({
+      where: { ipHash, status: "INVALID", reason: "missing_email_salt" },
+    });
+    expect(attempt).not.toBeNull();
+  });
+
+  // ── 13c. FIX #3: SCAN_EMAIL_SALT present + submittedEmail → hash stored ──
+
+  it("submittedEmail with valid SCAN_EMAIL_SALT: scan has correct 64-char submittedEmailHash", async () => {
+    const testSalt = "test-email-salt-fix3";
+    const savedSalt = process.env.SCAN_EMAIL_SALT;
+    process.env.SCAN_EMAIL_SALT = testSalt;
+
+    const ipHash = uniqueIpHash();
+    createdScanAttemptIpHashes.push(ipHash);
+
+    const address = uniqueEthAddress();
+    let result: { scanId: string; statusCode: number } | undefined;
+    try {
+      result = await submitScan({
+        input: {
+          chain: "ETHEREUM",
+          primaryContractAddress: address,
+          extraContractAddresses: [],
+          multisigs: [],
+          modulesEnabled: ["GOVERNANCE"],
+          submittedEmail: "Test@Example.COM",
+        },
+        userId: null,
+        userEmail: null,
+        ip: "1.2.3.4",
+        ipHash,
+        userAgent: "integration-test/1.0",
+      });
+    } finally {
+      process.env.SCAN_EMAIL_SALT = savedSalt;
+    }
+
+    expect(result?.statusCode).toBe(202);
+
+    const protocol = await prisma.protocol.findFirst({
+      where: { primaryContractAddress: address.toLowerCase(), chain: "ETHEREUM" },
+    });
+    createdProtocolIds.push(protocol!.id);
+
+    const scan = await prisma.scan.findUnique({ where: { id: result!.scanId } });
+    expect(scan).not.toBeNull();
+    // submittedEmailHash must be 64-char hex (SHA256 output)
+    expect(scan!.submittedEmailHash).toMatch(/^[0-9a-f]{64}$/);
+
+    // Verify the hash matches hashEmail(normalized, salt)
+    const { hashEmail } = await import("@/lib/hash");
+    const expectedHash = hashEmail("test@example.com", testSalt);
+    expect(scan!.submittedEmailHash).toBe(expectedHash);
+  });
+
   // ── 15. Reuses existing UNCLAIMED Protocol (no duplicate) ─────────────
 
   it("re-scans reuse existing UNCLAIMED Protocol row without creating a duplicate", { timeout: 20000 }, async () => {

@@ -24,3 +24,6 @@ Accepted peer warning: `unmet peer nodemailer@^7.0.7: found 6.10.1`
 ## Plan 02 backlog
 
 - Schema: `ScanAttempt.reason` should be nullable (currently NOT NULL forces `"accepted"` sentinel for ACCEPTED status rows). Fix in Plan 02 migration: make `reason` nullable.
+- Slug collision: current implementation can fail on addresses sharing first 8 hex chars. Plan 02 should add incremental suffix strategy or longer hash input.
+- FindingResponse discriminated union: currently structural union without true discriminator. Add tier-discriminator to enforce tier-specific shapes at type level. Low runtime risk (tests verify shapes correct), medium refactor touching 3 shaper functions.
+- config.ts production-guard tests: add production-mode coverage for `assertProductionHashSalts()` with missing `SCAN_IP_SALT` / `SCAN_EMAIL_SALT` (Codex NICE_TO_HAVE).

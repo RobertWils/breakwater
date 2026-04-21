@@ -108,6 +108,37 @@ async function logInvalidAttempt(params: {
   }
 }
 
+/**
+ * Logs a ScanAttempt for internal configuration errors (e.g. missing env vars).
+ * Written outside any transaction so the audit row survives rollbacks.
+ * Swallows logging errors — must not cascade.
+ */
+async function logInternalErrorAttempt(params: {
+  ipHash: string;
+  userId: string | null;
+  userAgent: string;
+  cooldownKey: string;
+  inputPayloadHash: string;
+  reason: string;
+}): Promise<void> {
+  try {
+    await prisma.scanAttempt.create({
+      data: {
+        ipHash: params.ipHash,
+        userId: params.userId,
+        userAgent: params.userAgent,
+        cooldownKey: params.cooldownKey,
+        inputPayloadHash: params.inputPayloadHash,
+        status: "INVALID",
+        reason: params.reason,
+        scanId: null,
+      },
+    });
+  } catch (err) {
+    console.error("[scan-submission] Failed to log internal error attempt:", err);
+  }
+}
+
 async function logRateLimitedAttempt(params: {
   ipHash: string;
   userId: string | null;
@@ -370,16 +401,36 @@ export async function submitScan(
 
     // Step 9: Create Scan
     const emailSalt = process.env.SCAN_EMAIL_SALT ?? "";
+
+    // Assert SCAN_EMAIL_SALT is set when submittedEmail is present.
+    // Silent null-fallback would break the C.4 scan-linking invariant.
+    // This write uses `prisma` (not `tx`) so the audit row commits independently
+    // of the transaction rollback triggered by the throw below.
+    if (input.submittedEmail && !emailSalt) {
+      await logInternalErrorAttempt({
+        ipHash,
+        userId,
+        userAgent,
+        cooldownKey: key,
+        inputPayloadHash: payloadHash,
+        reason: "missing_email_salt",
+      });
+      throw new Error(
+        "[scan-submission] SCAN_EMAIL_SALT required when submittedEmail present",
+      );
+    }
+
     const scan = await tx.scan.create({
       data: {
         protocolId: protocol.id,
         status: "QUEUED",
         submittedByUserId: userId,
         submittedEmail: input.submittedEmail?.toLowerCase().trim() ?? null,
-        submittedEmailHash:
-          input.submittedEmail && emailSalt
-            ? hashEmail(input.submittedEmail, emailSalt)
-            : null,
+        // emailSalt is guaranteed non-empty here when submittedEmail is present
+        // (assertion above ensures it). hashEmail() also throws on empty salt.
+        submittedEmailHash: input.submittedEmail
+          ? hashEmail(input.submittedEmail, emailSalt)
+          : null,
         ipHash,
         userAgent,
         compositeScore: null,

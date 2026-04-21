@@ -24,11 +24,12 @@ export async function GET(
     );
   }
 
-  const session = await getServerSession(authOptions);
-  // Plan 01: only unauth vs email. "paid" tier is a placeholder for future subscription check.
-  const tier = session?.user?.id ? "email" : "unauth";
-
   try {
+    // ── Resolve session inside try so auth errors are caught (§5.1) ──
+    const session = await getServerSession(authOptions);
+    // Plan 01: only unauth vs email. "paid" tier is a placeholder for future subscription check.
+    const tier = session?.user?.id ? "email" : "unauth";
+
     const scan = await getScan({ scanId: params.id, tier });
 
     if (!scan) {
