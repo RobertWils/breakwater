@@ -20,3 +20,7 @@ next-auth@4.24 declares nodemailer@^7 as peer. We use v6.10.1 because:
 - Upgrading to v7 would be cosmetic-only (silences warning) without functional benefit
 
 Accepted peer warning: `unmet peer nodemailer@^7.0.7: found 6.10.1`
+
+## Plan 02 backlog
+
+- Schema: `ScanAttempt.reason` should be nullable (currently NOT NULL forces `"accepted"` sentinel for ACCEPTED status rows). Fix in Plan 02 migration: make `reason` nullable.
