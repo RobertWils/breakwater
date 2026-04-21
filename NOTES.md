@@ -27,3 +27,13 @@ Accepted peer warning: `unmet peer nodemailer@^7.0.7: found 6.10.1`
 - Slug collision: current implementation can fail on addresses sharing first 8 hex chars. Plan 02 should add incremental suffix strategy or longer hash input.
 - FindingResponse discriminated union: currently structural union without true discriminator. Add tier-discriminator to enforce tier-specific shapes at type level. Low runtime risk (tests verify shapes correct), medium refactor touching 3 shaper functions.
 - config.ts production-guard tests: add production-mode coverage for `assertProductionHashSalts()` with missing `SCAN_IP_SALT` / `SCAN_EMAIL_SALT` (Codex NICE_TO_HAVE).
+
+## Spec factual corrections (implementation deviations)
+
+### §8.3 font loader (E.1)
+
+Spec zegt "Geist Sans + Geist Mono via next/font/google". Geist wordt niet via Google Fonts gehost. Canonical loader is Vercel's geist npm package (wraps next/font/local). Identieke resulterende --font-geist-sans / --font-geist-mono CSS variables.
+
+Applied: `import { GeistSans } from "geist/font/sans"` + `import { GeistMono } from "geist/font/mono"`
+
+Future spec updates: replace "via next/font/google" with "via geist npm package" in §8.3.

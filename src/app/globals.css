@@ -2,26 +2,68 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+@layer base {
+  html {
+    background: var(--bg-gradient);
+    background-attachment: fixed;
+    min-height: 100vh;
+    color: var(--text-primary);
+    font-family: var(--font-geist-sans);
+  }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+  body {
+    background: transparent;
+    min-height: 100vh;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    color: var(--text-primary);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1.2;
+  }
+
+  p {
+    color: var(--text-primary);
+  }
+
+  .text-muted {
+    color: var(--text-muted);
+  }
+
+  code, pre {
+    font-family: var(--font-geist-mono);
+  }
+
+  ::selection {
+    background: var(--accent-teal);
+    color: var(--bg-base);
+  }
+
+  *:focus-visible {
+    outline: 2px solid var(--accent-teal);
+    outline-offset: 2px;
+    border-radius: 4px;
   }
 }
 
-body {
-  color: var(--foreground);
-  background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
-}
+@layer components {
+  .glass-card {
+    background: var(--glass-surface);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    border: 1px solid var(--border-subtle);
+    border-radius: 12px;
+  }
 
-@layer utilities {
-  .text-balance {
-    text-wrap: balance;
+  .glass-card-teal {
+    background: var(--glass-surface);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    border: 1px solid var(--border-teal);
+    border-radius: 12px;
   }
 }
