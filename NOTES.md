@@ -37,3 +37,7 @@ Spec zegt "Geist Sans + Geist Mono via next/font/google". Geist wordt niet via G
 Applied: `import { GeistSans } from "geist/font/sans"` + `import { GeistMono } from "geist/font/mono"`
 
 Future spec updates: replace "via next/font/google" with "via geist npm package" in §8.3.
+
+### §8.1 gradient range (F.1 refinement)
+
+Spec gradient `#0C1C3A → #17306B` was visually imperceptible on large screens. Expanded to 3-stop gradient `#0A1530 → #0C1C3A → #1E3D85` while preserving `--bg-base` and `--bg-elevated` values for other uses.

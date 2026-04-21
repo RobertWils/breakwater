@@ -2,7 +2,7 @@
   /* Backgrounds */
   --bg-base:         #0C1C3A;
   --bg-elevated:     #17306B;
-  --bg-gradient:     linear-gradient(135deg, #0C1C3A 0%, #17306B 100%);
+  --bg-gradient:     linear-gradient(135deg, #0A1530 0%, #0C1C3A 30%, #1E3D85 100%);
 
   /* Accent colors */
   --accent-teal:     #14B8A6;

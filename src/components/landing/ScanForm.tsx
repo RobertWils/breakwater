@@ -100,15 +100,20 @@ export function ScanForm() {
             value={chain}
             onChange={(e) => setChain(e.target.value as Chain)}
             disabled={state.kind === "submitting"}
-            className="w-full px-4 py-3 bg-elevated/50 border border-subtle rounded-lg text-primary focus:border-teal focus:outline-none disabled:opacity-50"
+            className="w-full px-4 py-3 bg-base/80 border border-subtle rounded-lg text-primary focus:border-teal focus:bg-base focus:outline-none disabled:opacity-50"
           >
             <option value="ETHEREUM">Ethereum</option>
             <option value="SOLANA">Solana</option>
           </select>
         </div>
 
-        <div className="space-y-2">
+        <div className="space-y-1.5">
           <label htmlFor="address" className="block text-sm font-medium text-muted">Primary contract address</label>
+          <p className="text-xs text-muted/80">
+            {chain === "ETHEREUM"
+              ? "The main smart contract of the protocol. Find it on the protocol's docs or on Etherscan."
+              : "The main program address of the protocol. Find it on the protocol's docs or on Solscan."}
+          </p>
           <input
             id="address"
             type="text"
@@ -117,7 +122,7 @@ export function ScanForm() {
             placeholder={chain === "ETHEREUM" ? "0x..." : "Solana address"}
             disabled={state.kind === "submitting"}
             required
-            className="w-full px-4 py-3 bg-elevated/50 border border-subtle rounded-lg text-primary placeholder:text-muted/50 font-mono focus:border-teal focus:outline-none disabled:opacity-50"
+            className="w-full px-4 py-3 bg-base/80 border border-subtle rounded-lg text-primary placeholder:text-muted font-mono focus:border-teal focus:bg-base focus:outline-none disabled:opacity-50"
           />
         </div>
 
