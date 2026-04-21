@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { ScanSubmissionSchema, Chain, Module } from "@/lib/schemas/scan";
+import { ScanSubmissionSchema, Chain, ModuleName } from "@/lib/schemas/scan";
 
 describe("ScanSubmissionSchema — happy paths", () => {
   it("parses a full valid submission with all fields", () => {
@@ -76,7 +76,7 @@ describe("ScanSubmissionSchema — chain enum", () => {
   });
 });
 
-describe("ScanSubmissionSchema — Module enum", () => {
+describe("ScanSubmissionSchema — ModuleName enum", () => {
   it("accepts all valid module values", () => {
     const result = ScanSubmissionSchema.safeParse({
       chain: "ETHEREUM",
@@ -177,17 +177,17 @@ describe("ScanSubmissionSchema — unknown fields", () => {
   });
 });
 
-describe("Chain and Module standalone enums", () => {
+describe("Chain and ModuleName standalone enums", () => {
   it("Chain accepts ETHEREUM and SOLANA", () => {
     expect(Chain.safeParse("ETHEREUM").success).toBe(true);
     expect(Chain.safeParse("SOLANA").success).toBe(true);
     expect(Chain.safeParse("BTC").success).toBe(false);
   });
 
-  it("Module accepts all four module names", () => {
+  it("ModuleName accepts all four module names", () => {
     for (const m of ["GOVERNANCE", "ORACLE", "SIGNER", "FRONTEND"]) {
-      expect(Module.safeParse(m).success).toBe(true);
+      expect(ModuleName.safeParse(m).success).toBe(true);
     }
-    expect(Module.safeParse("LIQUIDATION").success).toBe(false);
+    expect(ModuleName.safeParse("LIQUIDATION").success).toBe(false);
   });
 });

@@ -1,39 +1,90 @@
 import { describe, it, expect } from "vitest";
 import { hashIp, hashEmail, hashPayload } from "@/lib/hash";
 
+const TEST_IP_SALT = "test-ip-salt";
+const TEST_EMAIL_SALT = "test-email-salt";
+
 describe("hashIp", () => {
   it("returns a deterministic hex string for the same IP", () => {
-    expect(hashIp("192.168.1.1")).toBe(hashIp("192.168.1.1"));
+    expect(hashIp("192.168.1.1", TEST_IP_SALT)).toBe(
+      hashIp("192.168.1.1", TEST_IP_SALT),
+    );
   });
 
   it("returns a 64-char hex string (SHA256)", () => {
-    expect(hashIp("10.0.0.1")).toMatch(/^[0-9a-f]{64}$/);
+    expect(hashIp("10.0.0.1", TEST_IP_SALT)).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("different IPs produce different hashes", () => {
-    expect(hashIp("1.2.3.4")).not.toBe(hashIp("1.2.3.5"));
+    expect(hashIp("1.2.3.4", TEST_IP_SALT)).not.toBe(
+      hashIp("1.2.3.5", TEST_IP_SALT),
+    );
+  });
+
+  it("throws when salt is empty string", () => {
+    expect(() => hashIp("1.2.3.4", "")).toThrow(
+      "SCAN_IP_SALT is required for ipHash computation",
+    );
+  });
+
+  it("different salt produces different hash for the same IP", () => {
+    expect(hashIp("1.2.3.4", "salt-a")).not.toBe(hashIp("1.2.3.4", "salt-b"));
+  });
+
+  it("same salt + same IP is always deterministic", () => {
+    const a = hashIp("10.0.0.1", "stable-salt");
+    const b = hashIp("10.0.0.1", "stable-salt");
+    expect(a).toBe(b);
   });
 });
 
 describe("hashEmail", () => {
   it("is case-insensitive", () => {
-    expect(hashEmail("Foo@BAR.com")).toBe(hashEmail("foo@bar.com"));
+    expect(hashEmail("Foo@BAR.com", TEST_EMAIL_SALT)).toBe(
+      hashEmail("foo@bar.com", TEST_EMAIL_SALT),
+    );
   });
 
   it("is whitespace-insensitive (leading/trailing)", () => {
-    expect(hashEmail(" foo@bar.com ")).toBe(hashEmail("foo@bar.com"));
+    expect(hashEmail(" foo@bar.com ", TEST_EMAIL_SALT)).toBe(
+      hashEmail("foo@bar.com", TEST_EMAIL_SALT),
+    );
   });
 
   it("mixed case + whitespace equals normalized form", () => {
-    expect(hashEmail("  Foo@BAR.com  ")).toBe(hashEmail("foo@bar.com"));
+    expect(hashEmail("  Foo@BAR.com  ", TEST_EMAIL_SALT)).toBe(
+      hashEmail("foo@bar.com", TEST_EMAIL_SALT),
+    );
   });
 
   it("returns a 64-char hex string", () => {
-    expect(hashEmail("user@example.com")).toMatch(/^[0-9a-f]{64}$/);
+    expect(hashEmail("user@example.com", TEST_EMAIL_SALT)).toMatch(
+      /^[0-9a-f]{64}$/,
+    );
   });
 
   it("different emails produce different hashes", () => {
-    expect(hashEmail("alice@example.com")).not.toBe(hashEmail("bob@example.com"));
+    expect(hashEmail("alice@example.com", TEST_EMAIL_SALT)).not.toBe(
+      hashEmail("bob@example.com", TEST_EMAIL_SALT),
+    );
+  });
+
+  it("throws when salt is empty string", () => {
+    expect(() => hashEmail("user@example.com", "")).toThrow(
+      "SCAN_EMAIL_SALT is required for emailHash computation",
+    );
+  });
+
+  it("different salt produces different hash for the same email", () => {
+    expect(hashEmail("user@example.com", "salt-a")).not.toBe(
+      hashEmail("user@example.com", "salt-b"),
+    );
+  });
+
+  it("same salt + same email is always deterministic", () => {
+    const a = hashEmail("user@example.com", "stable-salt");
+    const b = hashEmail("user@example.com", "stable-salt");
+    expect(a).toBe(b);
   });
 });
 

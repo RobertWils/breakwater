@@ -12,18 +12,30 @@ function sha256hex(input: string): string {
 }
 
 /**
- * SHA256 hex of the raw IP string.
+ * SHA256 hex of ip + salt.
+ * Salt is required — throws on empty string to enforce the security invariant.
  */
-export function hashIp(ip: string): string {
-  return sha256hex(ip);
+export function hashIp(ip: string, salt: string): string {
+  if (!salt) {
+    throw new Error(
+      "[hash] SCAN_IP_SALT is required for ipHash computation. " +
+        "This is a security-critical invariant — do not bypass.",
+    );
+  }
+  return sha256hex(ip + salt);
 }
 
 /**
- * Normalize (trim + lowercase) then SHA256 hex.
- * This makes the hash case-insensitive and whitespace-insensitive.
+ * Normalize (trim + lowercase) then SHA256 hex with salt.
+ * Salt is required — throws on empty string to enforce the security invariant.
  */
-export function hashEmail(email: string): string {
-  return sha256hex(email.trim().toLowerCase());
+export function hashEmail(email: string, salt: string): string {
+  if (!salt) {
+    throw new Error(
+      "[hash] SCAN_EMAIL_SALT is required for emailHash computation.",
+    );
+  }
+  return sha256hex(email.trim().toLowerCase() + salt);
 }
 
 interface PayloadHashInput {

@@ -2,7 +2,7 @@ import { z } from "zod";
 
 export const Chain = z.enum(["ETHEREUM", "SOLANA"]);
 
-export const Module = z.enum(["GOVERNANCE", "ORACLE", "SIGNER", "FRONTEND"]);
+export const ModuleName = z.enum(["GOVERNANCE", "ORACLE", "SIGNER", "FRONTEND"]);
 
 export const ScanSubmissionSchema = z.object({
   chain: Chain,
@@ -11,7 +11,7 @@ export const ScanSubmissionSchema = z.object({
   domain: z.string().optional(), // SINGULAR, no .url()
   multisigs: z.array(z.string()).optional().default([]),
   modulesEnabled: z
-    .array(Module)
+    .array(ModuleName)
     .optional()
     .default(["GOVERNANCE", "ORACLE", "SIGNER", "FRONTEND"]),
   submittedEmail: z.string().email().optional(),
