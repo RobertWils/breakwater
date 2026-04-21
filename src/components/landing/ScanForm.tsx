@@ -90,7 +90,7 @@ export function ScanForm() {
 
   return (
     <div>
-      <form onSubmit={handleSubmit} className="glass-card-teal p-8 space-y-5">
+      <form onSubmit={handleSubmit} autoComplete="off" className="glass-card-teal p-8 space-y-5">
         <h2 className="text-2xl font-semibold">Free scan</h2>
 
         <div className="space-y-2">
@@ -100,7 +100,7 @@ export function ScanForm() {
             value={chain}
             onChange={(e) => setChain(e.target.value as Chain)}
             disabled={state.kind === "submitting"}
-            className="w-full px-4 py-3 bg-base/80 border border-subtle rounded-lg text-primary focus:border-teal focus:bg-base focus:outline-none disabled:opacity-50"
+            className="w-full px-4 py-3 bg-[#0C1C3A] border border-subtle rounded-lg text-primary focus:border-teal focus:outline-none disabled:opacity-50 appearance-none"
           >
             <option value="ETHEREUM">Ethereum</option>
             <option value="SOLANA">Solana</option>
@@ -108,21 +108,24 @@ export function ScanForm() {
         </div>
 
         <div className="space-y-1.5">
-          <label htmlFor="address" className="block text-sm font-medium text-muted">Primary contract address</label>
+          <label htmlFor="address" className="block text-sm font-medium text-muted">Protocol address</label>
           <p className="text-xs text-muted/80">
             {chain === "ETHEREUM"
-              ? "The main smart contract of the protocol. Find it on the protocol's docs or on Etherscan."
-              : "The main program address of the protocol. Find it on the protocol's docs or on Solscan."}
+              ? "The smart contract where users interact with your protocol — e.g. the Pool (Aave), Router (Uniswap), or Vault. Not a user wallet or token address."
+              : "The program address of your protocol — e.g. the main program that handles deposits, trades, or governance. Not a user wallet or token mint."}
           </p>
           <input
             id="address"
             type="text"
+            name="contract-address"
+            autoComplete="off"
+            spellCheck={false}
             value={address}
             onChange={(e) => setAddress(e.target.value)}
             placeholder={chain === "ETHEREUM" ? "0x..." : "Solana address"}
             disabled={state.kind === "submitting"}
             required
-            className="w-full px-4 py-3 bg-base/80 border border-subtle rounded-lg text-primary placeholder:text-muted font-mono focus:border-teal focus:bg-base focus:outline-none disabled:opacity-50"
+            className="w-full px-4 py-3 bg-[#0C1C3A] border border-subtle rounded-lg text-primary placeholder:text-muted font-mono focus:border-teal focus:outline-none disabled:opacity-50 appearance-none"
           />
         </div>
 

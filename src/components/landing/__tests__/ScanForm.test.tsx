@@ -40,7 +40,7 @@ describe("ScanForm", () => {
     render(<ScanForm />)
 
     const chainSelect = screen.getByLabelText("Chain")
-    const addressInput = screen.getByLabelText("Primary contract address") as HTMLInputElement
+    const addressInput = screen.getByLabelText("Protocol address") as HTMLInputElement
 
     // Initially Ethereum placeholder
     expect(addressInput.placeholder).toBe("0x...")
@@ -74,7 +74,7 @@ describe("ScanForm", () => {
 
     render(<ScanForm />)
 
-    const addressInput = screen.getByLabelText("Primary contract address")
+    const addressInput = screen.getByLabelText("Protocol address")
     fireEvent.change(addressInput, { target: { value: "0xdeadbeef1234567890abcdef1234567890abcdef" } })
 
     const submitButton = screen.getByRole("button", { name: /scan for free/i })
@@ -97,7 +97,7 @@ describe("ScanForm", () => {
 
     render(<ScanForm />)
 
-    const addressInput = screen.getByLabelText("Primary contract address")
+    const addressInput = screen.getByLabelText("Protocol address")
     fireEvent.change(addressInput, { target: { value: "0xdeadbeef1234567890abcdef1234567890abcdef" } })
 
     await act(async () => {
@@ -114,7 +114,7 @@ describe("ScanForm", () => {
       expect(screen.getByRole("button", { name: /scan for free/i })).toBeInTheDocument()
     })
 
-    const newAddressInput = screen.getByLabelText("Primary contract address") as HTMLInputElement
+    const newAddressInput = screen.getByLabelText("Protocol address") as HTMLInputElement
     expect(newAddressInput.value).toBe("")
   })
 
@@ -128,7 +128,7 @@ describe("ScanForm", () => {
 
     render(<ScanForm />)
 
-    const addressInput = screen.getByLabelText("Primary contract address")
+    const addressInput = screen.getByLabelText("Protocol address")
     fireEvent.change(addressInput, { target: { value: "not-valid" } })
 
     await act(async () => {
@@ -153,7 +153,7 @@ describe("ScanForm", () => {
 
     render(<ScanForm />)
 
-    const addressInput = screen.getByLabelText("Primary contract address")
+    const addressInput = screen.getByLabelText("Protocol address")
     fireEvent.change(addressInput, { target: { value: "0xdeadbeef1234567890abcdef1234567890abcdef" } })
 
     await act(async () => {
@@ -182,7 +182,7 @@ describe("ScanForm", () => {
 
     render(<ScanForm />)
 
-    const addressInput = screen.getByLabelText("Primary contract address")
+    const addressInput = screen.getByLabelText("Protocol address")
     fireEvent.change(addressInput, { target: { value: "0xdeadbeef1234567890abcdef1234567890abcdef" } })
 
     await act(async () => {
@@ -208,7 +208,7 @@ describe("ScanForm", () => {
 
     render(<ScanForm />)
 
-    const addressInput = screen.getByLabelText("Primary contract address")
+    const addressInput = screen.getByLabelText("Protocol address")
     fireEvent.change(addressInput, { target: { value: "0xdeadbeef1234567890abcdef1234567890abcdef" } })
 
     await act(async () => {
@@ -228,7 +228,7 @@ describe("ScanForm", () => {
 
     render(<ScanForm />)
 
-    const addressInput = screen.getByLabelText("Primary contract address")
+    const addressInput = screen.getByLabelText("Protocol address")
     fireEvent.change(addressInput, { target: { value: "0xdeadbeef1234567890abcdef1234567890abcdef" } })
 
     await act(async () => {
