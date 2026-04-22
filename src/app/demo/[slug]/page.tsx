@@ -1,6 +1,8 @@
 import { notFound } from "next/navigation"
 import { prisma } from "@/lib/prisma"
 import type { Metadata } from "next"
+import { Header } from "@/components/landing/Header"
+import { Footer } from "@/components/landing/Footer"
 
 const CURATED_SLUGS = [
   "aave-v3-ethereum",
@@ -70,7 +72,9 @@ export default async function DemoProtocolPage({
   const initials = PROTOCOL_INITIALS[curatedSlug] ?? "?"
 
   return (
-    <main className="min-h-screen py-20">
+    <>
+      <Header />
+      <main className="min-h-screen py-20">
       <div className="container mx-auto px-6 max-w-3xl">
         <div className="glass-card p-8 space-y-8">
           {/* 96×96 header tile */}
@@ -143,5 +147,7 @@ export default async function DemoProtocolPage({
         </div>
       </div>
     </main>
+    <Footer />
+    </>
   )
 }

@@ -4,7 +4,8 @@ import { StatsSection } from "@/components/landing/StatsSection"
 import { VectorSection } from "@/components/landing/VectorSection"
 import { DemoProtocolsSection } from "@/components/landing/DemoProtocolsSection"
 import { HowItWorksSection } from "@/components/landing/HowItWorksSection"
-import { FooterSection } from "@/components/landing/FooterSection"
+import { Footer } from "@/components/landing/Footer"
+import { FloatingScanCTA } from "@/components/landing/FloatingScanCTA"
 
 export default function HomePage() {
   return (
@@ -15,7 +16,8 @@ export default function HomePage() {
       <VectorSection />
       <DemoProtocolsSection />
       <HowItWorksSection />
-      <FooterSection />
+      <Footer />
+      <FloatingScanCTA />
     </>
   )
 }
