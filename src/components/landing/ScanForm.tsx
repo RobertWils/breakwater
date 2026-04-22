@@ -1,16 +1,17 @@
 "use client"
 
 import { useState } from "react"
+import { useRouter } from "next/navigation"
 import type { FormEvent } from "react"
 
 type Chain = "ETHEREUM" | "SOLANA"
 type FormState =
   | { kind: "idle" }
   | { kind: "submitting" }
-  | { kind: "success"; scanId: string }
   | { kind: "error"; code: string; message: string; retryAfterSec?: number; demoUrl?: string }
 
 export function ScanForm() {
+  const router = useRouter()
   const [chain, setChain] = useState<Chain>("ETHEREUM")
   const [address, setAddress] = useState("")
   const [state, setState] = useState<FormState>({ kind: "idle" })
@@ -33,7 +34,7 @@ export function ScanForm() {
       const data = await res.json().catch(() => ({}))
 
       if (res.status === 202 || res.status === 200) {
-        setState({ kind: "success", scanId: data.scanId })
+        router.push(`/scan/${data.scanId}`)
         return
       }
       if (res.status === 400) {
@@ -67,25 +68,6 @@ export function ScanForm() {
     } catch {
       setState({ kind: "error", code: "network", message: "Network error. Check your connection and try again." })
     }
-  }
-
-  if (state.kind === "success") {
-    return (
-      <div className="glass-card-teal p-8 space-y-4">
-        <h2 className="text-2xl font-semibold text-teal">Scan queued</h2>
-        <p className="text-muted">Your scan has been received and is in the queue.</p>
-        <div className="font-mono text-sm text-muted break-all">Scan ID: {state.scanId}</div>
-        <p className="text-sm text-muted pt-2 border-t border-subtle">
-          Results will be available once our detectors complete. The scan results page is coming in a future release.
-        </p>
-        <button
-          onClick={() => { setState({ kind: "idle" }); setAddress("") }}
-          className="text-sm text-sky hover:underline"
-        >
-          Submit another scan →
-        </button>
-      </div>
-    )
   }
 
   return (

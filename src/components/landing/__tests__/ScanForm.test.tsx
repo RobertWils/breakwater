@@ -2,6 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, waitFor, act, cleanup } from "@testing-library/react"
 import { ScanForm } from "../ScanForm"
 
+// Mock useRouter — ScanForm redirects to /scan/[id] on successful submit.
+const mockPush = vi.fn()
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: mockPush }),
+}))
+
 // Helper: create a fetch mock that resolves with a given status + body
 function mockFetch(status: number, body: unknown) {
   return vi.fn().mockResolvedValue({
@@ -17,6 +23,7 @@ function mockFetchNetworkError() {
 
 beforeEach(() => {
   vi.unstubAllGlobals()
+  mockPush.mockClear()
 })
 
 afterEach(() => {
@@ -67,8 +74,8 @@ describe("ScanForm", () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  // ── 4. 202 success state ─────────────────────────────────────────────────
-  it("submit returning 202 shows success state with scanId and 'Submit another scan' button", async () => {
+  // ── 4. 202 success → redirect to /scan/[id] ─────────────────────────────
+  it("submit returning 202 redirects to /scan/[scanId] via router.push", async () => {
     const fetchMock = mockFetch(202, { scanId: "scan-abc-123" })
     vi.stubGlobal("fetch", fetchMock)
 
@@ -83,16 +90,13 @@ describe("ScanForm", () => {
     })
 
     await waitFor(() => {
-      expect(screen.getByText("Scan queued")).toBeInTheDocument()
+      expect(mockPush).toHaveBeenCalledWith("/scan/scan-abc-123")
     })
-
-    expect(screen.getByText(/scan-abc-123/)).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: /submit another scan/i })).toBeInTheDocument()
   })
 
-  // ── 5. "Submit another scan" resets to idle with empty address ───────────
-  it("clicking 'Submit another scan' resets to idle with empty address", async () => {
-    const fetchMock = mockFetch(202, { scanId: "scan-xyz-456" })
+  // ── 5. 200 (idempotent replay) also redirects ────────────────────────────
+  it("submit returning 200 (idempotent replay) also redirects to /scan/[scanId]", async () => {
+    const fetchMock = mockFetch(200, { scanId: "scan-xyz-456" })
     vi.stubGlobal("fetch", fetchMock)
 
     render(<ScanForm />)
@@ -105,17 +109,8 @@ describe("ScanForm", () => {
     })
 
     await waitFor(() => {
-      expect(screen.getByText("Scan queued")).toBeInTheDocument()
+      expect(mockPush).toHaveBeenCalledWith("/scan/scan-xyz-456")
     })
-
-    fireEvent.click(screen.getByRole("button", { name: /submit another scan/i }))
-
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: /scan for free/i })).toBeInTheDocument()
-    })
-
-    const newAddressInput = screen.getByLabelText("Protocol address") as HTMLInputElement
-    expect(newAddressInput.value).toBe("")
   })
 
   // ── 6. 400 invalid_address → shows data.message ─────────────────────────
