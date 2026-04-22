@@ -2,7 +2,7 @@
 
 Continuous security monitoring for DeFi protocols. Governance, oracle, signer, and frontend patterns — detected before they reach shore.
 
-A [Singularity Venture Hub](https://singularityventurehub.com) venture.
+A [Singularity Venture Hub](https://singularityventurehub.ai) venture.
 
 ## Status
 

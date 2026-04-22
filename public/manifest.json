@@ -1,0 +1,12 @@
+{
+  "name": "Breakwater",
+  "short_name": "Breakwater",
+  "description": "Continuous security monitoring for DeFi protocols",
+  "icons": [
+    { "src": "/favicon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/favicon-512.png", "sizes": "512x512", "type": "image/png" }
+  ],
+  "theme_color": "#0C1C3A",
+  "background_color": "#0C1C3A",
+  "display": "standalone"
+}
