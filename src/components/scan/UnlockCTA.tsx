@@ -26,7 +26,7 @@ export function UnlockCTA({ scanId }: UnlockCTAProps) {
     try {
       const result = await signIn("email", {
         email: email.trim().toLowerCase(),
-        callbackUrl: `/scan/${scanId}`,
+        callbackUrl: `/scan/${scanId}?unlock=true`,
         redirect: false,
       })
 
@@ -51,6 +51,8 @@ export function UnlockCTA({ scanId }: UnlockCTAProps) {
     return (
       <section
         aria-labelledby="unlock-sent"
+        role="status"
+        aria-live="polite"
         className="glass-card-teal p-8 text-center space-y-3"
       >
         <h2 id="unlock-sent" className="text-xl font-semibold text-teal">

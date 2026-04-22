@@ -37,7 +37,7 @@ describe("UnlockCTA", () => {
     await waitFor(() => {
       expect(mockSignIn).toHaveBeenCalledWith("email", {
         email: "foo@bar.com",
-        callbackUrl: "/scan/scan-xyz",
+        callbackUrl: "/scan/scan-xyz?unlock=true",
         redirect: false,
       })
     })
