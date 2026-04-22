@@ -2741,6 +2741,23 @@ git push
 - Lighthouse (mobile) on preview: Accessibility ≥ 90, Performance ≥ 75
 - Inline scan form submission round-trips successfully
 
+## Fase F — Landing page
+
+Status: COMPLETE + Codex reviewed
+
+### F.1 Hero + ScanForm (7b9ac87 + e200794)
+### F.2 Content sections + scroll animations (d29da60 + 64241ba + 127576a)
+### F.3 Footer + floating CTA + privacy/terms (d6310c4)
+
+### Codex review Phase F
+- 0 BLOCKERs, 2 IMPORTANTs found
+- Finding 1 (seed idempotency): fixed in this commit
+- Finding 2 (slug collision): deferred to Plan 02 per existing NOTES.md backlog
+
+### Known deferrals maintained
+- Slug collision handling → Plan 02
+- Mobile keyboard heuristic for FloatingScanCTA → kept as md: breakpoint fallback per spec §7.1 allowance
+
 ---
 
 ## Phase G — Scan results shell (2 commits)

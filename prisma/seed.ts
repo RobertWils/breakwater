@@ -69,6 +69,9 @@ async function main() {
         displayName: s.displayName,
         domain: s.domain,
         expectedRiskProfile: s.expectedRiskProfile,
+        ownershipStatus: OwnershipStatus.CURATED,
+        organizationId: "system-breakwater",
+        slug: s.slug,
       },
       create: {
         slug: s.slug,
