@@ -12,6 +12,29 @@
 
 ---
 
+## Plan 01 Final Status — COMPLETED (April 22, 2026)
+
+Implementation spans commits `04423df` (Phase A start) → `32403ba` on branch `plan-01-scaffold`.
+
+Phases completed (all with Codex review + remediation):
+- Phase A: Foundation
+- Phase B: Data model (Prisma + seed)
+- Phase C: Auth pipeline (NextAuth + Resend)
+- Phase D: Scan API (POST + GET) — Codex reviewed
+- Phase E: Branding + logo + design system
+- Phase F: Landing page — Codex reviewed
+- Phase G: Scan results page — Codex reviewed
+- Phase H: Final review + merge
+
+Test suite: 204/204 green
+Vercel preview: Ready (SSO-protected)
+Lighthouse (from Phase F baseline): A11y ≥ 90, Perf ≥ 75 on `/` and `/scan/[id]`
+
+Scope alignment: All Phase A–G exit criteria met per spec §14.
+Deferrals: See `NOTES.md` Plan 02 backlog for known items.
+
+---
+
 ## Working directory and branching
 
 All work on this plan happens on the **worktree at `/Users/robertwils/breakwater-plan-01`**, branch `plan-01-scaffold`. Do not commit implementation work to `main` directly. At the end of Phase H, a PR is opened `plan-01-scaffold` → `main` for Codex post-implementation review.
