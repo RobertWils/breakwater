@@ -39,6 +39,16 @@ Future spec updates: replace "via next/font/google" with "via geist npm package"
 
 Spec gradient `#0C1C3A → #17306B` was visually imperceptible on large screens. Expanded to 3-stop gradient `#0A1530 → #0C1C3A → #1E3D85` while preserving `--bg-base` and `--bg-elevated` values for other uses.
 
+## Plan 02 — In progress
+
+Spec frozen on main at commit `400053c` (2026-04-22). File: `docs/superpowers/specs/2026-04-22-breakwater-plan-02-design.md`. Research backfill at `docs/research/2026-04-22-governance-incidents.md` (commit `c1d9642`).
+
+Scope: Inngest dispatcher + Governance module for Ethereum mainnet. 6 detectors (GOV-001 through GOV-006) anchored to Drift, Beanstalk, Compound 62, Ronin, Audius incidents. Public RPC endpoints only (Ankr + Cloudflare via viem `fallback` transport) — no paid provider keys in Plan 02.
+
+Branch: `plan-02-dispatcher` (to be created post spec-freeze + Codex review).
+Worktree: `/Users/robertwils/breakwater-plan-02` (to be created on branch cut).
+Next step: implementation.md generation.
+
 ## Plan 02 — Deferred items
 
 - Schema: `ScanAttempt.reason` should be nullable (currently NOT NULL forces `"accepted"` sentinel for ACCEPTED status rows). Fix in Plan 02 migration: make `reason` nullable.
