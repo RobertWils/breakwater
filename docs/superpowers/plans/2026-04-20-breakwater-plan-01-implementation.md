@@ -2758,6 +2758,19 @@ Status: COMPLETE + Codex reviewed
 - Slug collision handling → Plan 02
 - Mobile keyboard heuristic for FloatingScanCTA → kept as md: breakpoint fallback per spec §7.1 allowance
 
+## Fase G — Scan results page
+
+Status: COMPLETE + Codex reviewed
+
+### G.1 /scan/[id] page (5cd5abc)
+### G.1 polish (16c3274)
+
+### Codex review Fase G
+- 0 BLOCKERs
+- 1 IMPORTANT (UnlockCTA callbackUrl): fixed
+- 1 NICE_TO_HAVE (aria-live): fixed
+- G.2 niet van toepassing: scope combined in G.1 per scope decisions
+
 ---
 
 ## Phase G — Scan results shell (2 commits)
