@@ -27,6 +27,7 @@ Accepted peer warning: `unmet peer nodemailer@^7.0.7: found 6.10.1`
 - Slug collision: current implementation can fail on addresses sharing first 8 hex chars. Plan 02 should add incremental suffix strategy or longer hash input.
 - FindingResponse discriminated union: currently structural union without true discriminator. Add tier-discriminator to enforce tier-specific shapes at type level. Low runtime risk (tests verify shapes correct), medium refactor touching 3 shaper functions.
 - config.ts production-guard tests: add production-mode coverage for `assertProductionHashSalts()` with missing `SCAN_IP_SALT` / `SCAN_EMAIL_SALT` (Codex NICE_TO_HAVE).
+- /scan/[id] client polling: server-rendered snapshot only in Plan 01. Add client polling against GET /api/scan/[id] when Plan 02 dispatcher introduces QUEUED→COMPLETE state transitions. Design considerations: polling interval (2-5s), exponential backoff on errors, stop on terminal states (COMPLETE/FAILED/EXPIRED), bail after N failures.
 
 ## Spec factual corrections (implementation deviations)
 

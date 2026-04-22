@@ -2,6 +2,7 @@ import type { ScanResponse, VisibilityTier } from "@/lib/scan-response"
 import { ScanHero } from "./ScanHero"
 import { CompositePanel } from "./CompositePanel"
 import { ModuleCard } from "./ModuleCard"
+import { FindingsList } from "./FindingsList"
 import { UnlockCTA } from "./UnlockCTA"
 
 interface ScanShellProps {
@@ -25,6 +26,12 @@ export function ScanShell({ scan, tier }: ScanShellProps) {
           ))}
         </div>
       </section>
+
+      <FindingsList
+        findings={scan.findings}
+        tier={tier}
+        hasAnyHiddenFindings={scan.modules.some((m) => (m.hiddenFindingsCount ?? 0) > 0)}
+      />
 
       {tier === "unauth" && <UnlockCTA scanId={scan.id} />}
 
