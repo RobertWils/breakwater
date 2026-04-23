@@ -109,15 +109,15 @@ breakwater-plan-02/                      # worktree of main
 |---|---|---|---|
 | A | Foundation: Inngest + viem RPC + env var validation + feature flag + config.test production coverage | 4 | ✓ |
 | B | Data model: GovernanceSnapshot + Scan/ModuleRun/Finding additions + Plan 01 backlog (slug collision, ScanAttempt.reason nullability) | 3 | ✓ |
-| C | Inngest dispatcher: serve handler + executeScan orchestrator + POST /api/scan emission + idempotency | 3 | ✓ |
-| D | On-chain data layer: viem multicall wrapper + Safe API client + Etherscan client + snapshot capture | 4 | ✓ |
+| C | Inngest dispatcher: serve handler + executeScan orchestrator + POST /api/scan emission + structured logging helper + idempotency | 4 | ✓ |
+| D | On-chain data layer: viem multicall wrapper + Safe API client + Etherscan client + snapshot capture (split into types/Governor, Timelock/Safe, proxy/assembly) | 6 | ✓ |
 | E | Detectors: GOV-001 through GOV-006 (one commit per detector, with unit tests + fixture) | 6 | ✓ |
 | F | Module orchestration: executeGovernanceModule + scoring algorithm + persistFindingsAndGrade | 3 | ✓ |
 | G | UI: GET /api/scan/[id]/status + useScanPolling + ScanShell integration + FindingResponse discriminated union refactor | 4 | ✓ |
 | H | Integration testing: fixture protocols + end-to-end tests + Drift/Beanstalk/Audius regression tests + Inngest function tests | 3 | ✓ |
 | I | Polish + deploy: Codex holistic review + NOTES/README updates + PR + merge + tag v0.2.0-plan-02 | 3 | ✓ |
 
-**Total: 33 commits across 9 phases.** Every commit leaves the tree in a green state: `pnpm build` passes, `pnpm test` passes, Vercel preview deploys successfully (from Phase A onward).
+**Total: 36 commits across 9 phases.** Every commit leaves the tree in a green state: `pnpm build` passes, `pnpm test` passes, Vercel preview deploys successfully (from Phase A onward).
 
 ---
 
@@ -163,6 +163,36 @@ pnpm build && pnpm test
 ```
 
 locally before push. Integration tests (`INTEGRATION_DB=1 pnpm test`) are only required at Phase H and as pre-PR gate in Phase I.
+
+---
+
+## Prerequisites (before Phase A.1)
+
+Robert completes these setup steps (approximately 15 minutes) before any implementer subagent is dispatched:
+
+1. **Create Inngest Cloud account + project** at inngest.com
+   - Project name: `breakwater`
+   - Note the project ID and keys
+
+2. **Generate keys:**
+   - Event key (for `INNGEST_EVENT_KEY`)
+   - Signing key (for `INNGEST_SIGNING_KEY`)
+
+3. **Add to Vercel environment variables** (both Preview and Production scopes):
+   - `INNGEST_EVENT_KEY`
+   - `INNGEST_SIGNING_KEY`
+   - `INNGEST_APP_ID=breakwater`
+
+4. **Optional: Etherscan free-tier account**
+   - Generate API key at etherscan.io
+   - Add `ETHERSCAN_API_KEY` to Vercel (Preview + Production)
+   - Not blocking Phase A.1: GOV-002 degrades gracefully without this key, but coverage for GOV-002 in Phase E.2 needs it set in development.
+
+**Verification before starting A.1:**
+- `pnpm dlx vercel env ls` shows `INNGEST_*` vars on Production scope
+- Inngest Cloud dashboard shows the `breakwater` project
+
+Phase A.1 can install the SDK without keys (dev uses the local `inngest-cli` key), but Phase C.3's preview-smoke step (which expects the Inngest Cloud dashboard to show incoming events) fails without these prerequisites in place.
 
 ---
 
@@ -914,7 +944,7 @@ git commit -m "fix: slug collision (12-char prefix) + ScanAttempt.reason nullabi
 
 ---
 
-## Phase C — Inngest dispatcher (3 commits)
+## Phase C — Inngest dispatcher (4 commits)
 
 **Goal:** Inngest serve handler mounted at `/api/inngest`, `executeScan` orchestrator registered, `POST /api/scan` emits `scan.queued` after persistence and gates on the feature flag. The orchestrator fans out `scan.module.requested` per enabled module, awaits `scan.module.completed` with a 5m timeout, and emits `scan.completed`. Idempotent against Inngest retries.
 
@@ -1171,6 +1201,144 @@ git commit -m "feat(api): POST /api/scan emits scan.queued (ETHEREUM-only, flag-
 
 **Exit:** `pnpm test` includes 4 new emission tests, all green.
 
+### Task C.2.5 — Structured logging helper + initial call sites
+
+**Files:**
+- Create: `src/lib/logging.ts`, `src/lib/__tests__/logging.test.ts`
+- Modify: `src/app/api/scan/route.ts`, `src/lib/inngest/functions/execute-scan.ts`
+
+Deliverable: `src/lib/logging.ts` with a `log()` helper for scan-lifecycle events. Matches spec §16 event list verbatim so downstream log-aggregation (Railway structured logs) has a stable schema.
+
+- [ ] **Step 1: Create `src/lib/logging.ts`**
+
+```typescript
+export type ScanLogEvent =
+  | { event: "scan.submitted"; scanId: string; chain: string; modulesEnabled: string[] }
+  | { event: "scan.dispatched"; scanId: string; inngestEventId: string }
+  | { event: "scan.module.started"; scanId: string; module: string }
+  | {
+      event: "scan.module.completed"
+      scanId: string
+      module: string
+      grade: string | null
+      executionMs: number
+    }
+  | {
+      event: "scan.completed"
+      scanId: string
+      compositeGrade: string | null
+      totalExecutionMs: number
+    }
+  | { event: "scan.failed"; scanId: string; module: string; errorCode: string }
+  | { event: "detector.fired"; scanId: string; detectorId: string; severity: string }
+
+export function log(payload: ScanLogEvent): void {
+  const enriched = {
+    ...payload,
+    timestamp: new Date().toISOString(),
+    service: "breakwater",
+  }
+  console.log(JSON.stringify(enriched))
+}
+```
+
+The helper writes a single JSON line to `stdout`. Railway's log aggregation captures these verbatim. Formally-typed `ScanLogEvent` guarantees every call site maps to spec §16 exactly — no drift.
+
+- [ ] **Step 2: Initial call sites added in this sub-task**
+
+**`src/app/api/scan/route.ts`** — two calls inside the ACCEPTED path:
+
+```typescript
+import { log } from "@/lib/logging"
+
+// After scan + ScanAttempt(ACCEPTED) persistence
+log({
+  event: "scan.submitted",
+  scanId: scan.id,
+  chain: scan.chain,
+  modulesEnabled: scan.modules.map((m) => m.module),
+})
+
+// Inside the existing Inngest emission block, after inngest.send()
+log({
+  event: "scan.dispatched",
+  scanId: scan.id,
+  inngestEventId: eventIds.ids[0] ?? "unknown",
+})
+```
+
+**`src/lib/inngest/functions/execute-scan.ts`** — two calls in the orchestrator:
+
+```typescript
+import { log } from "@/lib/logging"
+
+// After step.run("finalize", ...)
+if (finalScan.status === "FAILED") {
+  log({
+    event: "scan.failed",
+    scanId,
+    module: "orchestrator",
+    errorCode: "module_failure",
+  })
+}
+
+// Before emit-completed, replace the existing sendEvent call to also log
+log({
+  event: "scan.completed",
+  scanId,
+  compositeGrade: finalScan.compositeGrade,
+  totalExecutionMs:
+    Date.now() - (finalScan.executionStartedAt?.getTime() ?? Date.now()),
+})
+```
+
+Remaining call sites are added in their respective phases:
+- **F.1** (detector orchestrator): `scan.module.started` before the run loop, `scan.module.completed` after persistFindingsAndGrade.
+- **F.2** (persistFindingsAndGrade): `detector.fired` once per finding inserted.
+
+- [ ] **Step 3: Unit tests**
+
+`src/lib/__tests__/logging.test.ts` with 7 cases, one per event type. Each asserts: correct `event` name, correct payload fields, `timestamp` present and ISO-8601, `service: "breakwater"` stamped.
+
+Example:
+```typescript
+import { describe, it, expect, vi } from "vitest"
+import { log } from "@/lib/logging"
+
+describe("log", () => {
+  it("writes scan.submitted as JSON to stdout with timestamp + service", () => {
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {})
+    log({
+      event: "scan.submitted",
+      scanId: "s1",
+      chain: "ETHEREUM",
+      modulesEnabled: ["GOVERNANCE"],
+    })
+    expect(spy).toHaveBeenCalledOnce()
+    const payload = JSON.parse(spy.mock.calls[0][0] as string)
+    expect(payload.event).toBe("scan.submitted")
+    expect(payload.scanId).toBe("s1")
+    expect(payload.service).toBe("breakwater")
+    expect(payload.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    spy.mockRestore()
+  })
+
+  // Mirror for: scan.dispatched, scan.module.started, scan.module.completed,
+  // scan.completed, scan.failed, detector.fired
+})
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add -A
+git commit -m "feat(C.2.5): structured logging helper + scan.submitted/dispatched/completed events"
+```
+
+**Deliverables:** `log()` helper with exhaustive `ScanLogEvent` union, 4 initial call sites, 7 unit tests.
+
+**Exit:** `pnpm test` green (+7 tests). Log lines visible in `pnpm dev` stdout when a scan is submitted.
+
 ### Task C.3 — Orchestrator idempotency + retry policy + status marker
 
 **Files:**
@@ -1239,12 +1407,20 @@ describe("executeScan orchestrator", () => {
   it("marks scan RUNNING and dispatches module events", async () => {
     // Invoke function in-process (no real Inngest)
     // The test harness lets us assert mark-started happened and sendEvent fired.
-    // Details depend on Inngest v3 test API — consult docs at the time of implementation.
   })
 })
 ```
 
-Note: Inngest v3 test harness details evolve; the concrete invocation call is documented at https://www.inngest.com/docs/reference/functions/testing — pull that page during implementation.
+**Implementation approach for Inngest v3 testing:**
+
+Primary: use `@inngest/test` (see https://www.inngest.com/docs/test). If the `@inngest/test` package is available at time of implementation, use it for function-level testing.
+
+Fallback: if `@inngest/test` is not available or its API differs from the docs, use a manual mock approach:
+- Mock the Inngest client via `vi.mock("@/lib/inngest/client")`.
+- Assert step ids called with the expected event data (by asserting on `inngest.send` calls).
+- Simulate `scan.module.completed` event emission manually inside the test.
+
+Do NOT defer the decision to implementation time — commit to the fallback path upfront. Migration to `@inngest/test` can happen as a refactor in Plan 07+ if needed.
 
 - [ ] **Step 5: Status marker commit**
 
@@ -1282,7 +1458,7 @@ Preview deploy: submit an Ethereum scan via the form. Expected:
 
 ---
 
-## Phase D — On-chain data layer (4 commits)
+## Phase D — On-chain data layer (6 commits)
 
 **Goal:** `captureGovernanceSnapshot(scanId)` reads live Ethereum state for the scan's primary contract, detects governance primitives (Governor, Timelock, Safe, proxy), persists a `GovernanceSnapshot` row, and returns a typed snapshot shape ready for detector consumption.
 
@@ -1537,12 +1713,14 @@ git commit -m "feat(external): Safe + Etherscan clients with retry + error class
 
 **Exit:** `pnpm test` green. Total test count up by ~8.
 
-### Task D.3 — Governance primitive detection: Governor + Timelock + Safe
+### Task D.3a — Snapshot types + Governor detection
 
 **Files:**
-- Create: `src/lib/detectors/governance/snapshot.ts`, `src/lib/detectors/governance/types.ts`, `src/lib/detectors/governance/__tests__/snapshot.test.ts`
+- Create: `src/lib/detectors/governance/types.ts`, `src/lib/detectors/governance/detectGovernor.ts`, `src/lib/detectors/governance/__tests__/detectGovernor.test.ts`
 
 - [ ] **Step 1: Create `src/lib/detectors/governance/types.ts`**
+
+Declares all snapshot fields eventually populated by D.3a–D.3c (and `implementationAbi`, `proxyAdminIsContract` used by Phase E detectors). Types land once, up-front, so Phase E does not retroactively mutate the shape.
 
 ```typescript
 import type {
@@ -1550,6 +1728,34 @@ import type {
   ProxyType,
   VotingSnapshotType,
 } from "@prisma/client"
+
+export type GovernorDetectionResult = {
+  hasGovernor: boolean
+  governorAddress: string | null
+  governorType: GovernorType | null
+  governorVersion: string | null
+}
+
+export type TimelockDetectionResult = {
+  timelockAddress: string
+  timelockMinDelay: number | null
+  timelockAdmin: string | null
+}
+
+export type SafeDetectionResult = {
+  address: string
+  threshold: number
+  owners: string[]
+  ownerCount: number
+}
+
+export type ProxyDetectionResult = {
+  proxyType: ProxyType
+  proxyAdminAddress: string | null
+  proxyImplementation: string | null
+  proxyVerified: boolean
+  proxyAdminIsContract: boolean
+}
 
 export type GovernanceSnapshotData = {
   blockNumber: bigint
@@ -1575,60 +1781,343 @@ export type GovernanceSnapshotData = {
   proxyAdminAddress: string | null
   proxyImplementation: string | null
   proxyVerified: boolean
+  proxyAdminIsContract: boolean        // consumed by GOV-005 in Phase E.5
 
   votingTokenAddress: string | null
   votingSnapshotType: VotingSnapshotType
+
+  implementationAbi: string | null     // JSON ABI for Phase E.2 (GOV-002) and E.6 (GOV-006)
 
   rawState: Record<string, unknown>
 }
 ```
 
-- [ ] **Step 2: Governor detection**
+- [ ] **Step 2: Implement `detectGovernor`**
 
-ABI signatures to probe (via `batchRead` allowFailure):
-- `function quorum(uint256 blockNumber) view returns (uint256)` — OZ Governor
-- `function proposalThreshold() view returns (uint256)` — both
-- `function COUNTING_MODE() view returns (string)` — OZ returns e.g. `"support=bravo&quorum=for,abstain"`
-- `function name() view returns (string)` — Compound Bravo returns `"Compound Governor Bravo"`-ish
+`src/lib/detectors/governance/detectGovernor.ts`:
 
-Heuristic:
-- If `COUNTING_MODE` succeeds → OZ_GOVERNOR
-- Else if `name` contains "Bravo" / "Compound" → COMPOUND_BRAVO
-- Else if any of the probes succeed → CUSTOM
-- Else → no governor
+```typescript
+import { parseAbi } from "viem"
+import { batchRead } from "@/lib/onchain/multicall"
+import type { GovernorDetectionResult } from "./types"
 
-- [ ] **Step 3: Timelock detection**
+const governorProbeAbi = parseAbi([
+  "function COUNTING_MODE() view returns (string)",
+  "function quorum(uint256 blockNumber) view returns (uint256)",
+  "function proposalThreshold() view returns (uint256)",
+  "function votingDelay() view returns (uint256)",
+  "function votingPeriod() view returns (uint256)",
+  "function name() view returns (string)",
+])
 
-Probes:
-- `function getMinDelay() view returns (uint256)` — OZ TimelockController
-- `function delay() view returns (uint256)` — Compound Timelock
-- `function admin() view returns (address)` — both
+export async function detectGovernor(
+  address: `0x${string}`
+): Promise<GovernorDetectionResult> {
+  const results = await batchRead([
+    { address, abi: governorProbeAbi, functionName: "COUNTING_MODE" },
+    { address, abi: governorProbeAbi, functionName: "quorum", args: [0n] },
+    { address, abi: governorProbeAbi, functionName: "proposalThreshold" },
+    { address, abi: governorProbeAbi, functionName: "votingDelay" },
+    { address, abi: governorProbeAbi, functionName: "votingPeriod" },
+    { address, abi: governorProbeAbi, functionName: "name" },
+  ])
 
-Heuristic: if `getMinDelay` or `delay` succeeds on a contract referenced by the Governor (via `timelock()` call on Governor first), that contract is the Timelock.
+  const [countingMode, quorum, propThresh, vDelay, vPeriod, name] = results
 
-Steps:
-1. Call `governor.timelock()` if a Governor was found. If it returns an address, that address is a Timelock candidate.
-2. Call `getMinDelay()` / `delay()` / `admin()` on the Timelock candidate via batchRead.
-3. Populate `timelockAddress`, `timelockMinDelay`, `timelockAdmin`.
+  const anySuccess = results.some((r) => r.status === "success")
+  if (!anySuccess) {
+    return { hasGovernor: false, governorAddress: null, governorType: null, governorVersion: null }
+  }
 
-- [ ] **Step 4: Safe detection**
+  // OZ Governor — COUNTING_MODE is the tell
+  if (countingMode.status === "success") {
+    return {
+      hasGovernor: true,
+      governorAddress: address,
+      governorType: "OZ_GOVERNOR",
+      governorVersion: parseOzVersion(countingMode.result as string),
+    }
+  }
 
-The target contract itself may be a Safe, or the governance flow may reference a Safe (e.g., Timelock admin is a Safe). For Plan 02: check if `primaryContractAddress` is a Safe by calling `fetchSafeInfo(primaryContractAddress)`. If it returns non-null, populate `multisig*` fields.
+  // Compound Bravo — name contains "Compound" or "Bravo"
+  if (name.status === "success") {
+    const nameStr = (name.result as string).toLowerCase()
+    if (nameStr.includes("compound") || nameStr.includes("bravo")) {
+      return {
+        hasGovernor: true,
+        governorAddress: address,
+        governorType: "COMPOUND_BRAVO",
+        governorVersion: null,
+      }
+    }
+  }
 
-Also: if `timelockAdmin` is non-null, call `fetchSafeInfo(timelockAdmin)` — if non-null, that is the multisig governing the timelock. Prefer this over the primary contract when both exist.
+  // Custom: has governor-like surface (quorum + proposalThreshold) but unfamiliar signature
+  if (quorum.status === "success" && propThresh.status === "success") {
+    return {
+      hasGovernor: true,
+      governorAddress: address,
+      governorType: "CUSTOM",
+      governorVersion: null,
+    }
+  }
 
-- [ ] **Step 5: Proxy detection**
+  return { hasGovernor: false, governorAddress: null, governorType: null, governorVersion: null }
+}
 
-Call `readProxyState(primaryContractAddress)` from D.1. If `proxyType !== "NONE"`, also call `fetchContractAbi(proxyImplementation)` to populate `proxyVerified`.
+function parseOzVersion(countingMode: string): string | null {
+  // OZ governors return strings like "support=bravo&quorum=for,abstain".
+  // Version is not in the string; leave null unless Governor exposes `version()`.
+  return null
+}
+```
 
-- [ ] **Step 6: Assemble `captureGovernanceSnapshot(scanId)`**
+- [ ] **Step 3: Unit tests (5)**
+
+`src/lib/detectors/governance/__tests__/detectGovernor.test.ts`:
+
+Mock `batchRead` to return typed results for each scenario.
+
+1. **OZ Governor detected** — `COUNTING_MODE` succeeds → `governorType === "OZ_GOVERNOR"`.
+2. **Compound Bravo detected** — `COUNTING_MODE` fails, `name` returns `"Compound Governor Bravo"` → `governorType === "COMPOUND_BRAVO"`.
+3. **No governor** — all probes fail → `hasGovernor === false`.
+4. **Malformed contract** — mixed success/failure, neither OZ nor Compound signature → returns CUSTOM if quorum+proposalThreshold both succeed, else no governor.
+5. **Multicall partial failure** — `quorum` succeeds, everything else fails → `hasGovernor === true`, `governorType === null` (falls through to CUSTOM only when both quorum and proposalThreshold succeed).
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add -A
+git commit -m "feat(D.3a): governance snapshot types + Governor detection"
+```
+
+**Deliverables:** `types.ts` (all eventual snapshot fields declared), `detectGovernor.ts`, 5 unit tests.
+
+**Exit:** `pnpm test` green. Types file is the single source of truth for `GovernanceSnapshotData` across all Phase E detectors.
+
+### Task D.3b — Timelock + Safe detection
+
+**Files:**
+- Create: `src/lib/detectors/governance/detectTimelock.ts`, `src/lib/detectors/governance/detectSafe.ts`, `src/lib/detectors/governance/__tests__/detectTimelock.test.ts`, `src/lib/detectors/governance/__tests__/detectSafe.test.ts`
+
+- [ ] **Step 1: Implement `detectTimelock`**
+
+`src/lib/detectors/governance/detectTimelock.ts`:
+
+```typescript
+import { parseAbi } from "viem"
+import { batchRead } from "@/lib/onchain/multicall"
+import { ethClient } from "@/lib/rpc-client"
+import type { TimelockDetectionResult } from "./types"
+
+const governorTimelockAbi = parseAbi([
+  "function timelock() view returns (address)",
+])
+
+const timelockProbeAbi = parseAbi([
+  "function getMinDelay() view returns (uint256)",   // OZ TimelockController
+  "function delay() view returns (uint256)",          // Compound Timelock
+  "function admin() view returns (address)",
+])
+
+export async function detectTimelock(
+  governorAddress: `0x${string}`
+): Promise<TimelockDetectionResult | null> {
+  // Step 1: Ask the Governor for its Timelock address
+  let timelockAddr: `0x${string}` | null = null
+  try {
+    timelockAddr = (await ethClient.readContract({
+      address: governorAddress,
+      abi: governorTimelockAbi,
+      functionName: "timelock",
+    })) as `0x${string}`
+  } catch {
+    return null // Governor has no timelock() — no Timelock in path
+  }
+
+  // Step 2: Probe the candidate with OZ + Compound signatures
+  const results = await batchRead([
+    { address: timelockAddr, abi: timelockProbeAbi, functionName: "getMinDelay" },
+    { address: timelockAddr, abi: timelockProbeAbi, functionName: "delay" },
+    { address: timelockAddr, abi: timelockProbeAbi, functionName: "admin" },
+  ])
+
+  const [ozDelay, compoundDelay, admin] = results
+
+  const minDelay =
+    ozDelay.status === "success"
+      ? Number(ozDelay.result)
+      : compoundDelay.status === "success"
+      ? Number(compoundDelay.result)
+      : null
+
+  if (minDelay === null) return null  // not a Timelock
+
+  return {
+    timelockAddress: timelockAddr,
+    timelockMinDelay: minDelay,
+    timelockAdmin: admin.status === "success" ? (admin.result as string) : null,
+  }
+}
+```
+
+- [ ] **Step 2: Implement `detectSafe`**
+
+`src/lib/detectors/governance/detectSafe.ts`:
+
+```typescript
+import { parseAbi } from "viem"
+import { batchRead } from "@/lib/onchain/multicall"
+import { fetchSafeInfo } from "@/lib/safe-api"
+import type { SafeDetectionResult } from "./types"
+
+const safeContractAbi = parseAbi([
+  "function getThreshold() view returns (uint256)",
+  "function getOwners() view returns (address[])",
+])
+
+export async function detectSafe(
+  address: `0x${string}`
+): Promise<SafeDetectionResult | null> {
+  // Primary path: Safe Transaction Service API
+  try {
+    const info = await fetchSafeInfo(address)
+    if (info) {
+      return {
+        address: info.address,
+        threshold: info.threshold,
+        owners: info.owners,
+        ownerCount: info.owners.length,
+      }
+    }
+  } catch {
+    // fall through to contract-read fallback
+  }
+
+  // Fallback: direct contract read (handles Safe-API outage or chains not covered by the service)
+  const results = await batchRead([
+    { address, abi: safeContractAbi, functionName: "getThreshold" },
+    { address, abi: safeContractAbi, functionName: "getOwners" },
+  ])
+
+  const [threshold, owners] = results
+  if (threshold.status !== "success" || owners.status !== "success") return null
+
+  const ownersList = owners.result as readonly string[]
+  return {
+    address,
+    threshold: Number(threshold.result),
+    owners: [...ownersList],
+    ownerCount: ownersList.length,
+  }
+}
+```
+
+- [ ] **Step 3: Unit tests (5)**
+
+Split across two files; 5 tests total.
+
+**`detectTimelock.test.ts`:**
+
+1. **OZ TimelockController detected** — Governor returns timelock address, `getMinDelay` succeeds, `admin` returns address → result populated.
+2. **Compound Timelock detected** — `getMinDelay` fails, `delay` succeeds → result populated with Compound delay.
+3. **No timelock** — Governor has no `timelock()` function → `null`.
+
+**`detectSafe.test.ts`:**
+
+4. **Safe API hit** — `fetchSafeInfo` returns `{threshold: 3, owners: [...]}` → returns populated result, no contract-read fallback called.
+5. **Safe API miss with contract fallback** — `fetchSafeInfo` returns `null`, `getThreshold` + `getOwners` succeed on-chain → returns result.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add -A
+git commit -m "feat(D.3b): Timelock + Safe (multisig) detection"
+```
+
+**Deliverables:** `detectTimelock.ts`, `detectSafe.ts`, 5 unit tests.
+
+**Exit:** `pnpm test` green. Both helpers return typed results or `null`.
+
+### Task D.3c — Proxy detection + snapshot assembly
+
+**Files:**
+- Create: `src/lib/detectors/governance/detectProxy.ts`, `src/lib/detectors/governance/snapshot.ts`, `src/lib/detectors/governance/__tests__/detectProxy.test.ts`, `src/lib/detectors/governance/__tests__/snapshot.test.ts`
+
+- [ ] **Step 1: Implement `detectProxy`**
+
+`src/lib/detectors/governance/detectProxy.ts` — wraps `readProxyState` from D.1 and extends with UUPS + non-standard fallback + `proxyAdminIsContract` probe:
+
+```typescript
+import { ethClient } from "@/lib/rpc-client"
+import { readProxyState } from "@/lib/onchain/proxy"
+import { fetchContractAbi } from "@/lib/etherscan"
+import type { ProxyDetectionResult } from "./types"
+
+const SLOT_ZERO =
+  "0x0000000000000000000000000000000000000000000000000000000000000000" as const
+
+export async function detectProxy(
+  address: `0x${string}`
+): Promise<ProxyDetectionResult> {
+  // EIP-1967 transparent / UUPS common slots (handled in D.1 readProxyState)
+  const base = await readProxyState(address)
+
+  // Non-standard proxy fallback (Audius pattern):
+  // If EIP-1967 reports NONE but storage slot 0 is non-zero AND contract has code → likely custom proxy.
+  if (base.proxyType === "NONE") {
+    const slot0 = await ethClient.getStorageAt({ address, slot: SLOT_ZERO })
+    const code = await ethClient.getCode({ address })
+    if (slot0 && slot0 !== SLOT_ZERO && code && code !== "0x") {
+      return {
+        proxyType: "CUSTOM",
+        proxyAdminAddress: null,
+        proxyImplementation: null,
+        proxyVerified: false,
+        proxyAdminIsContract: false,
+      }
+    }
+    return {
+      ...base,
+      proxyVerified: false,
+      proxyAdminIsContract: false,
+    }
+  }
+
+  // Check if admin is a contract (EOA vs contract matters for GOV-005)
+  const adminIsContract = base.proxyAdminAddress
+    ? (await ethClient.getCode({
+        address: base.proxyAdminAddress as `0x${string}`,
+      })) !== "0x"
+    : false
+
+  // proxyVerified = implementation has a verified ABI on Etherscan
+  const proxyVerified = base.proxyImplementation
+    ? Boolean(await fetchContractAbi(base.proxyImplementation).catch(() => null))
+    : false
+
+  return {
+    ...base,
+    proxyVerified,
+    proxyAdminIsContract: adminIsContract,
+  }
+}
+```
+
+UUPS detection refinement (detecting `_authorizeUpgrade` access control) is deferred to Plan 03+ per spec §5.2 GOV-005. For Plan 02, UUPS contracts surface as `EIP_1822_UUPS` if `readProxyState` already identifies them; GOV-005 fails closed on UUPS without ABI.
+
+- [ ] **Step 2: Implement `captureGovernanceSnapshot`**
+
+`src/lib/detectors/governance/snapshot.ts`:
 
 ```typescript
 import { prisma } from "@/lib/prisma"
 import { ethClient } from "@/lib/rpc-client"
-import { readProxyState } from "@/lib/onchain/proxy"
-import { fetchSafeInfo } from "@/lib/safe-api"
 import { fetchContractAbi } from "@/lib/etherscan"
+import { detectGovernor } from "./detectGovernor"
+import { detectTimelock } from "./detectTimelock"
+import { detectSafe } from "./detectSafe"
+import { detectProxy } from "./detectProxy"
 import type { GovernanceSnapshotData } from "./types"
 
 export async function captureGovernanceSnapshot(
@@ -1643,63 +2132,64 @@ export async function captureGovernanceSnapshot(
   const blockNumber = await ethClient.getBlockNumber()
 
   // Detect in parallel where dependencies allow
-  const [proxy, governorProbe, safeInfo] = await Promise.all([
-    readProxyState(address),
+  const [proxy, governor, safeAtAddress] = await Promise.all([
+    detectProxy(address),
     detectGovernor(address),
-    fetchSafeInfo(address).catch(() => null),
+    detectSafe(address).catch(() => null),
   ])
 
-  const timelock = governorProbe.governorAddress
-    ? await detectTimelock(governorProbe.governorAddress)
+  const timelock = governor.governorAddress
+    ? await detectTimelock(governor.governorAddress as `0x${string}`)
     : null
 
-  // If timelock admin is a Safe, that is the real multisig
+  // If timelock admin is a Safe, that is the real governance multisig
   const timelockSafe = timelock?.timelockAdmin
-    ? await fetchSafeInfo(timelock.timelockAdmin).catch(() => null)
+    ? await detectSafe(timelock.timelockAdmin as `0x${string}`).catch(() => null)
     : null
+  const multisig = timelockSafe ?? safeAtAddress
 
-  const multisig = timelockSafe ?? safeInfo
-
-  const proxyVerified = proxy.proxyImplementation
-    ? Boolean(await fetchContractAbi(proxy.proxyImplementation).catch(() => null))
-    : false
+  // ABI for Phase E detectors (GOV-002, GOV-006)
+  const abiAddress = proxy.proxyImplementation ?? address
+  const implementationAbi = await fetchContractAbi(abiAddress).catch(() => null)
 
   const snapshot: GovernanceSnapshotData = {
     blockNumber,
     capturedAt: new Date(),
-    hasGovernor: governorProbe.hasGovernor,
-    governorAddress: governorProbe.governorAddress,
-    governorType: governorProbe.governorType,
-    governorVersion: governorProbe.governorVersion,
+
+    hasGovernor: governor.hasGovernor,
+    governorAddress: governor.governorAddress,
+    governorType: governor.governorType,
+    governorVersion: governor.governorVersion,
+
     hasTimelock: timelock !== null,
     timelockAddress: timelock?.timelockAddress ?? null,
     timelockMinDelay: timelock?.timelockMinDelay ?? null,
     timelockAdmin: timelock?.timelockAdmin ?? null,
+
     hasMultisig: multisig !== null,
     multisigAddress: multisig?.address ?? null,
     multisigThreshold: multisig?.threshold ?? null,
-    multisigOwnerCount: multisig?.owners.length ?? null,
+    multisigOwnerCount: multisig?.ownerCount ?? null,
     multisigOwners: multisig?.owners ?? [],
+
     proxyType: proxy.proxyType,
     proxyAdminAddress: proxy.proxyAdminAddress,
     proxyImplementation: proxy.proxyImplementation,
-    proxyVerified,
-    votingTokenAddress: null,        // governor.token() probe — Phase E.4
-    votingSnapshotType: "NONE",      // refined in GOV-004
-    rawState: {
-      governorProbe,
-      timelock,
-      safeInfo,
-    },
+    proxyVerified: proxy.proxyVerified,
+    proxyAdminIsContract: proxy.proxyAdminIsContract,
+
+    votingTokenAddress: null,           // populated in Phase E.4 (GOV-004)
+    votingSnapshotType: "NONE",         // populated in Phase E.4 (GOV-004)
+
+    implementationAbi,
+
+    rawState: { governor, timelock, safeAtAddress, timelockSafe, proxy },
   }
 
-  // Persist (idempotent via unique scanId)
+  // Persist (idempotent via unique scanId — §4.6)
   await prisma.governanceSnapshot.upsert({
     where: { scanId },
-    create: {
-      scanId,
-      ...snapshotToCreate(snapshot),
-    },
+    create: { scanId, ...snapshotToCreate(snapshot) },
     update: snapshotToCreate(snapshot),
   })
 
@@ -1707,46 +2197,32 @@ export async function captureGovernanceSnapshot(
 }
 ```
 
-Helpers `detectGovernor`, `detectTimelock`, `snapshotToCreate` are private to this file. Full implementation details are straightforward viem `readContract` / `multicall` calls following the heuristics from Steps 2–4.
+`snapshotToCreate` is a private mapper that drops transient fields like `capturedAt` (Prisma sets it via `@default(now())`). Trivial, not shown.
 
-- [ ] **Step 7: Unit tests with mocked clients**
+- [ ] **Step 3: Unit tests (6)**
 
-Mock `ethClient` and Safe/Etherscan clients; feed known ABIs/slots; assert the returned snapshot shape.
+Split across two files.
 
-```typescript
-describe("captureGovernanceSnapshot", () => {
-  it("detects OZ Governor + TimelockController + Safe at timelock admin", async () => {
-    // ... mocks return: governor.COUNTING_MODE succeeds, timelock.getMinDelay returns 172800,
-    // timelock.admin is a Safe address, fetchSafeInfo returns 5/9 safe
-    const snap = await captureGovernanceSnapshot("scan-id")
-    expect(snap.hasGovernor).toBe(true)
-    expect(snap.governorType).toBe("OZ_GOVERNOR")
-    expect(snap.hasTimelock).toBe(true)
-    expect(snap.timelockMinDelay).toBe(172800)
-    expect(snap.hasMultisig).toBe(true)
-    expect(snap.multisigThreshold).toBe(5)
-  })
+**`detectProxy.test.ts`:**
+1. **Transparent proxy** — EIP-1967 impl + admin slots populated → `EIP_1967_TRANSPARENT`.
+2. **UUPS proxy** — `readProxyState` returns UUPS → surfaced unchanged.
+3. **Custom / non-standard** — EIP-1967 slots empty, slot 0 non-zero, code present → `CUSTOM`.
 
-  it("returns empty-shape snapshot for EOA-controlled contract", async () => {
-    // ... all probes fail
-    const snap = await captureGovernanceSnapshot("scan-id-2")
-    expect(snap.hasGovernor).toBe(false)
-    expect(snap.hasTimelock).toBe(false)
-    expect(snap.hasMultisig).toBe(false)
-  })
-})
-```
+**`snapshot.test.ts`:**
+4. **Full happy path** — OZ Governor + 48h Timelock + 5/9 Safe at timelock admin + proxy → all fields populated, upsert called.
+5. **Upsert idempotency** — call `captureGovernanceSnapshot(scanId)` twice → single `GovernanceSnapshot` row exists (assert `count === 1`).
+6. **Block number capture** — mocked `getBlockNumber` returns `21_000_000n` → persisted snapshot `blockNumber === 21_000_000n`.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add -A
-git commit -m "feat(snapshot): captureGovernanceSnapshot — governor + timelock + safe + proxy"
+git commit -m "feat(D.3c): proxy detection + snapshot assembly"
 ```
 
-**Deliverables:** snapshot capture + persistence, 6+ unit tests, private helpers for Governor/Timelock probes.
+**Deliverables:** `detectProxy.ts`, `snapshot.ts`, 6 unit tests.
 
-**Exit:** `pnpm test` green. Snapshot upsert is idempotent on scanId.
+**Exit:** `pnpm test` green. Snapshot capture composes all four detectors; upsert is idempotent on scanId.
 
 ### Task D.4 — Live-RPC smoke tests (gated behind env flag)
 
@@ -2620,7 +3096,25 @@ export const { GET, POST, PUT } = serve({
 - `run-detectors`: retries 1 (deterministic; should not normally fail)
 - `persist-findings`: retries 3 (DB transient)
 
-Implementation: wrap inside `step.run` — Inngest v3 per-step retry config is via `step.run(id, { retries: 3 }, fn)`. Check v3 API at implementation time.
+**Per-step retry API (Inngest v3):**
+
+```typescript
+await step.run("capture-snapshot", async () => {
+  return await captureGovernanceSnapshot(scanId)
+}, { retries: 3 })
+```
+
+If this signature does not work at implementation time (verified against `@inngest/sdk` v3.x docs), use **function-level retries** in `createFunction` config instead:
+
+```typescript
+inngest.createFunction(
+  { id: "execute-governance", retries: 3 },
+  { event: "scan.module.requested", if: "event.data.module == 'GOVERNANCE'" },
+  async ({ event, step }) => { /* ... */ }
+)
+```
+
+Do not defer — commit to whichever signature actually works during implementation. No `check at implementation time` hedge.
 
 - [ ] **Step 4: Local end-to-end with Inngest dev server**
 
@@ -2751,14 +3245,47 @@ describe("GET /api/scan/[id]/status", () => {
 })
 ```
 
+- [ ] **Step 2.5: Cache headers on the main scan endpoint (spec §6.2)**
+
+**File:** `src/app/api/scan/[id]/route.ts` (Plan 01 endpoint, modified here)
+
+Spec §6.2 requires the main scan endpoint to emit different `Cache-Control` headers for terminal vs. non-terminal states. Plan 01 shipped this route without explicit headers. Fix it here (parallel to the new `/status` endpoint added in G.1 above):
+
+```typescript
+const isTerminal = ["COMPLETE", "FAILED", "EXPIRED"].includes(scan.status)
+const cacheControl = isTerminal
+  ? "private, max-age=60"
+  : "no-store"
+
+return NextResponse.json(data, {
+  headers: { "Cache-Control": cacheControl },
+})
+```
+
+Add 2 new cases to the existing `src/app/api/scan/[id]/__tests__/route.test.ts` (or create if it does not exist per the Plan 01 pattern):
+
+```typescript
+it("QUEUED scan returns Cache-Control: no-store", async () => {
+  const scan = await makeScanFixture({ status: "QUEUED" })
+  const res = await GET(mockReq(), { params: { id: scan.id } })
+  expect(res.headers.get("cache-control")).toBe("no-store")
+})
+
+it("COMPLETE scan returns Cache-Control: private, max-age=60", async () => {
+  const scan = await makeScanFixture({ status: "COMPLETE" })
+  const res = await GET(mockReq(), { params: { id: scan.id } })
+  expect(res.headers.get("cache-control")).toBe("private, max-age=60")
+})
+```
+
 - [ ] **Step 3: Commit**
 
 ```bash
 git add -A
-git commit -m "feat(api): GET /api/scan/[id]/status — lightweight polling endpoint"
+git commit -m "feat(api): GET /api/scan/[id]/status — lightweight polling endpoint + Cache-Control on /api/scan/[id]"
 ```
 
-**Exit:** 4+ tests green, response size ≤200 bytes typical.
+**Exit:** 4+ tests on the new `/status` endpoint + 2 on the existing `/api/scan/[id]` all green, response size ≤200 bytes typical for `/status`.
 
 ### Task G.2 — useScanPolling hook
 
@@ -3255,9 +3782,15 @@ Submit a scan via the internal `POST /api/scan` handler. Assert:
 
 - [ ] **Step 2: Implementation approach**
 
-Inngest v3 offers in-process function invocation for tests. Exact API pattern: `await executeScan.invokeFn({ event: { name: "scan.queued", data: {...} } })`. Details at https://www.inngest.com/docs/reference/functions/testing — fetch at implementation time.
+**Primary:** use `@inngest/test` (see https://www.inngest.com/docs/test). If `@inngest/test` is available at time of implementation, invoke `executeScan` / `executeGovernanceModule` via its function-runner and assert on the resulting events + DB state.
 
-Fallback if the in-process API is too constrained: drive the flow by calling the internal module functions (`captureGovernanceSnapshot`, `runGovernanceDetectors`, `persistFindingsAndGrade`) directly, skipping Inngest, and validate only the event-emission contract separately via unit tests on `POST /api/scan`.
+**Fallback:** if `@inngest/test` is not available or its API differs from the docs, use a manual approach:
+- Mock the Inngest client via `vi.mock("@/lib/inngest/client")`.
+- Assert step ids called with expected event data.
+- Simulate `scan.module.completed` event emission manually in the test.
+- Drive the flow by calling the internal module functions (`captureGovernanceSnapshot`, `runGovernanceDetectors`, `persistFindingsAndGrade`) directly, skipping Inngest, and validate only the event-emission contract separately via unit tests on `POST /api/scan`.
+
+Do NOT defer the decision to implementation time — commit to the fallback path upfront. Migration to `@inngest/test` can happen as a refactor in Plan 07+ if needed.
 
 - [ ] **Step 3: Commit**
 
