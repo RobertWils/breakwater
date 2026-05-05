@@ -56,6 +56,9 @@ Next step: implementation.md generation.
 - FindingResponse discriminated union: currently structural union without true discriminator. Add tier-discriminator to enforce tier-specific shapes at type level. Low runtime risk (tests verify shapes correct), medium refactor touching 3 shaper functions.
 - config.ts production-guard tests: add production-mode coverage for `assertProductionHashSalts()` with missing `SCAN_IP_SALT` / `SCAN_EMAIL_SALT` (Codex NICE_TO_HAVE).
 - /scan/[id] client polling: server-rendered snapshot only in Plan 01. Add client polling against GET /api/scan/[id] when Plan 02 dispatcher introduces QUEUED→COMPLETE state transitions. Design considerations: polling interval (2-5s), exponential backoff on errors, stop on terminal states (COMPLETE/FAILED/EXPIRED), bail after N failures.
+- inngest 4.x evaluation: Plan 02 pinned to inngest@3.27.5 (Phase A.1). v4 line is available; evaluate upgrade once Plan 02 is stable end-to-end and the v3→v4 changelog can be reviewed without blocking dispatcher work.
+- viem 2.48.x bump in Phase A.3 if needed: pinned to viem@2.21.55 in A.1. If RPC client setup in A.3 surfaces type errors fixed by a newer 2.x, bump then.
+- viem + abitype + zod 4 compatibility: viem@2.21.55 → abitype@1.0.7 declares peer `zod ^3 >=3.22.0`; project uses zod 4.3.6. Warning only at install. Monitor during Phase A.3 RPC client setup. If runtime errors surface from abitype's zod schemas: investigate downgrading to zod 3, or pin viem to a version whose abitype supports zod 4.
 
 ## Plan 07 — Deferred items (sharing UI, OG generation)
 
