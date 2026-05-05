@@ -32,7 +32,7 @@
     "@tailwindcss/typography": "0.5.19",
     "framer-motion": "12.38.0",
     "geist": "1.7.0",
-    "inngest": "3.27.5",
+    "inngest": "3.54.2",
     "marked": "18.0.2",
     "next": "14.2.35",
     "next-auth": "^4.24.14",
