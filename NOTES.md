@@ -60,6 +60,7 @@ Next step: implementation.md generation.
 - viem 2.48.x bump in Phase A.3 if needed: pinned to viem@2.21.55 in A.1. If RPC client setup in A.3 surfaces type errors fixed by a newer 2.x, bump then.
 - viem + abitype + zod 4 compatibility: viem@2.21.55 → abitype@1.0.7 declares peer `zod ^3 >=3.22.0`; project uses zod 4.3.6. Warning only at install. Monitor during Phase A.3 RPC client setup. If runtime errors surface from abitype's zod schemas: investigate downgrading to zod 3, or pin viem to a version whose abitype supports zod 4.
 - tsconfig.json target: not set (defaults to ES3). bigint literals (e.g., `20_000_000n`) require workaround via `BigInt(...)`. Single-line tsconfig change (`"target": "ES2020"` or higher) would enable native literal syntax. Defer unless friction increases during Phase D (block numbers, gas values use bigint frequently).
+- detectorVersion field type: currently `Int`, considered for `String` semver format (e.g., "1.0.0") in spec §3.2. Deferred during B.2 to keep that phase additive-only and avoid Plan 01 code disruption (`scan-response.ts:73` types it as `number`; 3 test files use literal `1`). Reconsider in Plan 03+ if string-based versioning becomes needed (e.g., for user-facing version display). If converted, the migration must `ALTER COLUMN ... TYPE TEXT USING detectorVersion::text` and the public response shape (`scan-response.ts`) plus tests must update in lockstep.
 
 ## Plan 07 — Deferred items (sharing UI, OG generation)
 

@@ -193,6 +193,10 @@ model Scan {
   scanAttempts          ScanAttempt[]
   governanceSnapshot    GovernanceSnapshot?
 
+  // Dispatcher tracking (Plan 02 B.2)
+  dispatchedAt       DateTime?
+  executionStartedAt DateTime?
+
   @@index([submittedEmail])
   @@index([expiresAt])
 }
@@ -237,6 +241,10 @@ model ModuleRun {
   idempotencyKey   String       @unique
   findings         Finding[]
 
+  // Inngest correlation (Plan 02 B.2)
+  inngestEventId String?
+  inngestRunId   String?
+
   @@unique([scanId, module])
 }
 
@@ -260,6 +268,9 @@ model Finding {
   detectorId          String
   detectorVersion     Int
   createdAt           DateTime   @default(now())
+
+  // Reproducibility (Plan 02 B.2)
+  snapshotBlockNumber BigInt?
 
   @@index([scanId, module])
 }
