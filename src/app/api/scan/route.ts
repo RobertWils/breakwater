@@ -105,17 +105,16 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     console.error("[POST /api/scan] Unexpected error:", err);
     try {
       const { prisma } = await import("@/lib/prisma");
-      await prisma.scanAttempt.create({
-        data: {
-          ipHash,
-          userId,
-          userAgent,
-          cooldownKey: "internal:error",
-          inputPayloadHash: "internal:error",
-          status: "INVALID",
-          reason: "internal_error",
-          scanId: null,
-        },
+      const { createScanAttempt } = await import("@/lib/scan-attempt");
+      await createScanAttempt(prisma, {
+        ipHash,
+        userId,
+        userAgent,
+        cooldownKey: "internal:error",
+        inputPayloadHash: "internal:error",
+        status: "INVALID",
+        reason: "internal_error",
+        scanId: null,
       });
     } catch (logErr) {
       console.error("[POST /api/scan] Failed to log internal error attempt:", logErr);

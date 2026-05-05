@@ -208,7 +208,7 @@ model ScanAttempt {
   user             User?             @relation(fields: [userId], references: [id])
   attemptedAt      DateTime          @default(now())
   status           ScanAttemptStatus
-  reason           String
+  reason           String?
   userAgent        String
   inputPayloadHash String
   cooldownKey      String // always ${chain}:${normalizedAddress} — NEVER Protocol.id; Phase D uses pg_advisory_xact_lock(hashtext(cooldownKey)) for atomic cooldown

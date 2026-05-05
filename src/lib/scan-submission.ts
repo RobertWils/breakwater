@@ -12,6 +12,7 @@ import { normalizeAddress, isValidAddress } from "@/lib/addresses";
 import { hashEmail, hashPayload } from "@/lib/hash";
 import { cooldownKey as buildCooldownKey } from "@/lib/cooldown";
 import { checkIpRateLimit, checkDedupe } from "@/lib/rate-limit";
+import { createScanAttempt } from "@/lib/scan-attempt";
 import { ScanErrors, ScanSubmissionError } from "@/lib/scan-submission/errors";
 import type { ScanSubmission } from "@/lib/schemas/scan";
 
@@ -34,8 +35,14 @@ function deriveDisplayName(
   return `${input.chain} ${shortAddr}`;
 }
 
-function generateSlug(chain: string, normalizedAddress: string): string {
-  const shortAddr = normalizedAddress.slice(0, 8);
+export function generateSlug(
+  chain: string,
+  normalizedAddress: string,
+): string {
+  // 14-char prefix: "0x" + 12 hex chars on Ethereum, 14 base58 chars on Solana.
+  // Reduces collision probability ~65k× vs the prior 8-char prefix. See Plan 02
+  // B.3 for the bump rationale.
+  const shortAddr = normalizedAddress.slice(0, 14);
   return `${chain.toLowerCase()}-${shortAddr}`.toLowerCase();
 }
 
@@ -65,17 +72,15 @@ async function logMalformedAttempt(params: {
       ? SENTINEL_PAYLOAD_MALFORMED_JSON
       : SENTINEL_PAYLOAD_SCHEMA;
   try {
-    await prisma.scanAttempt.create({
-      data: {
-        ipHash: params.ipHash,
-        userId: params.userId,
-        userAgent: params.userAgent,
-        cooldownKey: cooldownKeyVal,
-        inputPayloadHash: payloadHashVal,
-        status: "INVALID",
-        reason: params.reason,
-        scanId: null,
-      },
+    await createScanAttempt(prisma, {
+      ipHash: params.ipHash,
+      userId: params.userId,
+      userAgent: params.userAgent,
+      cooldownKey: cooldownKeyVal,
+      inputPayloadHash: payloadHashVal,
+      status: "INVALID",
+      reason: params.reason,
+      scanId: null,
     });
   } catch (err) {
     console.error("[scan-submission] Failed to log malformed attempt:", err);
@@ -91,17 +96,15 @@ async function logInvalidAttempt(params: {
   reason: string;
 }) {
   try {
-    await prisma.scanAttempt.create({
-      data: {
-        ipHash: params.ipHash,
-        userId: params.userId,
-        userAgent: params.userAgent,
-        cooldownKey: params.cooldownKey,
-        inputPayloadHash: params.inputPayloadHash,
-        status: "INVALID",
-        reason: params.reason,
-        scanId: null,
-      },
+    await createScanAttempt(prisma, {
+      ipHash: params.ipHash,
+      userId: params.userId,
+      userAgent: params.userAgent,
+      cooldownKey: params.cooldownKey,
+      inputPayloadHash: params.inputPayloadHash,
+      status: "INVALID",
+      reason: params.reason,
+      scanId: null,
     });
   } catch (err) {
     console.error("[scan-submission] Failed to log invalid attempt:", err);
@@ -122,17 +125,15 @@ async function logInternalErrorAttempt(params: {
   reason: string;
 }): Promise<void> {
   try {
-    await prisma.scanAttempt.create({
-      data: {
-        ipHash: params.ipHash,
-        userId: params.userId,
-        userAgent: params.userAgent,
-        cooldownKey: params.cooldownKey,
-        inputPayloadHash: params.inputPayloadHash,
-        status: "INVALID",
-        reason: params.reason,
-        scanId: null,
-      },
+    await createScanAttempt(prisma, {
+      ipHash: params.ipHash,
+      userId: params.userId,
+      userAgent: params.userAgent,
+      cooldownKey: params.cooldownKey,
+      inputPayloadHash: params.inputPayloadHash,
+      status: "INVALID",
+      reason: params.reason,
+      scanId: null,
     });
   } catch (err) {
     console.error("[scan-submission] Failed to log internal error attempt:", err);
@@ -148,17 +149,15 @@ async function logRateLimitedAttempt(params: {
   reason: "ip_hour" | "user_hour";
 }) {
   try {
-    await prisma.scanAttempt.create({
-      data: {
-        ipHash: params.ipHash,
-        userId: params.userId,
-        userAgent: params.userAgent,
-        cooldownKey: params.cooldownKey,
-        inputPayloadHash: params.inputPayloadHash,
-        status: "RATE_LIMITED",
-        reason: params.reason,
-        scanId: null,
-      },
+    await createScanAttempt(prisma, {
+      ipHash: params.ipHash,
+      userId: params.userId,
+      userAgent: params.userAgent,
+      cooldownKey: params.cooldownKey,
+      inputPayloadHash: params.inputPayloadHash,
+      status: "RATE_LIMITED",
+      reason: params.reason,
+      scanId: null,
     });
   } catch (err) {
     console.error("[scan-submission] Failed to log rate-limited attempt:", err);
@@ -174,17 +173,15 @@ async function logDuplicateAttempt(params: {
   scanId: string;
 }) {
   try {
-    await prisma.scanAttempt.create({
-      data: {
-        ipHash: params.ipHash,
-        userId: params.userId,
-        userAgent: params.userAgent,
-        cooldownKey: params.cooldownKey,
-        inputPayloadHash: params.inputPayloadHash,
-        status: "DUPLICATE",
-        reason: "dedupe_recent_identical",
-        scanId: params.scanId,
-      },
+    await createScanAttempt(prisma, {
+      ipHash: params.ipHash,
+      userId: params.userId,
+      userAgent: params.userAgent,
+      cooldownKey: params.cooldownKey,
+      inputPayloadHash: params.inputPayloadHash,
+      status: "DUPLICATE",
+      reason: "dedupe_recent_identical",
+      scanId: params.scanId,
     });
   } catch (err) {
     console.error("[scan-submission] Failed to log duplicate attempt:", err);
@@ -361,17 +358,15 @@ export async function submitScan(
         : COOLDOWN_WINDOW_MS;
       const retryAfterSec = Math.max(1, Math.ceil(retryAfterMs / 1000));
 
-      await tx.scanAttempt.create({
-        data: {
-          ipHash,
-          userId,
-          userAgent,
-          cooldownKey: key,
-          inputPayloadHash: payloadHash,
-          status: "RATE_LIMITED",
-          reason: "protocol_cooldown",
-          scanId: null,
-        },
+      await createScanAttempt(tx, {
+        ipHash,
+        userId,
+        userAgent,
+        cooldownKey: key,
+        inputPayloadHash: payloadHash,
+        status: "RATE_LIMITED",
+        reason: "protocol_cooldown",
+        scanId: null,
       });
 
       return { type: "cooldown_hit", retryAfterSec } as const;
@@ -468,18 +463,18 @@ export async function submitScan(
     });
     await tx.moduleRun.createMany({ data: moduleRuns });
 
-    // Step 11: Write ACCEPTED ScanAttempt
-    await tx.scanAttempt.create({
-      data: {
-        ipHash,
-        userId,
-        userAgent,
-        cooldownKey: key,
-        inputPayloadHash: payloadHash,
-        status: "ACCEPTED",
-        reason: "accepted",
-        scanId: scan.id,
-      },
+    // Step 11: Write ACCEPTED ScanAttempt. ACCEPTED rows store reason=null
+    // since "accepted" carried no information beyond the status itself
+    // (Plan 02 B.3 — ScanAttempt.reason made nullable).
+    await createScanAttempt(tx, {
+      ipHash,
+      userId,
+      userAgent,
+      cooldownKey: key,
+      inputPayloadHash: payloadHash,
+      status: "ACCEPTED",
+      reason: null,
+      scanId: scan.id,
     });
 
     return { type: "success", scanId: scan.id } as const;
