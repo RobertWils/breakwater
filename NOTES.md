@@ -59,6 +59,7 @@ Next step: implementation.md generation.
 - inngest 4.x evaluation: Plan 02 pinned to inngest@3.27.5 (Phase A.1). v4 line is available; evaluate upgrade once Plan 02 is stable end-to-end and the v3→v4 changelog can be reviewed without blocking dispatcher work.
 - viem 2.48.x bump in Phase A.3 if needed: pinned to viem@2.21.55 in A.1. If RPC client setup in A.3 surfaces type errors fixed by a newer 2.x, bump then.
 - viem + abitype + zod 4 compatibility: viem@2.21.55 → abitype@1.0.7 declares peer `zod ^3 >=3.22.0`; project uses zod 4.3.6. Warning only at install. Monitor during Phase A.3 RPC client setup. If runtime errors surface from abitype's zod schemas: investigate downgrading to zod 3, or pin viem to a version whose abitype supports zod 4.
+- tsconfig.json target: not set (defaults to ES3). bigint literals (e.g., `20_000_000n`) require workaround via `BigInt(...)`. Single-line tsconfig change (`"target": "ES2020"` or higher) would enable native literal syntax. Defer unless friction increases during Phase D (block numbers, gas values use bigint frequently).
 
 ## Plan 07 — Deferred items (sharing UI, OG generation)
 
