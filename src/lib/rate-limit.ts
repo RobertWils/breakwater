@@ -50,7 +50,7 @@ export async function checkIpRateLimit(params: {
   };
 }
 
-const DEDUPE_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+export const DEDUPE_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 
 export async function checkDedupe(params: {
   ipHash: string;

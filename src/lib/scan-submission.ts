@@ -13,7 +13,7 @@ import { hashEmail, hashPayload } from "@/lib/hash";
 import { cooldownKey as buildCooldownKey } from "@/lib/cooldown";
 import { inngest } from "@/lib/inngest/client";
 import { log } from "@/lib/logging";
-import { checkIpRateLimit, checkDedupe } from "@/lib/rate-limit";
+import { checkIpRateLimit, DEDUPE_WINDOW_MS } from "@/lib/rate-limit";
 import { createScanAttempt } from "@/lib/scan-attempt";
 import { ScanErrors, ScanSubmissionError } from "@/lib/scan-submission/errors";
 import type { ScanSubmission } from "@/lib/schemas/scan";
@@ -166,30 +166,6 @@ async function logRateLimitedAttempt(params: {
   }
 }
 
-async function logDuplicateAttempt(params: {
-  ipHash: string;
-  userId: string | null;
-  userAgent: string;
-  cooldownKey: string;
-  inputPayloadHash: string;
-  scanId: string;
-}) {
-  try {
-    await createScanAttempt(prisma, {
-      ipHash: params.ipHash,
-      userId: params.userId,
-      userAgent: params.userAgent,
-      cooldownKey: params.cooldownKey,
-      inputPayloadHash: params.inputPayloadHash,
-      status: "DUPLICATE",
-      reason: "dedupe_recent_identical",
-      scanId: params.scanId,
-    });
-  } catch (err) {
-    console.error("[scan-submission] Failed to log duplicate attempt:", err);
-  }
-}
-
 // ─── Public interface ─────────────────────────────────────────────────────────
 
 export interface SubmitScanParams {
@@ -281,19 +257,13 @@ export async function submitScan(
     );
   }
 
-  // ── Step 4: Payload dedupe ──
-  const { existingScanId } = await checkDedupe({ ipHash, inputPayloadHash: payloadHash });
-  if (existingScanId !== null) {
-    await logDuplicateAttempt({
-      ipHash,
-      userId,
-      userAgent,
-      cooldownKey: key,
-      inputPayloadHash: payloadHash,
-      scanId: existingScanId,
-    });
-    return { scanId: existingScanId, statusCode: 200 };
-  }
+  // ── Step 4: Payload dedupe is now performed INSIDE the transaction
+  //    after the advisory lock (Plan 02 C.4 — I1 fix). The earlier
+  //    pre-transaction check was racy: two concurrent identical POSTs
+  //    could both observe "no existing scan" before either's tx had
+  //    committed an ACCEPTED ScanAttempt. Moving dedupe under the
+  //    advisory lock serialises identical submissions on the cooldown
+  //    key so the second one sees the first's committed ACCEPTED row.
 
   // ── Step 5: Protocol lookup (read-only) ──
   const existingProtocol = await prisma.protocol.findUnique({
@@ -334,7 +304,40 @@ export async function submitScan(
     // Step 7a: Acquire advisory lock (transaction-scoped, auto-released on commit/rollback)
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
 
-    // Step 7b: Cooldown check inside lock
+    // Step 7b: Payload dedupe inside the lock (C.4 I1).
+    // Concurrent identical POSTs serialise on the advisory lock; the second
+    // arrival now sees the first's committed ACCEPTED ScanAttempt and
+    // returns the same scanId with statusCode 200 instead of double-creating.
+    const dedupeSince = new Date(Date.now() - DEDUPE_WINDOW_MS);
+    const dedupeMatch = await tx.scanAttempt.findFirst({
+      where: {
+        ipHash,
+        inputPayloadHash: payloadHash,
+        status: "ACCEPTED",
+        attemptedAt: { gte: dedupeSince },
+        scanId: { not: null },
+      },
+      orderBy: { attemptedAt: "desc" },
+      select: { scanId: true },
+    });
+    if (dedupeMatch?.scanId) {
+      await createScanAttempt(tx, {
+        ipHash,
+        userId,
+        userAgent,
+        cooldownKey: key,
+        inputPayloadHash: payloadHash,
+        status: "DUPLICATE",
+        reason: "dedupe_recent_identical",
+        scanId: dedupeMatch.scanId,
+      });
+      return {
+        type: "duplicate",
+        scanId: dedupeMatch.scanId,
+      } as const;
+    }
+
+    // Step 7c: Cooldown check inside lock
     const cooldownSince = new Date(Date.now() - COOLDOWN_WINDOW_MS);
     const recentAccepted = await tx.scanAttempt.count({
       where: {
@@ -490,8 +493,13 @@ export async function submitScan(
     throw ScanErrors.protocolCooldown(txResult.retryAfterSec);
   }
 
+  if (txResult.type === "duplicate") {
+    // Identical-payload re-submission absorbed inside the lock (C.4 I1).
+    // Same shape as the prior pre-tx duplicate path: 200 + original scanId.
+    return { scanId: txResult.scanId, statusCode: 200 };
+  }
+
   // C.2.5: Lifecycle log — scan row exists, request was accepted (202).
-  // Fires only on the new-scan path; duplicates (200) returned earlier.
   log({
     event: "scan.submitted",
     scanId: txResult.scanId,
@@ -499,13 +507,22 @@ export async function submitScan(
     modulesEnabled: input.modulesEnabled,
   });
 
-  // C.2: Emit scan.queued for the Inngest dispatcher (executeScan from C.1).
-  // Best-effort — emission failures log but never roll back the scan.
-  // dispatchedAt is set ONLY after a successful emission so a future
-  // recovery job can identify orphaned scans (created but undispatched)
-  // by querying status='QUEUED' AND dispatchedAt IS NULL.
+  // C.2 / C.4 (I2 + B2): Emit scan.queued for the dispatcher (executeScan).
+  // Two-phase best-effort:
+  //   Phase A — send the event with a deterministic Inngest event id so a
+  //             retry of submitScan for the same scan is server-side
+  //             deduplicated (B2 idempotency).
+  //   Phase B — record inngestEventId + dispatchedAt on the Scan row so
+  //             recovery jobs can tell "event sent" from "scan orphaned":
+  //               inngestEventId NOT NULL → event was sent
+  //               dispatchedAt    NULL    → DB write of (A)'s receipt failed
+  //                                          but the event is already in flight.
+  // Each phase has its own try/catch (I2) so a Phase B failure does not
+  // mask Phase A success.
+  let sentInngestEventId: string | undefined;
   try {
     const sendResult = await inngest.send({
+      id: `scan:${txResult.scanId}:queued`,
       name: "scan.queued",
       data: {
         scanId: txResult.scanId,
@@ -515,27 +532,42 @@ export async function submitScan(
         modulesEnabled: input.modulesEnabled,
       },
     });
-
-    await prisma.scan.update({
-      where: { id: txResult.scanId },
-      data: { dispatchedAt: new Date() },
-    });
-
-    // C.2.5: Lifecycle log — Inngest accepted the event. inngestEventId
-    // is the first id from the send response; useful for correlating with
-    // the Inngest dashboard. Logged after the dispatchedAt update so a
-    // single log line corresponds to a fully-recorded dispatch.
-    log({
-      event: "scan.dispatched",
-      scanId: txResult.scanId,
-      inngestEventId: sendResult.ids[0],
-    });
+    sentInngestEventId = sendResult.ids[0];
   } catch (err) {
     console.error(
       "[scan-submission] Inngest emission failed for scan.queued:",
       err,
     );
+    // Phase A failed: scan exists, no event sent. A recovery job can
+    // identify the scan via inngestEventId IS NULL AND status='QUEUED'.
+    return { scanId: txResult.scanId, statusCode: 202 };
   }
+
+  // Phase A succeeded — emission is in flight. Persist the receipt.
+  try {
+    await prisma.scan.update({
+      where: { id: txResult.scanId },
+      data: {
+        dispatchedAt: new Date(),
+        inngestEventId: sentInngestEventId ?? null,
+      },
+    });
+  } catch (err) {
+    console.error(
+      "[scan-submission] dispatchedAt/inngestEventId update failed:",
+      err,
+    );
+    // Recovery semantics: inngestEventId may still be null in the DB
+    // even though the event was sent. A recovery job MUST treat
+    // dispatchedAt IS NULL as "uncertain" rather than "not dispatched"
+    // and reconcile via the Inngest dashboard if the scan stalls.
+  }
+
+  log({
+    event: "scan.dispatched",
+    scanId: txResult.scanId,
+    inngestEventId: sentInngestEventId,
+  });
 
   return { scanId: txResult.scanId, statusCode: 202 };
 }

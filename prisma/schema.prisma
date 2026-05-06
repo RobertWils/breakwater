@@ -193,9 +193,10 @@ model Scan {
   scanAttempts          ScanAttempt[]
   governanceSnapshot    GovernanceSnapshot?
 
-  // Dispatcher tracking (Plan 02 B.2)
+  // Dispatcher tracking (Plan 02 B.2 + C.4)
   dispatchedAt       DateTime?
   executionStartedAt DateTime?
+  inngestEventId     String?
 
   @@index([submittedEmail])
   @@index([expiresAt])

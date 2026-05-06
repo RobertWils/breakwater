@@ -1257,4 +1257,118 @@ describe.skipIf(!hasDb)("scan submission integration", () => {
       if (protocol) createdProtocolIds.push(protocol.id);
     },
   );
+
+  // ── Plan 02 C.4 (Codex-review fixes) ─────────────────────────────────────
+  // I1: dedupe race — identical concurrent submissions both observe "no
+  //     existing scan" before either's tx commits, then both create scans.
+  //     With dedupe moved inside the advisory-locked transaction the
+  //     second arrival sees the first's committed ACCEPTED row.
+  // I2: emission/update split — successful inngest.send must persist
+  //     inngestEventId on the Scan row even when dispatchedAt update has
+  //     issues; verify the event id round-trips.
+
+  it.skipIf(!hasDb)(
+    "C.4 I1: rapid identical submissions return the same scanId via dedupe inside the lock",
+    async () => {
+      inngestSendMock.mockClear();
+
+      const ipHash = uniqueIpHash();
+      const address = uniqueEthAddress();
+      createdScanAttemptIpHashes.push(ipHash);
+
+      const inputBody = {
+        chain: "ETHEREUM" as const,
+        primaryContractAddress: address,
+        extraContractAddresses: [],
+        multisigs: [],
+        modulesEnabled: ["GOVERNANCE" as const],
+      };
+      const params = {
+        input: inputBody,
+        userId: null,
+        userEmail: null,
+        ip: "1.2.3.4",
+        ipHash,
+        userAgent: "integration-test/1.0",
+      };
+
+      // Fire two submissions concurrently. The advisory lock serialises
+      // them; the second's in-tx dedupe should match the first's ACCEPTED
+      // row and return statusCode 200 with the same scanId.
+      const [first, second] = await Promise.all([
+        submitScan(params),
+        submitScan(params),
+      ]);
+
+      const protocol = await prisma.protocol.findUnique({
+        where: {
+          chain_primaryContractAddress: {
+            chain: "ETHEREUM",
+            primaryContractAddress: address.toLowerCase(),
+          },
+        },
+      });
+      if (protocol) createdProtocolIds.push(protocol.id);
+
+      // Exactly one of the two created the scan (202), the other deduped (200).
+      const codes = [first.statusCode, second.statusCode].sort();
+      expect(codes).toEqual([200, 202]);
+      // Both refer to the same scan id.
+      expect(first.scanId).toBe(second.scanId);
+
+      // Only one scan + one ACCEPTED ScanAttempt for this dedupe key.
+      const acceptedCount = await prisma.scanAttempt.count({
+        where: { ipHash, status: "ACCEPTED" },
+      });
+      expect(acceptedCount).toBe(1);
+      const scanCount = await prisma.scan.count({
+        where: { id: first.scanId },
+      });
+      expect(scanCount).toBe(1);
+    },
+  );
+
+  it.skipIf(!hasDb)(
+    "C.4 I2: successful submission persists inngestEventId on the Scan row",
+    async () => {
+      inngestSendMock.mockClear();
+      inngestSendMock.mockResolvedValueOnce({ ids: ["evt_c4_test"] });
+
+      const ipHash = uniqueIpHash();
+      const address = uniqueEthAddress();
+      createdScanAttemptIpHashes.push(ipHash);
+
+      const result = await submitScan({
+        input: {
+          chain: "ETHEREUM",
+          primaryContractAddress: address,
+          extraContractAddresses: [],
+          multisigs: [],
+          modulesEnabled: ["GOVERNANCE"],
+        },
+        userId: null,
+        userEmail: null,
+        ip: "1.2.3.4",
+        ipHash,
+        userAgent: "integration-test/1.0",
+      });
+      expect(result.statusCode).toBe(202);
+
+      const scan = await prisma.scan.findUnique({
+        where: { id: result.scanId },
+      });
+      expect(scan?.inngestEventId).toBe("evt_c4_test");
+      expect(scan?.dispatchedAt).toBeInstanceOf(Date);
+
+      const protocol = await prisma.protocol.findUnique({
+        where: {
+          chain_primaryContractAddress: {
+            chain: "ETHEREUM",
+            primaryContractAddress: address.toLowerCase(),
+          },
+        },
+      });
+      if (protocol) createdProtocolIds.push(protocol.id);
+    },
+  );
 });

@@ -1,28 +1,100 @@
+import type { Prisma, ScanStatus } from "@prisma/client";
+
 import { isGovernanceModuleEnabled } from "@/lib/feature-flags";
 import { inngest } from "@/lib/inngest/client";
 import { prisma } from "@/lib/prisma";
 
 /**
- * Phase C.1 skeleton for the scan lifecycle dispatcher.
+ * Phase C.1 + C.4 dispatcher orchestrator for the scan lifecycle.
  *
- * Responsibilities (skeleton-level):
- *   1. Mark scan as RUNNING when the worker picks it up.
- *   2. Decide which module dispatches to fan out (governance only for now).
- *   3. Wait for each fan-out's `scan.module.completed` echo, with a hard
- *      timeout that records `errorMessage = "module_timeout"`.
- *   4. Compute a final scan status using a simple rule: every module is
- *      terminal-success (COMPLETE or SKIPPED) → COMPLETE; otherwise FAILED.
- *      Phase F refines this to PARTIAL_COMPLETE for mixed-state scans.
- *   5. Emit `scan.completed` so downstream listeners (analytics, email
- *      triggers) can react.
+ * Step body logic is extracted into `markRunning` / `markComplete` helpers
+ * so it can be unit-tested without spinning up Inngest's test framework
+ * (deferred to Phase H per implementation.md). Inngest steps below are
+ * thin wrappers that pass the request-time prisma client.
  *
- * Non-goals here (Phase F):
- *   - Implementing executeGovernanceModule (the consumer of
- *     scan.module.requested). Until that lands, this skeleton always hits
- *     the timeout branch in dev/staging.
- *   - Composite grade calculation.
- *   - PARTIAL_COMPLETE bookkeeping.
+ * Idempotency model (C.4):
+ *   - mark-running uses compare-and-set on status='QUEUED'. A retry on the
+ *     same scan.queued event finds status='RUNNING' and short-circuits.
+ *   - mark-complete uses compare-and-set on status='RUNNING'. A late
+ *     module-completed event arriving after a sibling-driven finalisation
+ *     finds status terminal and reports `alreadyFinalized: true`.
+ *   - mark-complete also defers when modules aren't all terminal yet
+ *     (defends the timeout-vs-late-completion race in I3).
  */
+
+type DbClient = {
+  scan: {
+    updateMany: Prisma.ScanDelegate["updateMany"];
+    findUnique: Prisma.ScanDelegate["findUnique"];
+  };
+  moduleRun: {
+    updateMany: Prisma.ModuleRunDelegate["updateMany"];
+  };
+};
+
+export type MarkRunningResult =
+  | { skipped: false }
+  | { skipped: true; reason: "scan_not_queued" };
+
+export async function markRunning(
+  client: DbClient,
+  scanId: string,
+): Promise<MarkRunningResult> {
+  const updated = await client.scan.updateMany({
+    where: { id: scanId, status: "QUEUED" },
+    data: { status: "RUNNING", executionStartedAt: new Date() },
+  });
+  if (updated.count === 0) {
+    return { skipped: true, reason: "scan_not_queued" };
+  }
+  return { skipped: false };
+}
+
+export type MarkCompleteResult =
+  | { finalStatus: ScanStatus; deferred: false; alreadyFinalized: false }
+  | { finalStatus: null; deferred: true; alreadyFinalized: false }
+  | { finalStatus: null; deferred: false; alreadyFinalized: true };
+
+export async function markComplete(
+  client: DbClient,
+  scanId: string,
+): Promise<MarkCompleteResult> {
+  const scan = await client.scan.findUnique({
+    where: { id: scanId },
+    include: { modules: true },
+  });
+  if (!scan) {
+    throw new Error(
+      `[execute-scan] Scan ${scanId} not found in mark-complete step`,
+    );
+  }
+
+  const allTerminal = scan.modules.every(
+    (m) =>
+      m.status === "COMPLETE" ||
+      m.status === "FAILED" ||
+      m.status === "SKIPPED",
+  );
+  if (!allTerminal) {
+    return { finalStatus: null, deferred: true, alreadyFinalized: false };
+  }
+
+  const allTerminalSuccess = scan.modules.every(
+    (m) => m.status === "COMPLETE" || m.status === "SKIPPED",
+  );
+  const finalStatus: ScanStatus = allTerminalSuccess ? "COMPLETE" : "FAILED";
+
+  const updated = await client.scan.updateMany({
+    where: { id: scanId, status: "RUNNING" },
+    data: { status: finalStatus, completedAt: new Date() },
+  });
+  if (updated.count === 0) {
+    return { finalStatus: null, deferred: false, alreadyFinalized: true };
+  }
+
+  return { finalStatus, deferred: false, alreadyFinalized: false };
+}
+
 export const executeScan = inngest.createFunction(
   {
     id: "execute-scan",
@@ -33,32 +105,27 @@ export const executeScan = inngest.createFunction(
   async ({ event, step }) => {
     const { scanId, modulesEnabled } = event.data;
 
-    // Step 1: Mark scan as RUNNING. executionStartedAt was added in B.2;
-    // dispatchedAt is set by the producer (POST /api/scan in C.2).
-    await step.run("mark-running", async () =>
-      prisma.scan.update({
-        where: { id: scanId },
-        data: {
-          status: "RUNNING",
-          executionStartedAt: new Date(),
-        },
-      }),
+    // Step 1: Compare-and-set QUEUED → RUNNING (B2 idempotency).
+    const markRunningResult = await step.run("mark-running", () =>
+      markRunning(prisma, scanId),
     );
+    if (markRunningResult.skipped) {
+      return {
+        scanId,
+        status: "skipped",
+        reason: markRunningResult.reason,
+      } as const;
+    }
 
-    // Step 2: Determine which modules to fan out. The feature flag short-
-    // circuits the governance dispatch entirely (audit log will still
-    // show the module's persisted ModuleRun row from submitScan).
+    // Step 2: Decide which modules to dispatch.
     const willRunGovernance =
       modulesEnabled.includes("GOVERNANCE") && isGovernanceModuleEnabled();
 
-    // Step 3: Dispatch governance module + wait for completion echo.
+    // Step 3: Fan out to governance + wait for completion echo.
     if (willRunGovernance) {
       await step.sendEvent("dispatch-governance", {
         name: "scan.module.requested",
-        data: {
-          scanId,
-          module: "GOVERNANCE",
-        },
+        data: { scanId, module: "GOVERNANCE" },
       });
 
       const completedEvent = await step.waitForEvent("wait-governance", {
@@ -68,11 +135,10 @@ export const executeScan = inngest.createFunction(
       });
 
       if (!completedEvent) {
-        // Timeout: mark any non-terminal governance ModuleRun rows as
-        // FAILED so the audit trail records why this scan didn't progress.
-        // QUEUED rows mean executeGovernanceModule never started; RUNNING
-        // means it started but never echoed completion.
-        await step.run("mark-governance-timeout", async () =>
+        // Timeout: mark non-terminal governance ModuleRun rows as FAILED.
+        // The mark-complete step below tolerates a late completion arriving
+        // after this update via its compare-and-set + deferred guards.
+        await step.run("mark-governance-timeout", () =>
           prisma.moduleRun.updateMany({
             where: {
               scanId,
@@ -89,48 +155,35 @@ export const executeScan = inngest.createFunction(
       }
     }
 
-    // Step 4: Compute final scan status. SKIPPED counts as terminal-success
-    // (e.g., FRONTEND on a domain-less scan was deliberately skipped at
-    // submitScan time, not failed). Phase F upgrades to PARTIAL_COMPLETE
-    // for partial-failure cases.
-    await step.run("mark-complete", async () => {
-      const scan = await prisma.scan.findUnique({
-        where: { id: scanId },
-        include: { modules: true },
-      });
-      if (!scan) {
-        throw new Error(
-          `[execute-scan] Scan ${scanId} not found in mark-complete step`,
-        );
-      }
+    // Step 4: Compute final scan status with race guards (B1 + I3).
+    const markCompleteResult = await step.run("mark-complete", () =>
+      markComplete(prisma, scanId),
+    );
 
-      const allTerminalSuccess = scan.modules.every(
-        (m) => m.status === "COMPLETE" || m.status === "SKIPPED",
-      );
-      const finalStatus = allTerminalSuccess ? "COMPLETE" : "FAILED";
+    if (markCompleteResult.deferred) {
+      return { scanId, status: "deferred" } as const;
+    }
+    if (markCompleteResult.alreadyFinalized) {
+      return { scanId, status: "already_finalized" } as const;
+    }
 
-      return prisma.scan.update({
-        where: { id: scanId },
-        data: {
-          status: finalStatus,
-          completedAt: new Date(),
-        },
-      });
-    });
-
-    // Step 5: Emit terminal event. compositeGrade and executionMs are
-    // skeleton placeholders; Phase F populates them from the per-module
-    // results aggregated in Step 4.
+    // Step 5: Emit terminal event with captured finalStatus (B1).
+    // compositeGrade and executionMs are skeleton placeholders; Phase F
+    // populates them from the per-module results aggregated upstream.
     await step.sendEvent("emit-scan-completed", {
       name: "scan.completed",
       data: {
         scanId,
-        finalStatus: "COMPLETE",
+        finalStatus: markCompleteResult.finalStatus,
         compositeGrade: null,
         executionMs: 0,
       },
     });
 
-    return { scanId, status: "completed" };
+    return {
+      scanId,
+      status: "completed",
+      finalStatus: markCompleteResult.finalStatus,
+    } as const;
   },
 );
