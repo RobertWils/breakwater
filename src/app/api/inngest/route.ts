@@ -3,10 +3,11 @@ import type { NextRequest } from "next/server";
 
 import { assertProductionInngestConfig } from "@/lib/config";
 import { inngest } from "@/lib/inngest/client";
+import { executeScan } from "@/lib/inngest/functions/execute-scan";
 
 const handlers = serve({
   client: inngest,
-  functions: [],
+  functions: [executeScan],
 });
 
 export async function GET(req: NextRequest): Promise<Response> {
