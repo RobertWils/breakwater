@@ -12,6 +12,7 @@ import { normalizeAddress, isValidAddress } from "@/lib/addresses";
 import { hashEmail, hashPayload } from "@/lib/hash";
 import { cooldownKey as buildCooldownKey } from "@/lib/cooldown";
 import { inngest } from "@/lib/inngest/client";
+import { log } from "@/lib/logging";
 import { checkIpRateLimit, checkDedupe } from "@/lib/rate-limit";
 import { createScanAttempt } from "@/lib/scan-attempt";
 import { ScanErrors, ScanSubmissionError } from "@/lib/scan-submission/errors";
@@ -489,13 +490,22 @@ export async function submitScan(
     throw ScanErrors.protocolCooldown(txResult.retryAfterSec);
   }
 
+  // C.2.5: Lifecycle log — scan row exists, request was accepted (202).
+  // Fires only on the new-scan path; duplicates (200) returned earlier.
+  log({
+    event: "scan.submitted",
+    scanId: txResult.scanId,
+    chain: input.chain,
+    modulesEnabled: input.modulesEnabled,
+  });
+
   // C.2: Emit scan.queued for the Inngest dispatcher (executeScan from C.1).
   // Best-effort — emission failures log but never roll back the scan.
   // dispatchedAt is set ONLY after a successful emission so a future
   // recovery job can identify orphaned scans (created but undispatched)
   // by querying status='QUEUED' AND dispatchedAt IS NULL.
   try {
-    await inngest.send({
+    const sendResult = await inngest.send({
       name: "scan.queued",
       data: {
         scanId: txResult.scanId,
@@ -509,6 +519,16 @@ export async function submitScan(
     await prisma.scan.update({
       where: { id: txResult.scanId },
       data: { dispatchedAt: new Date() },
+    });
+
+    // C.2.5: Lifecycle log — Inngest accepted the event. inngestEventId
+    // is the first id from the send response; useful for correlating with
+    // the Inngest dashboard. Logged after the dispatchedAt update so a
+    // single log line corresponds to a fully-recorded dispatch.
+    log({
+      event: "scan.dispatched",
+      scanId: txResult.scanId,
+      inngestEventId: sendResult.ids[0],
     });
   } catch (err) {
     console.error(
