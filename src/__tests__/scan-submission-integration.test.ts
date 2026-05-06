@@ -41,7 +41,25 @@ vi.mock("@/lib/email", () => ({
 }));
 // assertProductionHashSalts is a no-op outside production.
 vi.mock("@/lib/config", () => ({
+  assertProductionConfig: vi.fn(),
   assertProductionHashSalts: vi.fn(),
+  assertProductionInngestConfig: vi.fn(),
+}));
+
+// Inngest client mock — dispatcher emission (Plan 02 C.2) is exercised in
+// this file; tests assert against `inngestSendMock` directly. Hoisted so
+// the vi.mock factory below can capture it (vi.mock is itself hoisted to
+// the top of the module before const declarations are evaluated).
+const { inngestSendMock } = vi.hoisted(() => ({
+  inngestSendMock: vi.fn<(event: unknown) => Promise<{ ids: string[] }>>(
+    async () => ({ ids: ["evt_test"] }),
+  ),
+}));
+vi.mock("@/lib/inngest/client", () => ({
+  inngest: {
+    send: inngestSendMock,
+    createFunction: vi.fn(),
+  },
 }));
 
 import { prisma } from "@/lib/prisma";
@@ -1068,4 +1086,175 @@ describe.skipIf(!hasDb)("scan submission integration", () => {
     });
     expect(protocolCount).toBe(1);
   });
+
+  // ── Plan 02 C.2: Inngest dispatcher emission ──────────────────────────────
+  // These tests assert against the module-level inngestSendMock declared at
+  // the top of this file. Each test resets the mock so call counts are local.
+
+  it.skipIf(!hasDb)(
+    "C.2: successful submission emits scan.queued exactly once with the expected payload, then sets dispatchedAt",
+    async () => {
+      inngestSendMock.mockClear();
+      inngestSendMock.mockResolvedValueOnce({ ids: ["evt_happy"] });
+
+      const ipHash = uniqueIpHash();
+      const address = uniqueEthAddress();
+      createdScanAttemptIpHashes.push(ipHash);
+
+      const result = await submitScan({
+        input: {
+          chain: "ETHEREUM",
+          primaryContractAddress: address,
+          extraContractAddresses: [],
+          multisigs: [],
+          modulesEnabled: ["GOVERNANCE", "ORACLE"],
+        },
+        userId: null,
+        userEmail: null,
+        ip: "1.2.3.4",
+        ipHash,
+        userAgent: "integration-test/1.0",
+      });
+
+      expect(result.statusCode).toBe(202);
+      expect(inngestSendMock).toHaveBeenCalledTimes(1);
+
+      const sent = inngestSendMock.mock.calls[0]![0] as {
+        name: string;
+        data: {
+          scanId: string;
+          protocolId: string;
+          chain: string;
+          primaryContractAddress: string;
+          modulesEnabled: string[];
+        };
+      };
+      expect(sent.name).toBe("scan.queued");
+      expect(sent.data.scanId).toBe(result.scanId);
+      expect(sent.data.chain).toBe("ETHEREUM");
+      expect(sent.data.primaryContractAddress).toBe(address.toLowerCase());
+      expect(sent.data.modulesEnabled).toEqual(["GOVERNANCE", "ORACLE"]);
+      expect(sent.data.protocolId).toEqual(expect.any(String));
+
+      // dispatchedAt populated only after a successful emission.
+      const scan = await prisma.scan.findUnique({
+        where: { id: result.scanId },
+      });
+      expect(scan?.dispatchedAt).toBeInstanceOf(Date);
+
+      const protocol = await prisma.protocol.findUnique({
+        where: {
+          chain_primaryContractAddress: {
+            chain: "ETHEREUM",
+            primaryContractAddress: address.toLowerCase(),
+          },
+        },
+      });
+      if (protocol) createdProtocolIds.push(protocol.id);
+    },
+  );
+
+  it.skipIf(!hasDb)(
+    "C.2: duplicate submission (statusCode 200) does NOT call inngest.send",
+    async () => {
+      const ipHash = uniqueIpHash();
+      const address = uniqueEthAddress();
+      createdScanAttemptIpHashes.push(ipHash);
+
+      // First submission — should emit and clear the mock for the duplicate check.
+      const first = await submitScan({
+        input: {
+          chain: "ETHEREUM",
+          primaryContractAddress: address,
+          extraContractAddresses: [],
+          multisigs: [],
+          modulesEnabled: ["GOVERNANCE"],
+        },
+        userId: null,
+        userEmail: null,
+        ip: "1.2.3.4",
+        ipHash,
+        userAgent: "integration-test/1.0",
+      });
+      expect(first.statusCode).toBe(202);
+
+      const protocol = await prisma.protocol.findUnique({
+        where: {
+          chain_primaryContractAddress: {
+            chain: "ETHEREUM",
+            primaryContractAddress: address.toLowerCase(),
+          },
+        },
+      });
+      if (protocol) createdProtocolIds.push(protocol.id);
+
+      // Second submission with identical payload from same ip — dedupe.
+      inngestSendMock.mockClear();
+      const second = await submitScan({
+        input: {
+          chain: "ETHEREUM",
+          primaryContractAddress: address,
+          extraContractAddresses: [],
+          multisigs: [],
+          modulesEnabled: ["GOVERNANCE"],
+        },
+        userId: null,
+        userEmail: null,
+        ip: "1.2.3.4",
+        ipHash,
+        userAgent: "integration-test/1.0",
+      });
+
+      expect(second.statusCode).toBe(200);
+      expect(second.scanId).toBe(first.scanId);
+      expect(inngestSendMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.skipIf(!hasDb)(
+    "C.2: inngest.send rejection does not block scan creation (best-effort) and leaves dispatchedAt null",
+    async () => {
+      inngestSendMock.mockClear();
+      inngestSendMock.mockRejectedValueOnce(new Error("inngest unreachable"));
+
+      const ipHash = uniqueIpHash();
+      const address = uniqueEthAddress();
+      createdScanAttemptIpHashes.push(ipHash);
+
+      const result = await submitScan({
+        input: {
+          chain: "ETHEREUM",
+          primaryContractAddress: address,
+          extraContractAddresses: [],
+          multisigs: [],
+          modulesEnabled: ["GOVERNANCE"],
+        },
+        userId: null,
+        userEmail: null,
+        ip: "1.2.3.4",
+        ipHash,
+        userAgent: "integration-test/1.0",
+      });
+
+      expect(result.statusCode).toBe(202);
+      expect(result.scanId).toEqual(expect.any(String));
+
+      // Scan exists; dispatchedAt remains null because emission failed.
+      const scan = await prisma.scan.findUnique({
+        where: { id: result.scanId },
+      });
+      expect(scan).not.toBeNull();
+      expect(scan?.dispatchedAt).toBeNull();
+
+      const protocol = await prisma.protocol.findUnique({
+        where: {
+          chain_primaryContractAddress: {
+            chain: "ETHEREUM",
+            primaryContractAddress: address.toLowerCase(),
+          },
+        },
+      });
+      if (protocol) createdProtocolIds.push(protocol.id);
+    },
+  );
 });

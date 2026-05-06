@@ -11,6 +11,7 @@ import { prisma } from "@/lib/prisma";
 import { normalizeAddress, isValidAddress } from "@/lib/addresses";
 import { hashEmail, hashPayload } from "@/lib/hash";
 import { cooldownKey as buildCooldownKey } from "@/lib/cooldown";
+import { inngest } from "@/lib/inngest/client";
 import { checkIpRateLimit, checkDedupe } from "@/lib/rate-limit";
 import { createScanAttempt } from "@/lib/scan-attempt";
 import { ScanErrors, ScanSubmissionError } from "@/lib/scan-submission/errors";
@@ -477,11 +478,43 @@ export async function submitScan(
       scanId: scan.id,
     });
 
-    return { type: "success", scanId: scan.id } as const;
+    return {
+      type: "success",
+      scanId: scan.id,
+      protocolId: protocol.id,
+    } as const;
   });
 
   if (txResult.type === "cooldown_hit") {
     throw ScanErrors.protocolCooldown(txResult.retryAfterSec);
+  }
+
+  // C.2: Emit scan.queued for the Inngest dispatcher (executeScan from C.1).
+  // Best-effort — emission failures log but never roll back the scan.
+  // dispatchedAt is set ONLY after a successful emission so a future
+  // recovery job can identify orphaned scans (created but undispatched)
+  // by querying status='QUEUED' AND dispatchedAt IS NULL.
+  try {
+    await inngest.send({
+      name: "scan.queued",
+      data: {
+        scanId: txResult.scanId,
+        protocolId: txResult.protocolId,
+        chain: input.chain,
+        primaryContractAddress: normalizedAddress,
+        modulesEnabled: input.modulesEnabled,
+      },
+    });
+
+    await prisma.scan.update({
+      where: { id: txResult.scanId },
+      data: { dispatchedAt: new Date() },
+    });
+  } catch (err) {
+    console.error(
+      "[scan-submission] Inngest emission failed for scan.queued:",
+      err,
+    );
   }
 
   return { scanId: txResult.scanId, statusCode: 202 };
