@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { assertProductionInngestConfig, assertProductionHashSalts } from "./config";
+import {
+  assertProductionExternalApis,
+  assertProductionHashSalts,
+  assertProductionInngestConfig,
+} from "./config";
 
 describe("assertProductionHashSalts", () => {
   beforeEach(() => {
@@ -93,5 +97,59 @@ describe("assertProductionInngestConfig", () => {
   it("does not assert in development mode", () => {
     vi.stubEnv("NODE_ENV", "development");
     expect(() => assertProductionInngestConfig()).not.toThrow();
+  });
+});
+
+describe("assertProductionExternalApis (Plan 02 D.2)", () => {
+  beforeEach(() => {
+    vi.stubEnv("NODE_ENV", "production");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("passes when SAFE_API_BASE_URL is unset (uses default) and SAFE_API_KEY is also unset (warns)", () => {
+    const consoleSpy = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    expect(() => assertProductionExternalApis()).not.toThrow();
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringContaining("SAFE_API_KEY"),
+    );
+    consoleSpy.mockRestore();
+  });
+
+  it("passes when SAFE_API_BASE_URL is set to a custom value", () => {
+    vi.stubEnv("SAFE_API_BASE_URL", "https://custom.safe.example");
+    expect(() => assertProductionExternalApis()).not.toThrow();
+  });
+
+  it("throws when SAFE_API_BASE_URL is explicitly empty string", () => {
+    vi.stubEnv("SAFE_API_BASE_URL", "");
+    expect(() => assertProductionExternalApis()).toThrow(
+      /SAFE_API_BASE_URL.*empty string/,
+    );
+  });
+
+  it("does not warn about SAFE_API_KEY when it is set", () => {
+    const consoleSpy = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    vi.stubEnv("SAFE_API_KEY", "bearer-token-here");
+    expect(() => assertProductionExternalApis()).not.toThrow();
+    expect(consoleSpy).not.toHaveBeenCalled();
+    consoleSpy.mockRestore();
+  });
+
+  it("does not assert in development mode (no throw, no warn)", () => {
+    const consoleSpy = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("SAFE_API_BASE_URL", ""); // would throw in production
+    expect(() => assertProductionExternalApis()).not.toThrow();
+    expect(consoleSpy).not.toHaveBeenCalled();
+    consoleSpy.mockRestore();
   });
 });
