@@ -8,7 +8,17 @@ const FALLBACK_RPC_URL =
 
 export const publicClient = createPublicClient({
   chain: mainnet,
-  transport: fallback([http(PRIMARY_RPC_URL), http(FALLBACK_RPC_URL)]),
+  transport: fallback(
+    [http(PRIMARY_RPC_URL), http(FALLBACK_RPC_URL)],
+    {
+      // rank:false → strict primary-first, fall back only on error.
+      // retryCount + retryDelay come from spec §8.1; keeps a single
+      // public endpoint flap from cascading into a detector failure.
+      rank: false,
+      retryCount: 2,
+      retryDelay: 150,
+    },
+  ),
   batch: {
     multicall: true,
   },
