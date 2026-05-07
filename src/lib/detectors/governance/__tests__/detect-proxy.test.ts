@@ -62,11 +62,10 @@ describe("detectProxy (Plan 02 D.3c)", () => {
     expect(result.implementationAbi).toContain("transfer");
   });
 
-  it("detects EIP_1822_UUPS when impl is set but admin slot is empty", async () => {
+  it("classifies impl-set + admin-unset as CUSTOM (D.5 I2 — was over-claiming UUPS)", async () => {
     getStorageAtMock
-      .mockResolvedValueOnce(slot(IMPL)) // impl slot
-      .mockResolvedValueOnce(ZERO_SLOT); // admin slot empty → UUPS
-    getCodeMock.mockResolvedValue("0x6080604052" as `0x${string}`);
+      .mockResolvedValueOnce(slot(IMPL)) // impl slot SET
+      .mockResolvedValueOnce(ZERO_SLOT); // admin slot empty
     fetchContractAbiMock.mockResolvedValue({ ok: true, data: "[]" });
 
     const result = await detectProxy({
@@ -74,10 +73,16 @@ describe("detectProxy (Plan 02 D.3c)", () => {
       blockNumber: BigInt(20_000_000),
     });
 
-    expect(result.proxyType).toBe("EIP_1822_UUPS");
+    // Without reading the implementation contract's interface
+    // (proxiableUUID/upgradeToAndCall presence) we cannot positively
+    // identify UUPS vs. custom non-OZ proxies. CUSTOM is the honest
+    // classification — Phase E GOV-005 may upgrade to a confirmed
+    // EIP_1822_UUPS once it inspects the implementation ABI.
+    expect(result.proxyType).toBe("CUSTOM");
     expect(result.proxyImplementation).toBe(`0x${IMPL}`);
-    // UUPS pattern: proxy is its own upgrade authority.
-    expect(result.proxyAdminAddress).toBe(PROTOCOL.toLowerCase());
+    expect(result.proxyAdminAddress).toBeNull();
+    // No admin → no isContract probe attempted.
+    expect(getCodeMock).not.toHaveBeenCalled();
   });
 
   it("returns NONE when the implementation slot is empty", async () => {
@@ -99,8 +104,24 @@ describe("detectProxy (Plan 02 D.3c)", () => {
     expect(fetchContractAbiMock).not.toHaveBeenCalled();
   });
 
-  it("handles getStorageAt rejection by falling through to NONE", async () => {
-    getStorageAtMock.mockRejectedValue(new Error("RPC outage"));
+  it("throws when BOTH storage reads reject (D.5 I4 — propagate RPC outage to ModuleRun)", async () => {
+    getStorageAtMock
+      .mockRejectedValueOnce(new Error("RPC error 1"))
+      .mockRejectedValueOnce(new Error("RPC error 2"));
+
+    await expect(
+      detectProxy({
+        protocolAddress: PROTOCOL,
+        blockNumber: BigInt(20_000_000),
+      }),
+    ).rejects.toThrow(/Proxy detection failed.*RPC error 1.*RPC error 2/);
+    expect(fetchContractAbiMock).not.toHaveBeenCalled();
+  });
+
+  it("falls through to NONE when only the admin slot read rejects (single-read failure tolerated)", async () => {
+    getStorageAtMock
+      .mockResolvedValueOnce(ZERO_SLOT) // impl: empty (parses to null)
+      .mockRejectedValueOnce(new Error("admin slot fetch failed"));
 
     const result = await detectProxy({
       protocolAddress: PROTOCOL,
@@ -162,5 +183,40 @@ describe("detectProxy (Plan 02 D.3c)", () => {
     });
 
     expect(result.proxyType).toBe("NONE");
+  });
+
+  it("rejects slots whose high 12 bytes are non-zero (D.5 I3 — guard against garbage data)", async () => {
+    getStorageAtMock
+      // High bytes contain data — can't be a canonical address-shaped slot.
+      .mockResolvedValueOnce(
+        "0x1234567890abcdef00000000abcdef1234567890abcdef1234567890abcdef12" as `0x${string}`,
+      )
+      .mockResolvedValueOnce(ZERO_SLOT);
+
+    const result = await detectProxy({
+      protocolAddress: PROTOCOL,
+      blockNumber: BigInt(20_000_000),
+    });
+
+    expect(result.proxyType).toBe("NONE");
+    expect(result.proxyImplementation).toBeNull();
+  });
+
+  it("accepts canonical address-shaped slots (high 12 bytes zero, rightmost 20 bytes the address)", async () => {
+    getStorageAtMock
+      .mockResolvedValueOnce(
+        "0x000000000000000000000000abcdef1234567890abcdef1234567890abcdef12" as `0x${string}`,
+      )
+      .mockResolvedValueOnce(ZERO_SLOT);
+    fetchContractAbiMock.mockResolvedValue({ ok: true, data: "[]" });
+
+    const result = await detectProxy({
+      protocolAddress: PROTOCOL,
+      blockNumber: BigInt(20_000_000),
+    });
+
+    expect(result.proxyImplementation).toBe(
+      "0xabcdef1234567890abcdef1234567890abcdef12",
+    );
   });
 });

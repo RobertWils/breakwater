@@ -174,6 +174,30 @@ describe("fetchSafeInfo (Plan 02 D.2 — Safe Transaction Service client)", () =
     }
   });
 
+  it("returns invalid_response when owners contains non-string elements (D.5 I1)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      makeFetchMock(() =>
+        jsonResponse({
+          address: "0xabc",
+          threshold: 2,
+          owners: [
+            123, // numeric instead of address string
+            "0x2222222222222222222222222222222222222222",
+          ],
+        }),
+      ),
+    );
+
+    const result = await fetchSafeInfo(SAMPLE_ADDRESS);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("invalid_response");
+      expect(result.message).toMatch(/malformed/i);
+    }
+  });
+
   it("returns network_error on TimeoutError", async () => {
     const timeoutErr = new Error("aborted");
     timeoutErr.name = "TimeoutError";

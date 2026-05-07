@@ -1371,4 +1371,76 @@ describe.skipIf(!hasDb)("scan submission integration", () => {
       if (protocol) createdProtocolIds.push(protocol.id);
     },
   );
+
+  // ── Plan 02 D.5 (Codex bundled review) ───────────────────────────────────
+  // N3: emission succeeds but the bookkeeping update for dispatchedAt
+  //     fails. Per C.4 I2, submitScan splits the two operations into
+  //     separate try/catch so a Phase B (DB update) failure does not
+  //     mask Phase A (event sent) success. The scan should still return
+  //     202 with a scanId, the event should have been sent, and
+  //     dispatchedAt should remain null (recovery semantics).
+  it.skipIf(!hasDb)(
+    "D.5 N3: emission succeeds + dispatchedAt update fails — scan returns 202, event in flight, dispatchedAt left null",
+    async () => {
+      inngestSendMock.mockClear();
+      inngestSendMock.mockResolvedValueOnce({ ids: ["evt_n3"] });
+
+      // Spy on prisma.scan.update and force the next call to reject —
+      // submitScan only calls scan.update for the dispatchedAt write
+      // (the rest of the flow uses tx.scan.create), so the spy targets
+      // exactly the C.4 I2 phase-B write.
+      const updateSpy = vi
+        .spyOn(prisma.scan, "update")
+        .mockRejectedValueOnce(new Error("Connection lost"));
+
+      const ipHash = uniqueIpHash();
+      const address = uniqueEthAddress();
+      createdScanAttemptIpHashes.push(ipHash);
+
+      try {
+        const result = await submitScan({
+          input: {
+            chain: "ETHEREUM",
+            primaryContractAddress: address,
+            extraContractAddresses: [],
+            multisigs: [],
+            modulesEnabled: ["GOVERNANCE"],
+          },
+          userId: null,
+          userEmail: null,
+          ip: "1.2.3.4",
+          ipHash,
+          userAgent: "integration-test/1.0",
+        });
+
+        expect(result.statusCode).toBe(202);
+        expect(result.scanId).toEqual(expect.any(String));
+        expect(inngestSendMock).toHaveBeenCalledOnce();
+        expect(updateSpy).toHaveBeenCalledOnce();
+
+        // Recovery semantics: scan exists, event was sent, but the
+        // dispatchedAt + inngestEventId persist failed. Operators tell
+        // "event sent" from "scan orphaned" by checking inngestEventId
+        // and dispatchedAt independently.
+        const scan = await prisma.scan.findUnique({
+          where: { id: result.scanId },
+        });
+        expect(scan).not.toBeNull();
+        expect(scan?.dispatchedAt).toBeNull();
+        expect(scan?.inngestEventId).toBeNull();
+
+        const protocol = await prisma.protocol.findUnique({
+          where: {
+            chain_primaryContractAddress: {
+              chain: "ETHEREUM",
+              primaryContractAddress: address.toLowerCase(),
+            },
+          },
+        });
+        if (protocol) createdProtocolIds.push(protocol.id);
+      } finally {
+        updateSpy.mockRestore();
+      }
+    },
+  );
 });

@@ -14,17 +14,26 @@ import { publicClient } from "@/lib/rpc-client";
  *   const h = keccak256(stringToBytes("eip1967.proxy.implementation"));
  *   "0x" + (BigInt(h) - 1n).toString(16).padStart(64, "0")
  *
- * Heuristic:
- *   impl  set + admin  set    → EIP_1967_TRANSPARENT (TUP via ProxyAdmin)
- *   impl  set + admin  empty  → EIP_1822_UUPS        (no separate admin)
- *   impl  empty               → NONE / unrecognised pattern
+ * Classification (Plan 02 D.5 — refined per Codex review):
+ *   impl set + admin set    → EIP_1967_TRANSPARENT (TUP via ProxyAdmin)
+ *   impl set + admin empty  → CUSTOM (could be UUPS, could be a custom
+ *                                     proxy without ProxyAdmin — we
+ *                                     can't distinguish without
+ *                                     reading the implementation
+ *                                     contract's interface)
+ *   impl empty              → NONE
  *
- * Note on EIP-1822: UUPS does NOT use a separate storage slot for the
- * implementation. Every real UUPS proxy stores its impl at the same
- * EIP-1967 implementation slot above. The well-known PROXIABLE constant
- * (`0xc5f16f…bcf7`) is the *return value* of `proxiableUUID()`, not a
- * storage location — reading that slot on a UUPS proxy returns empty.
- * We discriminate via presence/absence of the admin slot instead.
+ * The previous version classified impl-set+admin-empty as
+ * EIP_1822_UUPS, which over-claimed: not every proxy without a
+ * ProxyAdmin is UUPS. Phase E GOV-005 may upgrade to confirmed
+ * EIP_1822_UUPS by checking the implementation contract's
+ * proxiableUUID() return value or upgradeToAndCall() presence.
+ *
+ * RPC outage handling (D.5 I4): if BOTH storage reads reject, we throw
+ * so the orchestrator captures the error in ModuleRun.errorMessage
+ * rather than persisting an ambiguous "NONE" classification. A single
+ * read failing still falls through to the impl/admin presence checks
+ * with that one slot treated as null.
  */
 const EIP_1967_IMPLEMENTATION_SLOT =
   "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc" as const;
@@ -65,6 +74,23 @@ export async function detectProxy(
     }),
   ]);
 
+  // D.5 I4: when BOTH reads fail, propagate so the orchestrator records
+  // the failure in ModuleRun.errorMessage instead of silently persisting
+  // a misleading NONE classification.
+  if (implResult.status === "rejected" && adminResult.status === "rejected") {
+    const implReason =
+      implResult.reason instanceof Error
+        ? implResult.reason.message
+        : String(implResult.reason);
+    const adminReason =
+      adminResult.reason instanceof Error
+        ? adminResult.reason.message
+        : String(adminResult.reason);
+    throw new Error(
+      `Proxy detection failed: both EIP-1967 storage reads rejected (${implReason}; ${adminReason})`,
+    );
+  }
+
   const eip1967Impl = parseSlotAsAddress(
     implResult.status === "fulfilled" ? implResult.value : null,
   );
@@ -82,11 +108,13 @@ export async function detectProxy(
       proxyType = "EIP_1967_TRANSPARENT";
       proxyAdminAddress = eip1967Admin;
     } else {
-      proxyType = "EIP_1822_UUPS";
-      // UUPS pattern: the proxy is its own upgrade authority. The
-      // implementation contract holds upgrade logic; tooling treats the
-      // proxy address itself as the "admin" for ownership-tracking purposes.
-      proxyAdminAddress = protocolAddress.toLowerCase();
+      // D.5 I2: downgraded from EIP_1822_UUPS to CUSTOM. UUPS without
+      // a separate ProxyAdmin is one possibility; a custom non-OZ proxy
+      // pattern is another. Distinguishing requires reading the
+      // implementation interface (proxiableUUID / upgradeToAndCall) —
+      // deferred to Phase E GOV-005 where the ABI is already in scope.
+      proxyType = "CUSTOM";
+      proxyAdminAddress = null;
     }
   } else {
     proxyType = "NONE";
@@ -118,13 +146,25 @@ export async function detectProxy(
 
 /**
  * Parse a 32-byte storage slot value as an Ethereum address.
- * Returns null for empty (`0x` / `0x000…000`) or malformed slots.
+ * Returns null for:
+ *   - empty (`0x` / `0x000…000`) or malformed slots
+ *   - slots whose high 12 bytes are non-zero (D.5 I3): an
+ *     address-shaped slot has the address in the rightmost 20 bytes
+ *     and the leading 12 bytes zero. Anything else is garbage data
+ *     that happens to live in the slot (shared storage with another
+ *     mapping, uninitialised value with non-canonical layout, etc.)
+ *     and would yield a misleading "address" if naively truncated.
  */
 function parseSlotAsAddress(
   slot: string | null | undefined,
 ): string | null {
   if (!slot || slot === "0x") return null;
   if (slot.length !== 66) return null; // 0x + 64 hex = 32 bytes
+
+  // High 12 bytes = chars 2..26 in the 0x-prefixed slot. Must be zero
+  // for a canonical address-shaped slot.
+  const high12Hex = slot.slice(2, 26).toLowerCase();
+  if (high12Hex !== "000000000000000000000000") return null;
 
   const addrHex = "0x" + slot.slice(-40).toLowerCase();
   if (addrHex === ZERO_ADDRESS) return null;

@@ -126,13 +126,14 @@ export async function fetchSafeInfo(
   if (
     typeof raw.address !== "string" ||
     typeof raw.threshold !== "number" ||
-    !Array.isArray(raw.owners)
+    !Array.isArray(raw.owners) ||
+    !raw.owners.every((o) => typeof o === "string")
   ) {
     return {
       ok: false,
       reason: "invalid_response",
       message:
-        "Safe API returned unexpected shape (missing address/threshold/owners)",
+        "Safe API returned unexpected shape (missing or malformed address/threshold/owners)",
     };
   }
 
