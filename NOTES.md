@@ -67,6 +67,25 @@ Next step: implementation.md generation.
 - waitForEvent multi-module match (NICE_TO_HAVE from Codex C-phase review): C.1's `executeScan.step.waitForEvent` matches on `data.scanId` only. Tolerable for the single-module skeleton (governance only). When Phase F adds a second module dispatch, tighten the match to `data.scanId` AND `data.module` to avoid cross-module accidental wakes — otherwise the governance waiter could resume on an oracle/signer/frontend completion event with the same scanId.
 - Cascade-delete coverage on Scan-related tables (Codex C-phase observation): `GovernanceSnapshot.scan` has `onDelete: Cascade` but `ScanAttempt`, `ModuleRun`, and `Finding` do not. Plan 02 has no scan-deletion path so this is currently unreachable. When TTL purge (or admin-side delete) lands in Plan 03+, either (a) extend cascade to the other relations in a migration, or (b) implement explicit ordered cleanup in the purge job. Document the choice; mismatched cascade semantics tend to leak orphan rows quietly.
 
+### Spec drift findings (Phase D recon, pre-implementation)
+
+Spec §8.2 + §8.3 + §9 will be updated in batch at end of Phase D before Codex review. Implementation will follow current API state below, not the frozen spec text.
+
+**Etherscan API (spec §8.3):**
+- v1 endpoint (`https://api.etherscan.io/api`) **deprecated 2025-08-15**.
+- v2 base URL: `https://api.etherscan.io/v2/api`.
+- `?chainid=1` is **mandatory** (1 = Ethereum mainnet).
+- `?apikey=…` is **mandatory** — unauthenticated requests return `{"status":"0","message":"NOTOK","result":"Missing/Invalid API Key"}` (verified by live probe). Detector code must treat `status === "0"` with that message as the "API key missing/invalid" skip path, distinct from "network failure".
+- Same response envelope as v1: `{ status, message, result }`.
+- Migration delta from spec §8.3: path is `/v2/api` (not `/api`); chainid + apikey both required; query format `?module=contract&action=getabi&address=…` unchanged.
+
+**Safe Transaction Service (spec §8.2):**
+- Legacy hostname `safe-transaction-mainnet.safe.global` permanently redirected (308) to `https://api.safe.global/tx-service/eth/`.
+- Path prefix `/api/v1/safes/{address}/` **preserved** on the new hostname (verified by empirical probe — see commit `<this commit>` for raw output).
+- Auth tiers added since spec §8.2 was written: anonymous tier (2 RPS, 5,000 monthly requests) is sufficient for early dev; authenticated production via `Authorization: Bearer $YOUR_API_KEY` (signup at safe.global dashboard) for higher quotas.
+- Free-tier ceiling will bite at ~150 scans/day. Treat `SAFE_API_KEY` as OPTIONAL with same graceful-degrade pattern as `ETHERSCAN_API_KEY` (warn-not-throw in production assertion).
+- Response shape verified against `0x849D52316331967b6fF1198e5E32A0eB168D039d` (Gnosis DAO Safe): `{ address, nonce, threshold, owners[], ... }`. 404 on non-Safe addresses means "this address has never been registered with the service", not "endpoint moved" — distinguish carefully when wiring GOV-003.
+
 ## Plan 07 — Deferred items (sharing UI, OG generation)
 
 - Dynamic OG image generation for `/scan/[id]` and `/demo/[slug]` (Plan 01 ships a single static OG from Phase E). Requires per-scan OG endpoint that renders composite grade + protocol name + Break Line logo on the Storm Cyan gradient.
