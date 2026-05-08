@@ -70,6 +70,7 @@ describe("captureGovernanceSnapshot (Plan 02 D.3c)", () => {
       type: "OZ_GOVERNOR",
       address: "0xgov",
       version: "1",
+      votingSnapshotType: "BLOCK_BASED",
       raw: { name: "TestGov" },
     });
     detectTimelockMock.mockResolvedValue({
@@ -196,6 +197,7 @@ describe("captureGovernanceSnapshot (Plan 02 D.3c)", () => {
       type: "OZ_GOVERNOR",
       address: "0xgov",
       version: null,
+      votingSnapshotType: null,
       raw: { name: "TestGov" },
     });
     detectTimelockMock.mockResolvedValue(null);

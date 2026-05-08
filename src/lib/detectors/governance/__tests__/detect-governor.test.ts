@@ -34,15 +34,17 @@ describe("detectGovernor (Plan 02 D.3a)", () => {
   });
 
   it("identifies OZ_GOVERNOR when quorumNumerator succeeds and quorumVotes fails", async () => {
-    multicallMock.mockResolvedValue([
-      ok("MyGovernor"),
-      ok("1"),
-      ok(BigInt(7200)),
-      ok(BigInt(50_400)),
-      ok(BigInt(4)),
-      fail(),
-      ok(BigInt("100000000000000000000")),
-    ] as never);
+    multicallMock
+      .mockResolvedValueOnce([
+        ok("MyGovernor"),
+        ok("1"),
+        ok(BigInt(7200)),
+        ok(BigInt(50_400)),
+        ok(BigInt(4)),
+        fail(),
+        ok(BigInt("100000000000000000000")),
+      ] as never)
+      .mockResolvedValueOnce([fail(), fail(), fail()] as never);
 
     const result = await detectGovernor(context);
 
@@ -53,15 +55,17 @@ describe("detectGovernor (Plan 02 D.3a)", () => {
   });
 
   it("identifies COMPOUND_BRAVO when quorumVotes succeeds and quorumNumerator fails", async () => {
-    multicallMock.mockResolvedValue([
-      ok("Compound Governor Bravo"),
-      fail("no version()"),
-      ok(BigInt(13_140)),
-      ok(BigInt(17_280)),
-      fail("no quorumNumerator"),
-      ok(BigInt("400000000000000000000000")),
-      ok(BigInt("65000000000000000000000")),
-    ] as never);
+    multicallMock
+      .mockResolvedValueOnce([
+        ok("Compound Governor Bravo"),
+        fail("no version()"),
+        ok(BigInt(13_140)),
+        ok(BigInt(17_280)),
+        fail("no quorumNumerator"),
+        ok(BigInt("400000000000000000000000")),
+        ok(BigInt("65000000000000000000000")),
+      ] as never)
+      .mockResolvedValueOnce([fail(), fail(), fail()] as never);
 
     const result = await detectGovernor(context);
 
@@ -71,15 +75,17 @@ describe("detectGovernor (Plan 02 D.3a)", () => {
   });
 
   it("falls through to CUSTOM when both quorum functions succeed", async () => {
-    multicallMock.mockResolvedValue([
-      ok("CustomGovernor"),
-      ok("2"),
-      ok(BigInt(7200)),
-      ok(BigInt(50_400)),
-      ok(BigInt(4)),
-      ok(BigInt(100)),
-      ok(BigInt(1)),
-    ] as never);
+    multicallMock
+      .mockResolvedValueOnce([
+        ok("CustomGovernor"),
+        ok("2"),
+        ok(BigInt(7200)),
+        ok(BigInt(50_400)),
+        ok(BigInt(4)),
+        ok(BigInt(100)),
+        ok(BigInt(1)),
+      ] as never)
+      .mockResolvedValueOnce([fail(), fail(), fail()] as never);
 
     const result = await detectGovernor(context);
 
@@ -119,15 +125,17 @@ describe("detectGovernor (Plan 02 D.3a)", () => {
   });
 
   it("captures raw probe results for downstream debugging", async () => {
-    multicallMock.mockResolvedValue([
-      ok("TestGov"),
-      ok("v3"),
-      ok(BigInt(7200)),
-      ok(BigInt(50_400)),
-      ok(BigInt(4)),
-      fail(),
-      ok(BigInt(100)),
-    ] as never);
+    multicallMock
+      .mockResolvedValueOnce([
+        ok("TestGov"),
+        ok("v3"),
+        ok(BigInt(7200)),
+        ok(BigInt(50_400)),
+        ok(BigInt(4)),
+        fail(),
+        ok(BigInt(100)),
+      ] as never)
+      .mockResolvedValueOnce([fail(), fail(), fail()] as never);
 
     const result = await detectGovernor(context);
 
@@ -155,18 +163,100 @@ describe("detectGovernor (Plan 02 D.3a)", () => {
       ...context,
       protocolAddress: "0xABCDEF1234567890ABCDEF1234567890ABCDEF12",
     };
-    multicallMock.mockResolvedValue([
-      ok("Gov"),
-      fail(),
-      ok(BigInt(1)),
-      ok(BigInt(1)),
-      ok(BigInt(1)),
-      fail(),
-      ok(BigInt(1)),
-    ] as never);
+    multicallMock
+      .mockResolvedValueOnce([
+        ok("Gov"),
+        fail(),
+        ok(BigInt(1)),
+        ok(BigInt(1)),
+        ok(BigInt(1)),
+        fail(),
+        ok(BigInt(1)),
+      ] as never)
+      .mockResolvedValueOnce([fail(), fail(), fail()] as never);
 
     const result = await detectGovernor(upperContext);
 
     expect(result?.address).toBe(upperContext.protocolAddress.toLowerCase());
+  });
+
+  // ── E.4: snapshot-mechanism probe ──────────────────────────────────────
+  // Maps detection to BLOCK_BASED | CURRENT_BALANCE | null:
+  //   getVotes(addr, ts) succeeds  → BLOCK_BASED (modern OZ Governor)
+  //   CLOCK_MODE responds          → BLOCK_BASED (4.9+; raw.clockMode set)
+  //   only getCurrentVotes works   → CURRENT_BALANCE (Compound Bravo legacy)
+  //   nothing works                → null (indeterminate)
+
+  it("E.4: detects votingSnapshotType=BLOCK_BASED when getVotes(addr, timepoint) responds", async () => {
+    multicallMock
+      .mockResolvedValueOnce([
+        ok("MyGovernor"),
+        ok("1"),
+        ok(BigInt(7200)),
+        ok(BigInt(50_400)),
+        ok(BigInt(4)),
+        fail(),
+        ok(BigInt(100)),
+      ] as never)
+      .mockResolvedValueOnce([
+        ok(BigInt(0)), // getVotes succeeds — checkpoint API present
+        fail(), // CLOCK_MODE not implemented
+        fail(), // getCurrentVotes not implemented
+      ] as never);
+
+    const result = await detectGovernor(context);
+
+    expect(result?.votingSnapshotType).toBe("BLOCK_BASED");
+    expect(result?.raw.clockMode).toBeNull();
+    expect(result?.raw.getVotesAvailable).toBe(true);
+    expect(result?.raw.getCurrentVotesAvailable).toBe(false);
+  });
+
+  it("E.4: detects votingSnapshotType=BLOCK_BASED via CLOCK_MODE (timestamp variant captured in raw)", async () => {
+    multicallMock
+      .mockResolvedValueOnce([
+        ok("ModernGov"),
+        ok("4.9"),
+        ok(BigInt(7200)),
+        ok(BigInt(50_400)),
+        ok(BigInt(4)),
+        fail(),
+        ok(BigInt(100)),
+      ] as never)
+      .mockResolvedValueOnce([
+        ok(BigInt(0)),
+        ok("mode=timestamp"),
+        fail(),
+      ] as never);
+
+    const result = await detectGovernor(context);
+
+    // Both block-number and timestamp clocks map to BLOCK_BASED for
+    // GOV-004 purposes; the granularity stays in raw.clockMode.
+    expect(result?.votingSnapshotType).toBe("BLOCK_BASED");
+    expect(result?.raw.clockMode).toBe("mode=timestamp");
+  });
+
+  it("E.4: detects votingSnapshotType=CURRENT_BALANCE when only getCurrentVotes responds (Compound Bravo legacy)", async () => {
+    multicallMock
+      .mockResolvedValueOnce([
+        ok("CompGovernor"),
+        fail(),
+        ok(BigInt(13_140)),
+        ok(BigInt(17_280)),
+        fail(),
+        ok(BigInt("400000000000000000000000")),
+        ok(BigInt("65000000000000000000000")),
+      ] as never)
+      .mockResolvedValueOnce([
+        fail(), // getVotes (modern) not implemented
+        fail(), // CLOCK_MODE not implemented
+        ok(BigInt(0)), // legacy getCurrentVotes responds — vulnerable
+      ] as never);
+
+    const result = await detectGovernor(context);
+
+    expect(result?.votingSnapshotType).toBe("CURRENT_BALANCE");
+    expect(result?.raw.getCurrentVotesAvailable).toBe(true);
   });
 });

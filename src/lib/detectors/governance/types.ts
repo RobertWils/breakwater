@@ -67,6 +67,14 @@ export type GovernorDetectionResult = {
   type: GovernorType;
   address: string;
   version: string | null;
+  /**
+   * Voting weight source (E.4 — populated by detect-governor's snapshot
+   * probe). `null` when the probe couldn't determine; `BLOCK_BASED` is
+   * the canonical safe value (covers both OZ block-number checkpoints
+   * and OZ 4.9+ timestamp clocks — the granularity is captured in
+   * `raw.clockMode` for forensics, see Plan 02 NOTES.md backlog).
+   */
+  votingSnapshotType: VotingSnapshotType | null;
   raw: Record<string, unknown>;
 } | null;
 

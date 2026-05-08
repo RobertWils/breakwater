@@ -36,6 +36,7 @@ const governorResult: NonNullable<GovernorDetectionResult> = {
   type: "COMPOUND_BRAVO",
   address: "0x2222222222222222222222222222222222222222",
   version: null,
+  votingSnapshotType: null,
   raw: {},
 };
 

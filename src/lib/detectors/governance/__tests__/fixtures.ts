@@ -65,6 +65,9 @@ export function withGovernor(
     governorAddress: "0x1111111111111111111111111111111111111111",
     governorType: "OZ_GOVERNOR",
     governorVersion: "1",
+    // E.4 default: BLOCK_BASED is the safe baseline (checkpoint-based
+    // voting). Tests for current-balance vulnerability override.
+    votingSnapshotType: "BLOCK_BASED",
     ...overrides,
   };
 }

@@ -111,10 +111,10 @@ export async function captureGovernanceSnapshot(
     implementationAbi: proxyResult.implementationAbi,
     protocolAbi,
 
-    // Voting-token detection deferred to Phase E (GOV-004 will
-    // reach into governor.token() / similar accessors when needed).
+    // Voting-token detection deferred (Plan 03+ enhancement).
     votingTokenAddress: null,
-    votingSnapshotType: null,
+    // E.4: votingSnapshotType captured by detect-governor's snapshot probe.
+    votingSnapshotType: governorResult?.votingSnapshotType ?? null,
 
     rawState: {
       governor: governorResult?.raw ?? null,

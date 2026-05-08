@@ -39,6 +39,26 @@ const PROBE_FUNCTIONS = [
   "proposalThreshold",
 ] as const;
 
+/**
+ * Snapshot-mechanism probe ABI (E.4):
+ *   - getVotes(address, uint256)  → OZ Governor checkpoint API
+ *   - CLOCK_MODE()                → OZ 4.9+ exposes "mode=blocknumber"
+ *                                   or "mode=timestamp" so we can record
+ *                                   the timepoint type in raw.clockMode
+ *                                   (forensic; both flavours map to
+ *                                   BLOCK_BASED for GOV-004 purposes).
+ *   - getCurrentVotes(address)    → Compound Bravo legacy API; presence
+ *                                   without checkpoint API → vulnerable
+ *                                   CURRENT_BALANCE pattern (Beanstalk).
+ */
+const SNAPSHOT_PROBE_ABI = parseAbi([
+  "function getVotes(address account, uint256 timepoint) view returns (uint256)",
+  "function CLOCK_MODE() view returns (string)",
+  "function getCurrentVotes(address account) view returns (uint96)",
+] as const);
+
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const;
+
 type MulticallEntry =
   | { status: "success"; result: unknown }
   | { status: "failure"; error: unknown };
@@ -139,10 +159,81 @@ export async function detectGovernor(
       ? version.result
       : null;
 
+  // Snapshot probe (E.4). A failure here doesn't invalidate the rest of
+  // the detection — `votingSnapshotType` just stays null and GOV-004
+  // fires its INFO-level "undetermined" finding.
+  let snapshotResults: MulticallEntry[] | null = null;
+  try {
+    snapshotResults = (await publicClient.multicall({
+      contracts: [
+        {
+          address,
+          abi: SNAPSHOT_PROBE_ABI,
+          functionName: "getVotes",
+          args: [ZERO_ADDRESS, BigInt(0)],
+        },
+        {
+          address,
+          abi: SNAPSHOT_PROBE_ABI,
+          functionName: "CLOCK_MODE",
+        },
+        {
+          address,
+          abi: SNAPSHOT_PROBE_ABI,
+          functionName: "getCurrentVotes",
+          args: [ZERO_ADDRESS],
+        },
+      ],
+      blockNumber,
+      allowFailure: true,
+    })) as MulticallEntry[];
+  } catch {
+    snapshotResults = null;
+  }
+
+  let votingSnapshotType: GovernorDetectionResult extends infer R
+    ? R extends { votingSnapshotType: infer V }
+      ? V
+      : never
+    : never = null;
+  let clockMode: string | null = null;
+
+  if (snapshotResults) {
+    const [getVotesResult, clockModeResult, getCurrentVotesResult] =
+      snapshotResults;
+
+    if (
+      clockModeResult?.status === "success" &&
+      typeof clockModeResult.result === "string"
+    ) {
+      clockMode = clockModeResult.result;
+      // Both "mode=blocknumber" and "mode=timestamp" describe checkpoint
+      // voting — both map to BLOCK_BASED. Granularity preserved in
+      // raw.clockMode for forensics.
+      votingSnapshotType = "BLOCK_BASED";
+    }
+
+    // No CLOCK_MODE but getVotes(address, timepoint) responds — also
+    // checkpoint-based (modern OZ Governor without explicit clock).
+    if (votingSnapshotType === null && getVotesResult?.status === "success") {
+      votingSnapshotType = "BLOCK_BASED";
+    }
+
+    // Only legacy getCurrentVotes responds → live-balance Compound
+    // Bravo pattern (Beanstalk attack surface).
+    if (
+      votingSnapshotType === null &&
+      getCurrentVotesResult?.status === "success"
+    ) {
+      votingSnapshotType = "CURRENT_BALANCE";
+    }
+  }
+
   return {
     type,
     address: protocolAddress.toLowerCase(),
     version: detectedVersion,
+    votingSnapshotType,
     raw: {
       name: valueOrNull(name),
       version: valueOrNull(version),
@@ -151,6 +242,15 @@ export async function detectGovernor(
       quorumNumerator: bigintToString(ozQuorum),
       quorumVotes: bigintToString(compQuorum),
       proposalThreshold: bigintToString(proposalThreshold),
+      clockMode,
+      getVotesAvailable:
+        snapshotResults !== null
+          ? snapshotResults[0]?.status === "success"
+          : null,
+      getCurrentVotesAvailable:
+        snapshotResults !== null
+          ? snapshotResults[2]?.status === "success"
+          : null,
     },
   };
 }
