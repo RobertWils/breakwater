@@ -89,8 +89,12 @@ export function withTimelock(
 }
 
 /**
- * Default to a HEALTHY 3-of-5 Safe. Tests that exercise concentration
+ * Default to a HEALTHY 3-of-7 Safe. Tests that exercise concentration
  * risk override threshold/owners.
+ *
+ * 3-of-7 chosen over 3-of-5 (E.3 update) so the default trips none of
+ * GOV-003's three rules: threshold (3) >= 3, ownerCount (7) >= 4,
+ * ratio (3/7 ≈ 0.43) <= 0.5. 3-of-5 hits Rule 3 because 3/5 = 0.6 > 0.5.
  */
 export function withMultisig(
   snapshot: GovernanceSnapshotData,
@@ -101,13 +105,15 @@ export function withMultisig(
     hasMultisig: true,
     multisigAddress: "0x4444444444444444444444444444444444444444",
     multisigThreshold: 3,
-    multisigOwnerCount: 5,
+    multisigOwnerCount: 7,
     multisigOwners: [
       "0xa000000000000000000000000000000000000001",
       "0xa000000000000000000000000000000000000002",
       "0xa000000000000000000000000000000000000003",
       "0xa000000000000000000000000000000000000004",
       "0xa000000000000000000000000000000000000005",
+      "0xa000000000000000000000000000000000000006",
+      "0xa000000000000000000000000000000000000007",
     ],
     ...overrides,
   };
