@@ -1,6 +1,7 @@
 import type {
   GovernorType,
   ProxyType,
+  Severity,
   VotingSnapshotType,
 } from "@prisma/client";
 
@@ -70,3 +71,44 @@ export interface GovernorDetectionContext {
   protocolAddress: string;
   blockNumber: bigint;
 }
+
+/**
+ * Input shape for creating a Finding from a detector (Plan 02 E.1).
+ *
+ * Detectors return `GovernanceFindingInput[]` — empty array means
+ * clean. Phase F orchestrator translates these into Finding rows with
+ * scanId, moduleRunId, and snapshotBlockNumber injected at persistence
+ * time so detectors stay pure functions of snapshot input.
+ *
+ * `detectorVersion` is `number` per Plan 02 decision (Q1 in E recon):
+ * String semver (`"1.0.0"`) deferred to Plan 03+ — see NOTES.md
+ * backlog. All Plan 02 detectors ship with `detectorVersion: 1`;
+ * bump on heuristic changes once we ship.
+ */
+export interface GovernanceFindingInput {
+  detectorId: string;
+  detectorVersion: number;
+  severity: Severity;
+  publicTitle: string;
+  title: string;
+  description: string;
+  evidence: Record<string, unknown>;
+  affectedComponent: string | null;
+  references: string[];
+  remediationHint: string;
+  remediationDetailed: string;
+  publicRank: number;
+}
+
+/**
+ * Detector function signature shared by GOV-001..GOV-006.
+ *
+ * Pure synchronous function over snapshot data. The orchestrator
+ * (Phase F) iterates over the registry and aggregates findings.
+ *
+ * Note: GOV-002 reads `protocolAbi` (added in E.2) which is already
+ * in the snapshot — still pure, no I/O at detector layer.
+ */
+export type GovernanceDetector = (
+  snapshot: GovernanceSnapshotData,
+) => GovernanceFindingInput[];
