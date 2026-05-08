@@ -2,6 +2,7 @@ import { parseAbi } from "viem";
 
 import { publicClient } from "@/lib/rpc-client";
 
+import { checkIsContract } from "./contract-utils";
 import type { GovernorDetectionResult } from "./types";
 
 /**
@@ -35,6 +36,12 @@ export interface TimelockDetectionResult {
   address: string;
   minDelay: number; // seconds
   admin: string | null;
+  /**
+   * Whether the timelock admin has bytecode (D.6 — required by GOV-001
+   * to distinguish EOA admins from contract admins). `null` when admin
+   * is unknown or getCode could not determine.
+   */
+  adminIsContract: boolean | null;
   raw: {
     getMinDelay: string | null;
     delay: string | null;
@@ -147,10 +154,19 @@ export async function detectTimelock(
       ? adminResult.result.toLowerCase()
       : null;
 
+  // D.6: probe whether admin has bytecode. GOV-001 fires CRITICAL when
+  // the timelock admin is an EOA (adminIsContract === false). Skip the
+  // RPC roundtrip when admin is missing or the zero address.
+  let adminIsContract: boolean | null = null;
+  if (admin && admin !== "0x0000000000000000000000000000000000000000") {
+    adminIsContract = await checkIsContract(admin, blockNumber);
+  }
+
   return {
     address: probeAddress,
     minDelay,
     admin,
+    adminIsContract,
     raw: {
       getMinDelay:
         getMinDelayResult.status === "success"

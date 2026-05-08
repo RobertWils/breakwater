@@ -78,6 +78,7 @@ function mapSnapshotToCreate(
     timelockAddress: data.timelockAddress,
     timelockMinDelay: data.timelockMinDelay,
     timelockAdmin: data.timelockAdmin,
+    timelockAdminIsContract: data.timelockAdminIsContract,
 
     hasMultisig: data.hasMultisig,
     multisigAddress: data.multisigAddress,

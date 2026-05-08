@@ -3,6 +3,8 @@ import type { ProxyType } from "@prisma/client";
 import { fetchContractAbi } from "@/lib/etherscan-client";
 import { publicClient } from "@/lib/rpc-client";
 
+import { checkIsContract } from "./contract-utils";
+
 /**
  * Proxy detection for the governance snapshot.
  *
@@ -171,17 +173,3 @@ function parseSlotAsAddress(
   return addrHex;
 }
 
-async function checkIsContract(
-  address: string,
-  blockNumber: bigint,
-): Promise<boolean> {
-  try {
-    const code = await publicClient.getCode({
-      address: address as `0x${string}`,
-      blockNumber,
-    });
-    return Boolean(code && code !== "0x" && code.length > 2);
-  } catch {
-    return false;
-  }
-}

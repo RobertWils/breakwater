@@ -290,10 +290,11 @@ model GovernanceSnapshot {
   governorType    GovernorType?
   governorVersion String?
 
-  hasTimelock      Boolean @default(false)
-  timelockAddress  String?
-  timelockMinDelay Int?
-  timelockAdmin    String?
+  hasTimelock             Boolean @default(false)
+  timelockAddress         String?
+  timelockMinDelay        Int?
+  timelockAdmin           String?
+  timelockAdminIsContract Boolean?
 
   hasMultisig        Boolean  @default(false)
   multisigAddress    String?

@@ -33,6 +33,7 @@ const fullSnapshot: GovernanceSnapshotData = {
   timelockAddress: "0xtimelock",
   timelockMinDelay: 172_800,
   timelockAdmin: "0xadmin",
+  timelockAdminIsContract: true,
 
   hasMultisig: true,
   multisigAddress: "0xsafe",
@@ -66,6 +67,7 @@ const minimalSnapshot: GovernanceSnapshotData = {
   timelockAddress: null,
   timelockMinDelay: null,
   timelockAdmin: null,
+  timelockAdminIsContract: null,
 
   hasMultisig: false,
   multisigAddress: null,
@@ -100,6 +102,7 @@ const stubReturn = (overrides: Partial<GovernanceSnapshot> = {}) =>
     timelockAddress: null,
     timelockMinDelay: null,
     timelockAdmin: null,
+    timelockAdminIsContract: null,
     hasMultisig: false,
     multisigAddress: null,
     multisigThreshold: null,

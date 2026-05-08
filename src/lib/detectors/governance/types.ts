@@ -23,11 +23,12 @@ export interface GovernanceSnapshotData {
   governorType: GovernorType | null;
   governorVersion: string | null;
 
-  // Timelock (D.3b)
+  // Timelock (D.3b + D.6)
   hasTimelock: boolean;
   timelockAddress: string | null;
   timelockMinDelay: number | null;
   timelockAdmin: string | null;
+  timelockAdminIsContract: boolean | null;
 
   // Multisig (D.3b)
   hasMultisig: boolean;

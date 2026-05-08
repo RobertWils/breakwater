@@ -61,6 +61,7 @@ describe("captureGovernanceSnapshot (Plan 02 D.3c)", () => {
       address: "0xtimelock",
       minDelay: 172_800,
       admin: "0xadmin",
+      adminIsContract: true,
       raw: { getMinDelay: "172800", delay: null, admin: "0xadmin" },
     });
     detectSafeMock.mockResolvedValue({
@@ -88,6 +89,7 @@ describe("captureGovernanceSnapshot (Plan 02 D.3c)", () => {
     expect(snapshot.governorType).toBe("OZ_GOVERNOR");
     expect(snapshot.hasTimelock).toBe(true);
     expect(snapshot.timelockMinDelay).toBe(172_800);
+    expect(snapshot.timelockAdminIsContract).toBe(true);
     expect(snapshot.hasMultisig).toBe(true);
     expect(snapshot.multisigOwnerCount).toBe(5);
     expect(snapshot.proxyType).toBe("EIP_1967_TRANSPARENT");

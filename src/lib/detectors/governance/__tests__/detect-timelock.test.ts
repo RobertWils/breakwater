@@ -5,6 +5,7 @@ vi.mock("@/lib/rpc-client", () => ({
   publicClient: {
     multicall: vi.fn(),
     readContract: vi.fn(),
+    getCode: vi.fn(),
   },
 }));
 
@@ -26,6 +27,7 @@ function fail(message = "reverted"): Entry {
 
 const multicallMock = vi.mocked(publicClient.multicall);
 const readContractMock = vi.mocked(publicClient.readContract);
+const getCodeMock = vi.mocked(publicClient.getCode);
 
 const candidateAddress = "0x1111111111111111111111111111111111111111";
 const adminAddr = "0xadminadminadminadminadminadminadminadmin";
@@ -41,6 +43,10 @@ describe("detectTimelock (Plan 02 D.3b)", () => {
   beforeEach(() => {
     multicallMock.mockReset();
     readContractMock.mockReset();
+    getCodeMock.mockReset();
+    // Default: admin probe returns "0x" (EOA) — most existing tests
+    // don't assert on adminIsContract; D.6-specific cases override.
+    getCodeMock.mockResolvedValue("0x" as `0x${string}`);
   });
 
   it("detects an OZ TimelockController via getMinDelay()", async () => {
@@ -173,5 +179,62 @@ describe("detectTimelock (Plan 02 D.3b)", () => {
     });
 
     expect(result).toBeNull();
+  });
+
+  // D.6: timelockAdminIsContract probe — required by GOV-001 to fire
+  // CRITICAL when the timelock admin is an EOA. Three states:
+  //   true  → admin has bytecode (contract)
+  //   false → admin has no bytecode (EOA)
+  //   null  → getCode failed; detector skips the EOA branch defensively.
+
+  it("D.6: captures adminIsContract=true when admin has bytecode (contract)", async () => {
+    multicallMock.mockResolvedValue([
+      ok(BigInt(172_800)),
+      fail(),
+      ok(adminAddr),
+    ] as never);
+    getCodeMock.mockResolvedValue("0x6080604052" as `0x${string}`);
+
+    const result = await detectTimelock({
+      blockNumber: BigInt(20_000_000),
+      governorResult: null,
+      candidateAddress,
+    });
+
+    expect(result?.adminIsContract).toBe(true);
+  });
+
+  it("D.6: captures adminIsContract=false when admin has empty bytecode (EOA)", async () => {
+    multicallMock.mockResolvedValue([
+      ok(BigInt(172_800)),
+      fail(),
+      ok(adminAddr),
+    ] as never);
+    getCodeMock.mockResolvedValue("0x" as `0x${string}`);
+
+    const result = await detectTimelock({
+      blockNumber: BigInt(20_000_000),
+      governorResult: null,
+      candidateAddress,
+    });
+
+    expect(result?.adminIsContract).toBe(false);
+  });
+
+  it("D.6: captures adminIsContract=null when getCode rejects (indeterminate)", async () => {
+    multicallMock.mockResolvedValue([
+      ok(BigInt(172_800)),
+      fail(),
+      ok(adminAddr),
+    ] as never);
+    getCodeMock.mockRejectedValue(new Error("RPC unavailable"));
+
+    const result = await detectTimelock({
+      blockNumber: BigInt(20_000_000),
+      governorResult: null,
+      candidateAddress,
+    });
+
+    expect(result?.adminIsContract).toBeNull();
   });
 });

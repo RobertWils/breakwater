@@ -80,6 +80,7 @@ export async function captureGovernanceSnapshot(
     timelockAddress: timelockResult?.address ?? null,
     timelockMinDelay: timelockResult?.minDelay ?? null,
     timelockAdmin: timelockResult?.admin ?? null,
+    timelockAdminIsContract: timelockResult?.adminIsContract ?? null,
 
     hasMultisig: safeIsValid,
     multisigAddress: safeIsValid ? safeResult.address : null,
