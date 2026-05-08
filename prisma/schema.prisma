@@ -312,6 +312,7 @@ model GovernanceSnapshot {
   proxyVerified        Boolean    @default(false)
   proxyAdminIsContract Boolean?
   implementationAbi    String?
+  protocolAbi          String?
 
   // Voting token (if applicable)
   votingTokenAddress String?

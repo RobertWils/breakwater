@@ -1,3 +1,4 @@
+import { fetchContractAbi } from "@/lib/etherscan-client";
 import { publicClient } from "@/lib/rpc-client";
 
 import { detectGovernor } from "./detect-governor";
@@ -65,6 +66,20 @@ export async function captureGovernanceSnapshot(
     blockNumber,
   });
 
+  // E.2: For non-proxy contracts, fetch the protocol's own ABI so
+  // GOV-002 can scan it for emergency/bypass function patterns.
+  // Proxy contracts already have implementationAbi populated by
+  // detect-proxy; skip the redundant fetch.
+  let protocolAbi: string | null = null;
+  if (proxyResult.proxyType === "NONE") {
+    const abiResult = await fetchContractAbi(protocolAddress);
+    if (abiResult.ok) {
+      protocolAbi = abiResult.data;
+    }
+    // Etherscan unavailable (missing key, rate limit, unverified
+    // contract) → leave null. GOV-002 treats null as "skip with note".
+  }
+
   const safeIsValid = safeResult !== null && safeResult.isSafe;
 
   return {
@@ -94,6 +109,7 @@ export async function captureGovernanceSnapshot(
     proxyVerified: Boolean(proxyResult.implementationAbi),
     proxyAdminIsContract: proxyResult.proxyAdminIsContract,
     implementationAbi: proxyResult.implementationAbi,
+    protocolAbi,
 
     // Voting-token detection deferred to Phase E (GOV-004 will
     // reach into governor.token() / similar accessors when needed).

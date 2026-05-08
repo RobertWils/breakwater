@@ -92,6 +92,7 @@ function mapSnapshotToCreate(
     proxyVerified: data.proxyVerified,
     proxyAdminIsContract: data.proxyAdminIsContract,
     implementationAbi: data.implementationAbi,
+    protocolAbi: data.protocolAbi,
 
     votingTokenAddress: data.votingTokenAddress,
     votingSnapshotType: data.votingSnapshotType,

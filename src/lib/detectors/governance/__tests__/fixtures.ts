@@ -44,6 +44,7 @@ export function baseSnapshot(
     proxyVerified: false,
     proxyAdminIsContract: null,
     implementationAbi: null,
+    protocolAbi: null,
 
     votingTokenAddress: null,
     votingSnapshotType: null,

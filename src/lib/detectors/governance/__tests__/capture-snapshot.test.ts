@@ -23,6 +23,11 @@ vi.mock("../detect-proxy", () => ({
   detectProxy: vi.fn(),
 }));
 
+vi.mock("@/lib/etherscan-client", () => ({
+  fetchContractAbi: vi.fn(),
+}));
+
+import { fetchContractAbi } from "@/lib/etherscan-client";
 import { publicClient } from "@/lib/rpc-client";
 
 import { detectGovernor } from "../detect-governor";
@@ -37,6 +42,7 @@ const detectGovernorMock = vi.mocked(detectGovernor);
 const detectTimelockMock = vi.mocked(detectTimelock);
 const detectSafeMock = vi.mocked(detectSafe);
 const detectProxyMock = vi.mocked(detectProxy);
+const fetchContractAbiMock = vi.mocked(fetchContractAbi);
 
 const PROTOCOL = "0x1111111111111111111111111111111111111111";
 
@@ -47,6 +53,15 @@ describe("captureGovernanceSnapshot (Plan 02 D.3c)", () => {
     detectTimelockMock.mockReset();
     detectSafeMock.mockReset();
     detectProxyMock.mockReset();
+    fetchContractAbiMock.mockReset();
+    // Default: protocol ABI fetch fails gracefully (matches the
+    // "no Etherscan key configured" code path most existing tests
+    // expect). Test cases that exercise the success path override.
+    fetchContractAbiMock.mockResolvedValue({
+      ok: false,
+      reason: "missing_api_key",
+      message: "ETHERSCAN_API_KEY env var not set",
+    });
   });
 
   it("composes a full populated snapshot from all detector outputs", async () => {
@@ -199,5 +214,76 @@ describe("captureGovernanceSnapshot (Plan 02 D.3c)", () => {
     expect(snapshot.rawState.governor).toMatchObject({ name: "TestGov" });
     expect(snapshot.rawState.timelock).toBeNull();
     expect(snapshot.rawState.proxy).toMatchObject({ type: "NONE" });
+  });
+
+  // ── Plan 02 E.2: protocolAbi population ────────────────────────────────
+  // Behavior:
+  //   proxyType === "NONE" → fetch protocolAbi from Etherscan
+  //   proxyType !== "NONE" → skip the fetch (implementationAbi covers it)
+  //   Etherscan failure   → protocolAbi stays null (graceful degrade)
+
+  it("E.2: fetches protocolAbi from Etherscan when proxyType is NONE", async () => {
+    getBlockNumberMock.mockResolvedValue(BigInt(20_000_000));
+    detectGovernorMock.mockResolvedValue(null);
+    detectTimelockMock.mockResolvedValue(null);
+    detectProxyMock.mockResolvedValue({
+      proxyType: "NONE",
+      proxyAdminAddress: null,
+      proxyImplementation: null,
+      proxyAdminIsContract: null,
+      implementationAbi: null,
+    });
+    fetchContractAbiMock.mockResolvedValue({
+      ok: true,
+      data: '[{"type":"function","name":"emergencyWithdraw"}]',
+    });
+
+    const snapshot = await captureGovernanceSnapshot({
+      protocolAddress: PROTOCOL,
+    });
+
+    expect(fetchContractAbiMock).toHaveBeenCalledWith(PROTOCOL);
+    expect(snapshot.protocolAbi).toContain("emergencyWithdraw");
+  });
+
+  it("E.2: leaves protocolAbi null when Etherscan fetch fails", async () => {
+    getBlockNumberMock.mockResolvedValue(BigInt(20_000_000));
+    detectGovernorMock.mockResolvedValue(null);
+    detectTimelockMock.mockResolvedValue(null);
+    detectProxyMock.mockResolvedValue({
+      proxyType: "NONE",
+      proxyAdminAddress: null,
+      proxyImplementation: null,
+      proxyAdminIsContract: null,
+      implementationAbi: null,
+    });
+    // beforeEach already sets the missing_api_key default; just call.
+
+    const snapshot = await captureGovernanceSnapshot({
+      protocolAddress: PROTOCOL,
+    });
+
+    expect(snapshot.protocolAbi).toBeNull();
+  });
+
+  it("E.2: skips protocolAbi fetch entirely for proxy contracts", async () => {
+    getBlockNumberMock.mockResolvedValue(BigInt(20_000_000));
+    detectGovernorMock.mockResolvedValue(null);
+    detectTimelockMock.mockResolvedValue(null);
+    detectProxyMock.mockResolvedValue({
+      proxyType: "EIP_1967_TRANSPARENT",
+      proxyAdminAddress: "0xadmin",
+      proxyImplementation: "0ximpl",
+      proxyAdminIsContract: true,
+      implementationAbi: "[]",
+    });
+
+    const snapshot = await captureGovernanceSnapshot({
+      protocolAddress: PROTOCOL,
+    });
+
+    expect(fetchContractAbiMock).not.toHaveBeenCalled();
+    expect(snapshot.protocolAbi).toBeNull();
+    expect(snapshot.implementationAbi).toBe("[]");
   });
 });

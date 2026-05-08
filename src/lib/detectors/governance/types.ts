@@ -38,13 +38,16 @@ export interface GovernanceSnapshotData {
   multisigOwnerCount: number | null;
   multisigOwners: string[];
 
-  // Proxy (D.3c)
+  // Proxy (D.3c) + non-proxy ABI (E.2)
   proxyType: ProxyType | null;
   proxyAdminAddress: string | null;
   proxyImplementation: string | null;
   proxyVerified: boolean;
   proxyAdminIsContract: boolean | null;
+  /** ABI of the proxy implementation contract (when proxyType !== NONE). */
   implementationAbi: string | null;
+  /** ABI of the protocol contract itself (E.2 — populated when proxyType === NONE). */
+  protocolAbi: string | null;
 
   // Voting (filled across D.3a/c as detector needs grow)
   votingTokenAddress: string | null;

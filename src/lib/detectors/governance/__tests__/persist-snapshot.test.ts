@@ -47,6 +47,7 @@ const fullSnapshot: GovernanceSnapshotData = {
   proxyVerified: true,
   proxyAdminIsContract: true,
   implementationAbi: '[{"name":"transfer"}]',
+  protocolAbi: null,
 
   votingTokenAddress: null,
   votingSnapshotType: null,
@@ -81,6 +82,7 @@ const minimalSnapshot: GovernanceSnapshotData = {
   proxyVerified: false,
   proxyAdminIsContract: null,
   implementationAbi: null,
+  protocolAbi: null,
 
   votingTokenAddress: null,
   votingSnapshotType: null,
@@ -114,6 +116,7 @@ const stubReturn = (overrides: Partial<GovernanceSnapshot> = {}) =>
     proxyVerified: false,
     proxyAdminIsContract: null,
     implementationAbi: null,
+    protocolAbi: null,
     votingTokenAddress: null,
     votingSnapshotType: null,
     rawState: {},
