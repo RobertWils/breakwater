@@ -124,9 +124,53 @@ export function withMultisig(
 
 /**
  * Default to EIP-1967 transparent proxy with verified implementation
- * + contract admin. Unsafe variants (CUSTOM, EOA admin, unverified
- * impl) override the relevant fields.
+ * + contract admin. The default implementationAbi exposes
+ * pause/unpause/paused (OZ Pausable canonical) so cleanUniswapV3Fixture
+ * stays quiet on GOV-006 — E.7 I2 update. Other detectors don't
+ * scan for these names (transfer/balanceOf are ordinary ERC20;
+ * pause/unpause/paused don't match any GOV-002 bypass pattern).
+ *
+ * Unsafe variants (CUSTOM, EOA admin, unverified impl, missing pause)
+ * override the relevant fields.
  */
+const CLEAN_PROXY_ABI = JSON.stringify([
+  {
+    type: "function",
+    name: "transfer",
+    inputs: [],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "balanceOf",
+    inputs: [],
+    outputs: [],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "pause",
+    inputs: [],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "unpause",
+    inputs: [],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "paused",
+    inputs: [],
+    outputs: [],
+    stateMutability: "view",
+  },
+]);
+
 export function withProxy(
   snapshot: GovernanceSnapshotData,
   overrides: Partial<GovernanceSnapshotData> = {},
@@ -138,7 +182,7 @@ export function withProxy(
     proxyImplementation: "0x6666666666666666666666666666666666666666",
     proxyVerified: true,
     proxyAdminIsContract: true,
-    implementationAbi: "[]",
+    implementationAbi: CLEAN_PROXY_ABI,
     ...overrides,
   };
 }

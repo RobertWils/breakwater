@@ -123,3 +123,31 @@ export interface GovernanceFindingInput {
 export type GovernanceDetector = (
   snapshot: GovernanceSnapshotData,
 ) => GovernanceFindingInput[];
+
+/**
+ * Default `publicRank` assignment based on severity (Plan 02 E.7 I3).
+ *
+ * Detectors should use this helper unless they have specific reason to
+ * override (e.g., GOV-006 keeps MEDIUM at rank 3 because pause absence
+ * is a posture concern, not an immediately exploitable condition like
+ * other MEDIUMs).
+ *
+ * Convention:
+ *   CRITICAL → 1  (most public — surfaces in unauth tier teasers)
+ *   HIGH     → 2  (auth tier+, premium teaser)
+ *   MEDIUM   → 2  (auth tier+)
+ *   LOW      → 3  (auth tier only)
+ *   INFO     → 3  (auth tier only)
+ */
+export function defaultPublicRank(severity: Severity): number {
+  switch (severity) {
+    case "CRITICAL":
+      return 1;
+    case "HIGH":
+    case "MEDIUM":
+      return 2;
+    case "LOW":
+    case "INFO":
+      return 3;
+  }
+}

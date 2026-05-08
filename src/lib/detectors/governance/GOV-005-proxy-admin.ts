@@ -76,7 +76,8 @@ export const detectGov005: GovernanceDetector = (snapshot) => {
         "   For UUPS: implementation._authorizeUpgrade modifier checks Timelock\n" +
         "4. Configure Timelock proposers to be the multisig address.\n" +
         "5. Document upgrade procedure and emergency response plan.",
-      publicRank: 2,
+      // E.7 I3: aligned to defaultPublicRank(CRITICAL) = 1.
+      publicRank: 1,
     });
   }
 

@@ -211,7 +211,9 @@ describe("GOV-002 detectGov002 (Plan 02 E.2)", () => {
 
   describe("Output structure", () => {
     it("clean Uniswap V3 fixture produces no findings", () => {
-      // Fixture's implementationAbi is "[]" (empty array).
+      // Post-E.7-I2, the fixture's implementationAbi exposes
+      // transfer/balanceOf/pause/unpause/paused — none of those match
+      // any GOV-002 bypass pattern, so the detector stays quiet.
       expect(detectGov002(cleanUniswapV3Fixture)).toHaveLength(0);
     });
 

@@ -138,25 +138,44 @@ describe("GOV-005 detectGov005 (Plan 02 E.5)", () => {
   });
 
   describe("Output structure", () => {
-    it("every finding populates the full GovernanceFindingInput shape", () => {
+    it("Rule 1 (CRITICAL EOA admin) populates the full GovernanceFindingInput shape with publicRank: 1 (E.7 I3)", () => {
       const snapshot = withProxy(baseSnapshot(), {
         proxyAdminIsContract: false,
       });
 
+      // Only Rule 1 fires here (proxyType is EIP_1967_TRANSPARENT,
+      // not CUSTOM, so Rule 2 stays quiet).
       const findings = detectGov005(snapshot);
+      expect(findings).toHaveLength(1);
+      const finding = findings[0]!;
 
-      findings.forEach((finding) => {
-        expect(finding.detectorId).toBe("GOV-005");
-        expect(finding.detectorVersion).toBe(1);
-        expect(finding.severity).toBeDefined();
-        expect(finding.publicTitle).toBeTruthy();
-        expect(finding.title).toBeTruthy();
-        expect(finding.description.length).toBeGreaterThan(100);
-        expect(finding.evidence.proxyType).toBeTruthy();
-        expect(finding.references.length).toBeGreaterThan(1);
-        expect(finding.publicRank).toBe(2);
-        expect(finding.affectedComponent).toBe("proxy");
+      expect(finding.detectorId).toBe("GOV-005");
+      expect(finding.detectorVersion).toBe(1);
+      expect(finding.severity).toBe("CRITICAL");
+      expect(finding.publicTitle).toBeTruthy();
+      expect(finding.title).toBeTruthy();
+      expect(finding.description.length).toBeGreaterThan(100);
+      expect(finding.evidence.proxyType).toBeTruthy();
+      expect(finding.references.length).toBeGreaterThan(1);
+      // E.7 I3: CRITICAL severity → publicRank 1 per defaultPublicRank.
+      expect(finding.publicRank).toBe(1);
+      expect(finding.affectedComponent).toBe("proxy");
+    });
+
+    it("Rule 2 (MEDIUM CUSTOM proxy) keeps publicRank: 2 (default for MEDIUM)", () => {
+      const snapshot = baseSnapshot({
+        proxyType: "CUSTOM",
+        proxyAdminAddress: null,
+        proxyImplementation: "0xImpl",
+        proxyVerified: false,
+        proxyAdminIsContract: null,
+        implementationAbi: null,
       });
+
+      const findings = detectGov005(snapshot);
+      const r2 = findings.find((f) => f.severity === "MEDIUM");
+      expect(r2).toBeDefined();
+      expect(r2!.publicRank).toBe(2);
     });
   });
 });

@@ -67,6 +67,16 @@ Next step: implementation.md generation.
 - waitForEvent multi-module match (NICE_TO_HAVE from Codex C-phase review): C.1's `executeScan.step.waitForEvent` matches on `data.scanId` only. Tolerable for the single-module skeleton (governance only). When Phase F adds a second module dispatch, tighten the match to `data.scanId` AND `data.module` to avoid cross-module accidental wakes — otherwise the governance waiter could resume on an oracle/signer/frontend completion event with the same scanId.
 - Cascade-delete coverage on Scan-related tables (Codex C-phase observation): `GovernanceSnapshot.scan` has `onDelete: Cascade` but `ScanAttempt`, `ModuleRun`, and `Finding` do not. Plan 02 has no scan-deletion path so this is currently unreachable. When TTL purge (or admin-side delete) lands in Plan 03+, either (a) extend cascade to the other relations in a migration, or (b) implement explicit ordered cleanup in the purge job. Document the choice; mismatched cascade semantics tend to leak orphan rows quietly.
 
+### Codex Phase E review backlog (E.7 batched deferrals)
+
+- **N1: GOV-006 pause-pattern expansion (Plan 03+).** Current detector matches 10 conservative regex patterns. Real-world variants like `freezeAll`, `freezeFunds`, `emergencyExit` may legitimately implement pause semantics but don't match. Risk balance: false negatives on legitimate pauses vs. false positives on irrelevant freeze functions (e.g., per-user token freeze on stablecoins). Decision deferred until aggregated production scan data informs the pattern set.
+
+- **VotingSnapshotType enum granularity (Plan 03+).** E.4 Option A collapsed BLOCK_NUMBER + TIMESTAMP into the existing `BLOCK_BASED` value. The clock-mode distinction stays in `raw.clockMode` for forensics. Plan 03+ enhancement: add a separate `TIMESTAMP` enum value (or split `BLOCK_BASED` into two) if the UI ever needs to distinguish OZ 4.9+ timestamp clocks from earlier block-number clocks. Migration would be additive.
+
+- **Declared multisig 404-as-finding type (Plan 03+).** GOV-003 currently quiets when `hasMultisig: false` — covers both "no multisig" and "declared multisig returned 404 from Safe API" (D.3c collapses these). Spec §5.2 originally proposed treating "declared multisig that is not a Safe" as a distinct finding type. Plan 03+ enhancement: extend `GovernanceSnapshotData` to capture declared addresses that returned 404 separately; GOV-003 fires LOW or MEDIUM "declared multisig not registered as Safe — verify deployment".
+
+- **ABI-based UUPS positive confirmation (Plan 03+).** D.5 I2 collapsed "impl set + admin unset" into `CUSTOM` (was over-claiming `EIP_1822_UUPS`). The `EIP_1822_UUPS` enum value remains unused by the current detector. Plan 03+ enhancement: fetch implementation ABI for `CUSTOM` proxies, check for `proxiableUUID()` returning the EIP-1822 magic value (`0x360894…d382bbc`) or the `upgradeToAndCall(address,bytes)` selector. Promote `CUSTOM → EIP_1822_UUPS` when confirmed; GOV-005 Rule 2 then fires `INFO` (positive confirmation) instead of `MEDIUM` (unknown pattern).
+
 ### Spec drift findings (Phase D recon, pre-implementation)
 
 Spec §8.2 + §8.3 + §9 will be updated in batch at end of Phase D before Codex review. Implementation will follow current API state below, not the frozen spec text.

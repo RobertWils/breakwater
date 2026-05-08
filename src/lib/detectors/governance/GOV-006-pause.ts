@@ -99,6 +99,15 @@ export const detectGov006: GovernanceDetector = (snapshot) => {
 
   const functions: AbiFunction[] = parsed.filter(isAbiFunction);
 
+  // E.7 I1: an empty function array is information-absent (e.g., the
+  // ABI was empty `[]`, or contained only events/errors). That's
+  // distinct from "we read the ABI and confirmed no pause exists" —
+  // we cannot make the latter claim without functions to check, so
+  // skip rather than fire a false-positive MEDIUM.
+  if (functions.length === 0) {
+    return findings;
+  }
+
   const hasPauseMechanism = functions.some((fn) =>
     PAUSE_PATTERNS.some((pattern) => pattern.test(fn.name)),
   );

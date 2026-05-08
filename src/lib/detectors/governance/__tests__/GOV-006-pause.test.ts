@@ -222,32 +222,32 @@ describe("GOV-006 detectGov006 (Plan 02 E.6)", () => {
       expect(detectGov006(snapshot)).toHaveLength(0);
     });
 
-    it("ignores non-function ABI entries (events/errors with pause names don't satisfy the requirement)", () => {
+    it("returns no findings when ABI parses to empty function array (E.7 I1 — info-absent, not proof-of-absence)", () => {
+      const snapshot = withProxy(baseSnapshot(), { implementationAbi: "[]" });
+      expect(detectGov006(snapshot)).toHaveLength(0);
+    });
+
+    it("returns no findings when ABI has only events/errors (filters to empty function set, E.7 I1)", () => {
+      // After filtering events/errors, the function array is empty —
+      // we have no positive evidence that pause is missing. Skip
+      // rather than fire a false-positive MEDIUM.
       const abi = JSON.stringify([
         { type: "event", name: "pause", inputs: [] },
         { type: "error", name: "Paused", inputs: [] },
       ]);
       const snapshot = withProxy(baseSnapshot(), { implementationAbi: abi });
 
-      const findings = detectGov006(snapshot);
-      expect(findings).toHaveLength(1);
-      expect(findings[0]!.severity).toBe("MEDIUM");
+      expect(detectGov006(snapshot)).toHaveLength(0);
     });
   });
 
   describe("Combined scenarios (named fixtures)", () => {
-    it("cleanUniswapV3Fixture deliberately fires (empty '[]' ABI = no pause)", () => {
-      // The clean baseline carries implementationAbi: "[]" — chosen so
-      // GOV-002 + others stay quiet on it. GOV-006 reads "no functions
-      // → no pause", so it does fire here. This is intentional: the
-      // clean fixture exercises GOV-006's positive path. A protocol-
-      // realistic clean fixture for GOV-006 would need pause()/unpause()
-      // in the ABI, which would also drag GOV-002 into checking them
-      // (it doesn't fire on those names — they're not bypass patterns —
-      // but conceptually the fixture would be fuller).
-      const findings = detectGov006(cleanUniswapV3Fixture);
-      expect(findings).toHaveLength(1);
-      expect(findings[0]!.severity).toBe("MEDIUM");
+    it("cleanUniswapV3Fixture stays quiet (E.7 I2 — pause-capable ABI)", () => {
+      // After E.7 I2, withProxy default implementationAbi includes
+      // pause/unpause/paused (OZ Pausable canonical). GOV-006 finds
+      // those patterns and stays quiet — the clean baseline is now
+      // truly clean across all 6 detectors.
+      expect(detectGov006(cleanUniswapV3Fixture)).toHaveLength(0);
     });
 
     it("audiusLikeFixture: implementationAbi is null → quiet skip", () => {

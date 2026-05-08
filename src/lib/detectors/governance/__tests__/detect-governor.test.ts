@@ -237,6 +237,34 @@ describe("detectGovernor (Plan 02 D.3a)", () => {
     expect(result?.raw.clockMode).toBe("mode=timestamp");
   });
 
+  it("E.7 N2: returns governor with votingSnapshotType=null when the snapshot probe rejects", async () => {
+    // Main probe succeeds → governor detected. Snapshot probe rejects
+    // (e.g., transient RPC outage between the two multicalls).
+    // detectGovernor should still return the governor; only the
+    // snapshot fields go null. GOV-004 will fire INFO on the null
+    // and surface the indeterminate state.
+    multicallMock
+      .mockResolvedValueOnce([
+        ok("MyGovernor"),
+        ok("1"),
+        ok(BigInt(7200)),
+        ok(BigInt(50_400)),
+        ok(BigInt(4)),
+        fail(),
+        ok(BigInt(100)),
+      ] as never)
+      .mockRejectedValueOnce(new Error("Snapshot probe failed"));
+
+    const result = await detectGovernor(context);
+
+    expect(result).not.toBeNull();
+    expect(result?.type).toBe("OZ_GOVERNOR");
+    expect(result?.votingSnapshotType).toBeNull();
+    expect(result?.raw.clockMode).toBeNull();
+    expect(result?.raw.getVotesAvailable).toBeNull();
+    expect(result?.raw.getCurrentVotesAvailable).toBeNull();
+  });
+
   it("E.4: detects votingSnapshotType=CURRENT_BALANCE when only getCurrentVotes responds (Compound Bravo legacy)", async () => {
     multicallMock
       .mockResolvedValueOnce([
