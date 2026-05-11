@@ -51,6 +51,31 @@ export type ScanLogEvent =
       scanId: string;
       detectorId: string;
       severity: string;
+    }
+  | {
+      event: "module.skip_not_queued";
+      scanId: string;
+      module: string;
+    }
+  | {
+      event: "module.execution_error";
+      scanId: string;
+      module: string;
+      error: string;
+    }
+  | {
+      event: "module.completed";
+      scanId: string;
+      module: string;
+      status: "COMPLETE" | "FAILED" | "SKIPPED";
+      findingCount: number;
+      skippedDetectorCount: number;
+    }
+  | {
+      event: "detector.error";
+      scanId: string;
+      detectorId: string;
+      error: string;
     };
 
 export function log(payload: ScanLogEvent): void {
