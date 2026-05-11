@@ -45,6 +45,8 @@ describe("inngest client", () => {
       scanId: "scan-1",
       finalStatus: "COMPLETE",
       compositeGrade: "A",
+      compositeScore: 100,
+      findingsCount: 0,
       executionMs: 456,
     };
 

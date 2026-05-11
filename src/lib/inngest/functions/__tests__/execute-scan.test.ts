@@ -37,6 +37,7 @@ describe("markRunning helper (C.4 B2 — compare-and-set on QUEUED)", () => {
         findUnique: vi.fn(),
       },
       moduleRun: { updateMany: vi.fn() },
+      finding: { findMany: vi.fn(async () => []) },
     } as unknown as Parameters<typeof markRunning>[0];
   }
 
@@ -70,22 +71,35 @@ describe("markRunning helper (C.4 B2 — compare-and-set on QUEUED)", () => {
 
 describe("markComplete helper (C.4 B1 + I3 — finalStatus capture + race guards)", () => {
   type Module = { status: "QUEUED" | "RUNNING" | "COMPLETE" | "FAILED" | "SKIPPED" };
+  type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
 
   function makeClient(opts: {
     modules: Module[];
     updateCount?: number;
     scanExists?: boolean;
+    findings?: Array<{ severity: Severity }>;
+    executionStartedAt?: Date | null;
   }) {
     return {
       scan: {
         findUnique: vi.fn(async () =>
           opts.scanExists === false
             ? null
-            : { id: "scan-1", modules: opts.modules },
+            : {
+                id: "scan-1",
+                modules: opts.modules,
+                executionStartedAt:
+                  opts.executionStartedAt === undefined
+                    ? new Date("2026-05-05T12:00:00.000Z")
+                    : opts.executionStartedAt,
+              },
         ),
         updateMany: vi.fn(async () => ({ count: opts.updateCount ?? 1 })),
       },
       moduleRun: { updateMany: vi.fn() },
+      finding: {
+        findMany: vi.fn(async () => opts.findings ?? []),
+      },
     } as unknown as Parameters<typeof markComplete>[0];
   }
 
@@ -114,11 +128,9 @@ describe("markComplete helper (C.4 B1 + I3 — finalStatus capture + race guards
       modules: [{ status: "COMPLETE" }, { status: "SKIPPED" }],
     });
     const result = await markComplete(client, "scan-1");
-    expect(result).toEqual({
-      finalStatus: "COMPLETE",
-      deferred: false,
-      alreadyFinalized: false,
-    });
+    expect(result.finalStatus).toBe("COMPLETE");
+    expect(result.deferred).toBe(false);
+    expect(result.alreadyFinalized).toBe(false);
   });
 
   it("captures finalStatus=FAILED when any module FAILED (and rest terminal)", async () => {
@@ -126,11 +138,9 @@ describe("markComplete helper (C.4 B1 + I3 — finalStatus capture + race guards
       modules: [{ status: "FAILED" }, { status: "COMPLETE" }],
     });
     const result = await markComplete(client, "scan-1");
-    expect(result).toEqual({
-      finalStatus: "FAILED",
-      deferred: false,
-      alreadyFinalized: false,
-    });
+    expect(result.finalStatus).toBe("FAILED");
+    expect(result.deferred).toBe(false);
+    expect(result.alreadyFinalized).toBe(false);
   });
 
   it("returns alreadyFinalized:true when the RUNNING compare-and-set finds nothing to update", async () => {
@@ -178,5 +188,212 @@ describe("markComplete helper (C.4 B1 + I3 — finalStatus capture + race guards
     const client = makeClient({ modules: [] });
     const result = await markComplete(client, "scan-1");
     expect(result.finalStatus).toBe("COMPLETE");
+  });
+});
+
+describe("markComplete grade integration (F.3 — compositeScore + compositeGrade + executionMs)", () => {
+  type Module = { status: "QUEUED" | "RUNNING" | "COMPLETE" | "FAILED" | "SKIPPED" };
+  type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
+
+  type FinalizedResult = Extract<
+    Awaited<ReturnType<typeof markComplete>>,
+    { finalStatus: NonNullable<unknown> }
+  >;
+
+  function expectFinalized(
+    result: Awaited<ReturnType<typeof markComplete>>,
+  ): FinalizedResult {
+    if (result.finalStatus === null) {
+      throw new Error(
+        `expected finalized result, got ${JSON.stringify(result)}`,
+      );
+    }
+    return result;
+  }
+
+  function makeClient(opts: {
+    modules: Module[];
+    updateCount?: number;
+    findings?: Array<{ severity: Severity }>;
+    executionStartedAt?: Date | null;
+  }) {
+    return {
+      scan: {
+        findUnique: vi.fn(async () => ({
+          id: "scan-1",
+          modules: opts.modules,
+          executionStartedAt:
+            opts.executionStartedAt === undefined
+              ? new Date(Date.now() - 1234)
+              : opts.executionStartedAt,
+        })),
+        updateMany: vi.fn(async () => ({ count: opts.updateCount ?? 1 })),
+      },
+      moduleRun: { updateMany: vi.fn() },
+      finding: {
+        findMany: vi.fn(async () => opts.findings ?? []),
+      },
+    } as unknown as Parameters<typeof markComplete>[0];
+  }
+
+  it("COMPLETE scan with zero findings → score 100, grade A", async () => {
+    const client = makeClient({
+      modules: [{ status: "COMPLETE" }, { status: "SKIPPED" }],
+      findings: [],
+    });
+    const result = expectFinalized(await markComplete(client, "scan-1"));
+    expect(result.finalStatus).toBe("COMPLETE");
+    expect(result.compositeScore).toBe(100);
+    expect(result.compositeGrade).toBe("A");
+    expect(result.findingsCount).toBe(0);
+  });
+
+  it("COMPLETE scan with 1 CRITICAL finding → score 65, grade C (spec §5.3)", async () => {
+    const client = makeClient({
+      modules: [{ status: "COMPLETE" }],
+      findings: [{ severity: "CRITICAL" }],
+    });
+    const result = expectFinalized(await markComplete(client, "scan-1"));
+    expect(result.compositeScore).toBe(65);
+    expect(result.compositeGrade).toBe("C");
+    expect(result.findingsCount).toBe(1);
+  });
+
+  it("COMPLETE scan with 3 CRITICAL findings → grade F (floor override)", async () => {
+    const client = makeClient({
+      modules: [{ status: "COMPLETE" }],
+      findings: [
+        { severity: "CRITICAL" },
+        { severity: "CRITICAL" },
+        { severity: "CRITICAL" },
+      ],
+    });
+    const result = expectFinalized(await markComplete(client, "scan-1"));
+    expect(result.compositeGrade).toBe("F");
+    expect(result.findingsCount).toBe(3);
+  });
+
+  it("FAILED scan persists null compositeScore + compositeGrade (Option 1)", async () => {
+    const client = makeClient({
+      modules: [{ status: "FAILED" }, { status: "COMPLETE" }],
+      findings: [{ severity: "CRITICAL" }],
+    });
+    const result = expectFinalized(await markComplete(client, "scan-1"));
+    expect(result.finalStatus).toBe("FAILED");
+    expect(result.compositeScore).toBeNull();
+    expect(result.compositeGrade).toBeNull();
+    // FAILED skips the finding lookup — partial findings don't represent
+    // a meaningful assessment, so we don't even query for them.
+    expect(client.finding.findMany).not.toHaveBeenCalled();
+  });
+
+  it("FAILED scan still reports findingsCount=0 (no lookup performed)", async () => {
+    const client = makeClient({
+      modules: [{ status: "FAILED" }],
+      findings: [{ severity: "HIGH" }],
+    });
+    const result = expectFinalized(await markComplete(client, "scan-1"));
+    expect(result.findingsCount).toBe(0);
+  });
+
+  it("persists compositeScore + compositeGrade in the scan.updateMany call", async () => {
+    const client = makeClient({
+      modules: [{ status: "COMPLETE" }],
+      findings: [{ severity: "HIGH" }],
+    });
+    await markComplete(client, "scan-1");
+    const updateMany = client.scan.updateMany as unknown as {
+      mock: { calls: unknown[][] };
+    };
+    const args = updateMany.mock.calls[0]![0] as {
+      data: {
+        status: string;
+        compositeScore: number | null;
+        compositeGrade: string | null;
+      };
+    };
+    expect(args.data.compositeScore).toBe(80);
+    expect(args.data.compositeGrade).toBe("B");
+  });
+
+  it("persists null compositeScore + compositeGrade on FAILED scans", async () => {
+    const client = makeClient({
+      modules: [{ status: "FAILED" }],
+    });
+    await markComplete(client, "scan-1");
+    const updateMany = client.scan.updateMany as unknown as {
+      mock: { calls: unknown[][] };
+    };
+    const args = updateMany.mock.calls[0]![0] as {
+      data: { compositeScore: number | null; compositeGrade: string | null };
+    };
+    expect(args.data.compositeScore).toBeNull();
+    expect(args.data.compositeGrade).toBeNull();
+  });
+
+  it("calculates executionMs from executionStartedAt → completedAt", async () => {
+    const startedAt = new Date("2026-05-05T12:00:00.000Z");
+    const client = makeClient({
+      modules: [{ status: "COMPLETE" }],
+      executionStartedAt: startedAt,
+    });
+    const before = Date.now();
+    const result = expectFinalized(await markComplete(client, "scan-1"));
+    const after = Date.now();
+    // executionMs should be roughly (now - startedAt). Bound the range
+    // loosely to avoid clock-jitter flakiness.
+    const elapsedMin = before - startedAt.getTime();
+    const elapsedMax = after - startedAt.getTime();
+    expect(result.executionMs).toBeGreaterThanOrEqual(elapsedMin);
+    expect(result.executionMs).toBeLessThanOrEqual(elapsedMax);
+  });
+
+  it("returns executionMs=0 when executionStartedAt is null (defensive)", async () => {
+    const client = makeClient({
+      modules: [{ status: "COMPLETE" }],
+      executionStartedAt: null,
+    });
+    const result = expectFinalized(await markComplete(client, "scan-1"));
+    expect(result.executionMs).toBe(0);
+  });
+
+  it("queries findings filtered by scanId with severity-only select", async () => {
+    const client = makeClient({
+      modules: [{ status: "COMPLETE" }],
+      findings: [{ severity: "MEDIUM" }],
+    });
+    await markComplete(client, "scan-42");
+    const findMany = client.finding.findMany as unknown as {
+      mock: { calls: unknown[][] };
+    };
+    const args = findMany.mock.calls[0]![0] as {
+      where: { scanId: string };
+      select: { severity: boolean };
+    };
+    expect(args.where.scanId).toBe("scan-42");
+    expect(args.select.severity).toBe(true);
+  });
+
+  it("deferred path does not query findings (no premature lookup)", async () => {
+    const client = makeClient({
+      modules: [{ status: "RUNNING" }, { status: "COMPLETE" }],
+    });
+    const result = await markComplete(client, "scan-1");
+    expect(result.deferred).toBe(true);
+    expect(client.finding.findMany).not.toHaveBeenCalled();
+  });
+
+  it("alreadyFinalized path returns null fields and skips persistence", async () => {
+    const client = makeClient({
+      modules: [{ status: "COMPLETE" }],
+      findings: [{ severity: "LOW" }],
+      updateCount: 0,
+    });
+    const result = await markComplete(client, "scan-1");
+    expect(result).toEqual({
+      finalStatus: null,
+      deferred: false,
+      alreadyFinalized: true,
+    });
   });
 });

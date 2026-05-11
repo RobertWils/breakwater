@@ -32,6 +32,10 @@ export type ScanCompletedEventData = {
   scanId: string;
   finalStatus: string;
   compositeGrade: string | null;
+  /** Composite score 0-100 (F.3). Null when finalStatus !== "COMPLETE". */
+  compositeScore: number | null;
+  /** Total findings persisted for this scan (F.3). */
+  findingsCount: number;
   executionMs: number;
 };
 

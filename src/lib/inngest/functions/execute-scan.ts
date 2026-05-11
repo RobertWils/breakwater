@@ -1,8 +1,9 @@
-import type { Prisma, ScanStatus } from "@prisma/client";
+import type { Grade, Prisma, ScanStatus } from "@prisma/client";
 
 import { isGovernanceModuleEnabled } from "@/lib/feature-flags";
 import { inngest } from "@/lib/inngest/client";
 import { prisma } from "@/lib/prisma";
+import { calculateCompositeGrade } from "@/lib/scoring/composite-grade";
 
 /**
  * Phase C.1 + C.4 dispatcher orchestrator for the scan lifecycle.
@@ -30,6 +31,9 @@ type DbClient = {
   moduleRun: {
     updateMany: Prisma.ModuleRunDelegate["updateMany"];
   };
+  finding: {
+    findMany: Prisma.FindingDelegate["findMany"];
+  };
 };
 
 export type MarkRunningResult =
@@ -51,7 +55,19 @@ export async function markRunning(
 }
 
 export type MarkCompleteResult =
-  | { finalStatus: ScanStatus; deferred: false; alreadyFinalized: false }
+  | {
+      finalStatus: ScanStatus;
+      deferred: false;
+      alreadyFinalized: false;
+      /** Composite score 0–100. Null when finalStatus !== "COMPLETE" (F.3 Option 1). */
+      compositeScore: number | null;
+      /** Letter grade. Null when finalStatus !== "COMPLETE" (F.3 Option 1). */
+      compositeGrade: Grade | null;
+      /** Total findings persisted for the scan. */
+      findingsCount: number;
+      /** Wall-clock ms from executionStartedAt → now. 0 if executionStartedAt missing. */
+      executionMs: number;
+    }
   | { finalStatus: null; deferred: true; alreadyFinalized: false }
   | { finalStatus: null; deferred: false; alreadyFinalized: true };
 
@@ -84,15 +100,51 @@ export async function markComplete(
   );
   const finalStatus: ScanStatus = allTerminalSuccess ? "COMPLETE" : "FAILED";
 
+  // F.3: only compute composite grade on COMPLETE scans. FAILED scans
+  // persist null score/grade — partial findings on a failed scan don't
+  // represent a meaningful protocol assessment.
+  let compositeScore: number | null = null;
+  let compositeGrade: Grade | null = null;
+  let findingsCount = 0;
+
+  if (finalStatus === "COMPLETE") {
+    const findings = await client.finding.findMany({
+      where: { scanId },
+      select: { severity: true },
+    });
+    findingsCount = findings.length;
+    const result = calculateCompositeGrade(findings);
+    compositeScore = result.score;
+    compositeGrade = result.grade;
+  }
+
+  const completedAt = new Date();
   const updated = await client.scan.updateMany({
     where: { id: scanId, status: "RUNNING" },
-    data: { status: finalStatus, completedAt: new Date() },
+    data: {
+      status: finalStatus,
+      completedAt,
+      compositeScore,
+      compositeGrade,
+    },
   });
   if (updated.count === 0) {
     return { finalStatus: null, deferred: false, alreadyFinalized: true };
   }
 
-  return { finalStatus, deferred: false, alreadyFinalized: false };
+  const executionMs = scan.executionStartedAt
+    ? completedAt.getTime() - scan.executionStartedAt.getTime()
+    : 0;
+
+  return {
+    finalStatus,
+    deferred: false,
+    alreadyFinalized: false,
+    compositeScore,
+    compositeGrade,
+    findingsCount,
+    executionMs,
+  };
 }
 
 export const executeScan = inngest.createFunction(
@@ -167,16 +219,16 @@ export const executeScan = inngest.createFunction(
       return { scanId, status: "already_finalized" } as const;
     }
 
-    // Step 5: Emit terminal event with captured finalStatus (B1).
-    // compositeGrade and executionMs are skeleton placeholders; Phase F
-    // populates them from the per-module results aggregated upstream.
+    // Step 5: Emit terminal event with captured finalStatus + grade (B1 + F.3).
     await step.sendEvent("emit-scan-completed", {
       name: "scan.completed",
       data: {
         scanId,
         finalStatus: markCompleteResult.finalStatus,
-        compositeGrade: null,
-        executionMs: 0,
+        compositeGrade: markCompleteResult.compositeGrade,
+        compositeScore: markCompleteResult.compositeScore,
+        findingsCount: markCompleteResult.findingsCount,
+        executionMs: markCompleteResult.executionMs,
       },
     });
 
@@ -184,6 +236,8 @@ export const executeScan = inngest.createFunction(
       scanId,
       status: "completed",
       finalStatus: markCompleteResult.finalStatus,
+      compositeGrade: markCompleteResult.compositeGrade,
+      compositeScore: markCompleteResult.compositeScore,
     } as const;
   },
 );
