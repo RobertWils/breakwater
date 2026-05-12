@@ -58,6 +58,13 @@ export type ScanLogEvent =
       module: string;
     }
   | {
+      event: "module.already_terminal";
+      scanId: string;
+      module: string;
+      /** Which compare-and-set failed: `skip` (marked=0) or `complete` (finalized=false). */
+      stage: "skip" | "complete";
+    }
+  | {
       event: "module.execution_error";
       scanId: string;
       module: string;

@@ -303,6 +303,17 @@ export async function markModuleComplete(
   return { finalized: updated.count > 0 };
 }
 
+/**
+ * Compute module-level executionMs with the same non-negative clamp
+ * F.4.1 applied scan-side. `startedAt` is the `Date.now()` capture from
+ * the top of the Inngest handler; clock skew during durable replay
+ * (NTP correction, container migration) could otherwise emit a
+ * negative duration on scan.module.completed.
+ */
+export function computeModuleExecutionMs(startedAtMs: number): number {
+  return Math.max(0, Date.now() - startedAtMs);
+}
+
 export const executeGovernanceModule = inngest.createFunction(
   {
     id: "execute-governance-module",
@@ -317,11 +328,30 @@ export const executeGovernanceModule = inngest.createFunction(
     const { scanId } = event.data;
     const startedAt = Date.now();
 
-    // Step 1: feature-flag short-circuit
+    // Step 1: feature-flag short-circuit.
+    // F.5 I1: gate the emit on the compare-and-set result. Without
+    // this gate an Inngest retry of the same scan.module.requested
+    // event would re-emit scan.module.completed every replay, which
+    // breaks idempotency for executeScan's waitForEvent on the scan
+    // side (it would wake on stale completion events).
     if (!isGovernanceModuleEnabled()) {
-      await step.run("mark-skipped-module-disabled", () =>
+      const skipResult = await step.run("mark-skipped-module-disabled", () =>
         markModuleSkippedDisabled(prisma, scanId),
       );
+      if (skipResult.marked === 0) {
+        log({
+          event: "module.already_terminal",
+          scanId,
+          module: "GOVERNANCE",
+          stage: "skip",
+        });
+        return {
+          scanId,
+          module: "GOVERNANCE",
+          status: "skipped",
+          reason: "already_terminal",
+        } as const;
+      }
       await step.sendEvent("emit-module-completed-skipped", {
         name: "scan.module.completed",
         data: {
@@ -330,7 +360,7 @@ export const executeGovernanceModule = inngest.createFunction(
           status: "SKIPPED",
           findingsCount: 0,
           grade: null,
-          executionMs: Date.now() - startedAt,
+          executionMs: computeModuleExecutionMs(startedAt),
         },
       });
       log({
@@ -432,8 +462,12 @@ export const executeGovernanceModule = inngest.createFunction(
       }
     });
 
-    // Step 5: compare-and-set RUNNING → terminal status (with grade + score)
-    await step.run("mark-complete", () =>
+    // Step 5: compare-and-set RUNNING → terminal status (with grade + score).
+    // F.5 I1: capture finalized flag; gate Step 6's emit on it. A retry
+    // that finds the row already terminal must not re-emit
+    // scan.module.completed (executeScan's waitForEvent would otherwise
+    // wake spuriously on a duplicate completion).
+    const completeResult = await step.run("mark-complete", () =>
       markModuleComplete(
         prisma,
         scanId,
@@ -444,6 +478,20 @@ export const executeGovernanceModule = inngest.createFunction(
       ),
     );
 
+    if (!completeResult.finalized) {
+      log({
+        event: "module.already_terminal",
+        scanId,
+        module: "GOVERNANCE",
+        stage: "complete",
+      });
+      return {
+        scanId,
+        module: "GOVERNANCE",
+        status: "already_terminal",
+      } as const;
+    }
+
     // Step 6: emit terminal event with the computed per-module grade
     await step.sendEvent("emit-module-completed", {
       name: "scan.module.completed",
@@ -453,7 +501,7 @@ export const executeGovernanceModule = inngest.createFunction(
         status: moduleResult.status,
         findingsCount: moduleResult.findingCount,
         grade: moduleResult.grade,
-        executionMs: Date.now() - startedAt,
+        executionMs: computeModuleExecutionMs(startedAt),
       },
     });
 

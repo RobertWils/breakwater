@@ -18,6 +18,7 @@ import type {
 } from "@/lib/detectors/governance/types";
 
 import {
+  computeModuleExecutionMs,
   executeGovernanceModule,
   loadScanContext,
   markModuleComplete,
@@ -134,6 +135,15 @@ describe("markModuleSkippedDisabled", () => {
     expect(args.where.status).toBe("QUEUED");
     expect(args.data.status).toBe("SKIPPED");
     expect(args.data.errorMessage).toMatch(/feature flag/);
+  });
+
+  it("returns marked:0 when no QUEUED row matched (F.5 I1: emit-gate signal)", async () => {
+    // Used by executeGovernanceModule body to gate emit on retries
+    // that arrive after the row is already in a terminal state.
+    const updateMany = fakeUpdateMany(0);
+    const client = fakeClient({ moduleRun: { updateMany } });
+    const result = await markModuleSkippedDisabled(client, "scan-1");
+    expect(result).toEqual({ marked: 0 });
   });
 });
 
@@ -421,5 +431,30 @@ describe("markModuleComplete (compare-and-set on RUNNING)", () => {
     expect(args.where.scanId).toBe("scan-42");
     expect(args.data.grade).toBe("F");
     expect(args.data.score).toBe(0);
+  });
+});
+
+describe("computeModuleExecutionMs (F.5 N1 — module-side clamp)", () => {
+  it("returns the elapsed ms when startedAt is in the past", () => {
+    const startedAt = Date.now() - 500;
+    const result = computeModuleExecutionMs(startedAt);
+    expect(result).toBeGreaterThanOrEqual(500);
+    expect(result).toBeLessThan(5_000); // generous upper bound for slow CI
+  });
+
+  it("clamps to 0 when startedAt equals Date.now()", () => {
+    // Same instant on a deterministic clock — Date.now() advances by
+    // microseconds between calls but the result should never go
+    // negative either way.
+    const result = computeModuleExecutionMs(Date.now() + 1);
+    expect(result).toBe(0);
+  });
+
+  it("clamps to 0 when startedAt is in the future (clock skew, mirrors F.4.1)", () => {
+    // Same defensive case the scan-side markComplete clamps for:
+    // NTP correction or container migration mid-scan can push
+    // startedAt past Date.now() during durable replay.
+    const result = computeModuleExecutionMs(Date.now() + 10_000);
+    expect(result).toBe(0);
   });
 });

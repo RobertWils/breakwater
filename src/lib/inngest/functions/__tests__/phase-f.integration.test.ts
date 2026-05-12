@@ -1,19 +1,29 @@
 // @vitest-environment node
 /**
- * Phase F end-to-end DB-backed smoke test (Plan 02 F.4.2).
+ * Phase F end-to-end DB-backed smoke test (Plan 02 F.4.2 + F.5 I2).
  *
  * Walks the Phase F persistence + grade contract against a real Prisma
  * DB. Bypasses the Inngest executor — calls helpers directly in
  * lifecycle order to verify the side effects on Scan + ModuleRun +
  * Finding rows.
  *
- * Closes plan exit-gate items (implementation.md L3152–3160):
- *   - ModuleRun carries grade + score (L3156)
- *   - recomputeScanStatus sets composite grade on Scan (F.3)
- *   - Findings persisted (sanity)
- *   - INTEGRATION_DB=1 pnpm test green (this file is the smoke)
+ * Coverage:
+ *   - markRunning + markModuleRunning lifecycle transitions
+ *   - markComplete + markModuleComplete grade + score persistence
+ *   - persistSnapshotAndFindings (snapshot upsert + finding createMany
+ *     in a single transaction) — F.5 I2 scenario
  *
- * Gated on DATABASE_URL — skipped cleanly in default `pnpm test`.
+ * Bypassed (covered elsewhere):
+ *   - Inngest event dispatch / step-driven retries (deferred to plan
+ *     §H.3 Inngest integration test harness)
+ *   - captureGovernanceSnapshot on-chain calls (covered by detect-*
+ *     unit tests; live RPC behind LIVE_RPC=1 opt-in)
+ *   - Detector logic (covered by GOV-XXX unit tests)
+ *
+ * Gating: DATABASE_URL must be set (F.5 N2: matches existing
+ * scan-submission-integration.test.ts:69 convention). Plan §H.3
+ * introduces a dedicated INTEGRATION_TEST gate if needed; tracked in
+ * NOTES.md backlog.
  */
 
 import { randomBytes } from "node:crypto";
@@ -57,10 +67,14 @@ vi.mock("@/lib/config", () => ({
 import { prisma } from "@/lib/prisma";
 import { calculateCompositeGrade } from "@/lib/scoring/composite-grade";
 
+import { baseSnapshot } from "@/lib/detectors/governance/__tests__/fixtures";
+import type { GovernanceFindingInput } from "@/lib/detectors/governance/types";
+
 import { markComplete, markRunning } from "../execute-scan";
 import {
   markModuleComplete,
   markModuleRunning,
+  persistSnapshotAndFindings,
 } from "../execute-governance-module";
 
 const hasDb = !!process.env.DATABASE_URL;
@@ -304,6 +318,77 @@ describe.skipIf(!hasDb)(
       expect(persistedModule.grade).toBeNull();
       expect(persistedModule.score).toBeNull();
       expect(persistedModule.errorMessage).toBe("smoke_test_failure");
+    });
+
+    it("persistSnapshotAndFindings (real helper) writes snapshot + findings atomically (F.5 I2)", async () => {
+      // Exercises the production persistence path instead of the
+      // test-only seedFindings shortcut used in the scenarios above.
+      // Closes the F.5 review IMPORTANT that the smoke test was
+      // bypassing the actual code that runs in the Inngest function
+      // body's capture-detect-persist step.
+      const { scan, moduleRun } = await seedProtocolAndScan();
+      await markRunning(prisma, scan.id);
+      await markModuleRunning(prisma, scan.id, "evt-smoke-i2");
+
+      const snapshot = baseSnapshot({
+        blockNumber: BigInt(20_000_001),
+      });
+      const findings: GovernanceFindingInput[] = [
+        {
+          detectorId: "GOV-001",
+          detectorVersion: 1,
+          severity: "CRITICAL",
+          publicTitle: "Smoke: missing timelock",
+          title: "Smoke: missing timelock",
+          description: "I2 smoke fixture for GOV-001",
+          evidence: { ruleId: "rule-1" },
+          affectedComponent: "timelock",
+          references: [],
+          remediationHint: "Add a timelock",
+          remediationDetailed: "Detailed remediation",
+          publicRank: 1,
+        },
+        {
+          detectorId: "GOV-003",
+          detectorVersion: 1,
+          severity: "HIGH",
+          publicTitle: "Smoke: multisig concentration",
+          title: "Smoke: multisig concentration",
+          description: "I2 smoke fixture for GOV-003",
+          evidence: { ownerCount: 3, threshold: 1 },
+          affectedComponent: "multisig",
+          references: [],
+          remediationHint: "Increase threshold",
+          remediationDetailed: "Detailed remediation",
+          publicRank: 2,
+        },
+      ];
+
+      const result = await prisma.$transaction((tx) =>
+        persistSnapshotAndFindings(tx, scan.id, snapshot, findings),
+      );
+      expect(result.findingCount).toBe(2);
+      expect(result.snapshot.scanId).toBe(scan.id);
+
+      const persistedSnapshot = await prisma.governanceSnapshot.findUnique({
+        where: { scanId: scan.id },
+      });
+      expect(persistedSnapshot).not.toBeNull();
+      expect(persistedSnapshot!.blockNumber).toBe(BigInt(20_000_001));
+
+      const persistedFindings = await prisma.finding.findMany({
+        where: { scanId: scan.id },
+        orderBy: { detectorId: "asc" },
+      });
+      expect(persistedFindings).toHaveLength(2);
+      expect(persistedFindings[0]!.detectorId).toBe("GOV-001");
+      expect(persistedFindings[0]!.severity).toBe("CRITICAL");
+      expect(persistedFindings[0]!.snapshotBlockNumber).toBe(
+        BigInt(20_000_001),
+      );
+      expect(persistedFindings[0]!.moduleRunId).toBe(moduleRun.id);
+      expect(persistedFindings[1]!.detectorId).toBe("GOV-003");
+      expect(persistedFindings[1]!.severity).toBe("HIGH");
     });
   },
 );
