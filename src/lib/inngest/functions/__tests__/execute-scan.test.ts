@@ -357,6 +357,19 @@ describe("markComplete grade integration (F.3 — compositeScore + compositeGrad
     expect(result.executionMs).toBe(0);
   });
 
+  it("clamps executionMs to 0 when executionStartedAt is in the future (clock skew)", async () => {
+    // NTP correction or a container migration mid-scan can push
+    // executionStartedAt past completedAt. Don't surface a negative
+    // duration on scan.completed — clamp to zero.
+    const futureStart = new Date(Date.now() + 10_000);
+    const client = makeClient({
+      modules: [{ status: "COMPLETE" }],
+      executionStartedAt: futureStart,
+    });
+    const result = expectFinalized(await markComplete(client, "scan-1"));
+    expect(result.executionMs).toBe(0);
+  });
+
   it("queries findings filtered by scanId with severity-only select", async () => {
     const client = makeClient({
       modules: [{ status: "COMPLETE" }],

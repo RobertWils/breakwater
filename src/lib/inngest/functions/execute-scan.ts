@@ -132,8 +132,11 @@ export async function markComplete(
     return { finalStatus: null, deferred: false, alreadyFinalized: true };
   }
 
+  // Clamp to non-negative: clock skew between executionStartedAt and
+  // completedAt (NTP correction, container migration) could otherwise
+  // emit a negative duration on scan.completed.
   const executionMs = scan.executionStartedAt
-    ? completedAt.getTime() - scan.executionStartedAt.getTime()
+    ? Math.max(0, completedAt.getTime() - scan.executionStartedAt.getTime())
     : 0;
 
   return {
