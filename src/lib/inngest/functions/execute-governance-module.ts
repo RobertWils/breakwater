@@ -1,4 +1,5 @@
 import type {
+  Grade,
   GovernanceSnapshot,
   ModuleStatus,
   Prisma,
@@ -21,6 +22,7 @@ import {
 import { inngest } from "@/lib/inngest/client";
 import { log } from "@/lib/logging";
 import { prisma } from "@/lib/prisma";
+import { calculateCompositeGrade } from "@/lib/scoring/composite-grade";
 
 /**
  * Phase F.1 governance module orchestrator.
@@ -269,12 +271,20 @@ export interface MarkModuleCompleteResult {
  * the row was no longer RUNNING (e.g., concurrent termination); the
  * caller should treat this as already-finalized and not re-emit the
  * scan.module.completed event.
+ *
+ * F.4.2 closes plan exit-gate L3156 ("ModuleRun carries grade + score")
+ * by persisting per-module grade + score on the terminal transition.
+ * Callers pass null/null for FAILED/SKIPPED — consistent with the
+ * F.3 Option 1 contract for the Scan-side composite (partial findings
+ * on a non-COMPLETE run don't represent a meaningful assessment).
  */
 export async function markModuleComplete(
   client: AnyPrismaClient,
   scanId: string,
   status: TerminalModuleStatus,
   errorMessage: string | null,
+  grade: Grade | null,
+  score: number | null,
 ): Promise<MarkModuleCompleteResult> {
   const updated = await client.moduleRun.updateMany({
     where: {
@@ -286,6 +296,8 @@ export async function markModuleComplete(
       status,
       completedAt: new Date(),
       errorMessage,
+      grade,
+      score,
     },
   });
   return { finalized: updated.count > 0 };
@@ -360,7 +372,11 @@ export const executeGovernanceModule = inngest.createFunction(
       loadScanContext(prisma, scanId),
     );
 
-    // Step 4: capture snapshot → run detectors → persist (atomic)
+    // Step 4: capture snapshot → run detectors → persist (atomic).
+    // F.4.2: compute the per-module grade + score inside the same step
+    // closure that has the findings array in scope, so we don't have
+    // to leak finding objects across Inngest step boundaries (Inngest
+    // serialises step results to JSON for retry replay).
     const moduleResult = await step.run("capture-detect-persist", async () => {
       try {
         const snapshot = await captureGovernanceSnapshot({
@@ -384,12 +400,16 @@ export const executeGovernanceModule = inngest.createFunction(
           persistSnapshotAndFindings(tx, scanId, snapshot, findings),
         );
 
+        const compositeGrade = calculateCompositeGrade(findings);
+
         return {
           status: "COMPLETE" as const,
           findingCount: findings.length,
           skippedDetectorCount: skippedDetectorIds.length,
           errorDetectorCount: errorDetectorIds.length,
           errorMessage: null as string | null,
+          grade: compositeGrade.grade as Grade | null,
+          score: compositeGrade.score as number | null,
         };
       } catch (err) {
         const errorMessage =
@@ -406,21 +426,25 @@ export const executeGovernanceModule = inngest.createFunction(
           skippedDetectorCount: 0,
           errorDetectorCount: 0,
           errorMessage,
+          grade: null as Grade | null,
+          score: null as number | null,
         };
       }
     });
 
-    // Step 5: compare-and-set RUNNING → terminal status
+    // Step 5: compare-and-set RUNNING → terminal status (with grade + score)
     await step.run("mark-complete", () =>
       markModuleComplete(
         prisma,
         scanId,
         moduleResult.status,
         moduleResult.errorMessage,
+        moduleResult.grade,
+        moduleResult.score,
       ),
     );
 
-    // Step 6: emit terminal event
+    // Step 6: emit terminal event with the computed per-module grade
     await step.sendEvent("emit-module-completed", {
       name: "scan.module.completed",
       data: {
@@ -428,7 +452,7 @@ export const executeGovernanceModule = inngest.createFunction(
         module: "GOVERNANCE",
         status: moduleResult.status,
         findingsCount: moduleResult.findingCount,
-        grade: null,
+        grade: moduleResult.grade,
         executionMs: Date.now() - startedAt,
       },
     });

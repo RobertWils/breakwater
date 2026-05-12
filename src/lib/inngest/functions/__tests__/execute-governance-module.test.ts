@@ -345,33 +345,81 @@ describe("markModuleComplete (compare-and-set on RUNNING)", () => {
   it("finalises COMPLETE when the RUNNING row was updated", async () => {
     const updateMany = fakeUpdateMany(1);
     const client = fakeClient({ moduleRun: { updateMany } });
-    const result = await markModuleComplete(client, "scan-1", "COMPLETE", null);
+    const result = await markModuleComplete(
+      client,
+      "scan-1",
+      "COMPLETE",
+      null,
+      "B",
+      80,
+    );
     expect(result).toEqual({ finalized: true });
 
     const args = updateMany.mock.calls[0]![0] as {
       where: { status: string };
-      data: { status: string; errorMessage: string | null };
+      data: {
+        status: string;
+        errorMessage: string | null;
+        grade: string | null;
+        score: number | null;
+      };
     };
     expect(args.where.status).toBe("RUNNING");
     expect(args.data.status).toBe("COMPLETE");
     expect(args.data.errorMessage).toBeNull();
+    expect(args.data.grade).toBe("B");
+    expect(args.data.score).toBe(80);
   });
 
-  it("finalises FAILED with errorMessage", async () => {
+  it("finalises FAILED with errorMessage and null grade/score (F.4.2 Option 1)", async () => {
     const updateMany = fakeUpdateMany(1);
     const client = fakeClient({ moduleRun: { updateMany } });
-    await markModuleComplete(client, "scan-1", "FAILED", "RPC outage");
+    await markModuleComplete(
+      client,
+      "scan-1",
+      "FAILED",
+      "RPC outage",
+      null,
+      null,
+    );
     const args = updateMany.mock.calls[0]![0] as {
-      data: { status: string; errorMessage: string | null };
+      data: {
+        status: string;
+        errorMessage: string | null;
+        grade: string | null;
+        score: number | null;
+      };
     };
     expect(args.data.status).toBe("FAILED");
     expect(args.data.errorMessage).toBe("RPC outage");
+    expect(args.data.grade).toBeNull();
+    expect(args.data.score).toBeNull();
   });
 
   it("returns finalized:false when no RUNNING row matched (already finalised)", async () => {
     const updateMany = fakeUpdateMany(0);
     const client = fakeClient({ moduleRun: { updateMany } });
-    const result = await markModuleComplete(client, "scan-1", "COMPLETE", null);
+    const result = await markModuleComplete(
+      client,
+      "scan-1",
+      "COMPLETE",
+      null,
+      "A",
+      100,
+    );
     expect(result).toEqual({ finalized: false });
+  });
+
+  it("persists grade + score in the updateMany data block (F.4.2)", async () => {
+    const updateMany = fakeUpdateMany(1);
+    const client = fakeClient({ moduleRun: { updateMany } });
+    await markModuleComplete(client, "scan-42", "COMPLETE", null, "F", 0);
+    const args = updateMany.mock.calls[0]![0] as {
+      where: { scanId: string };
+      data: { grade: string | null; score: number | null };
+    };
+    expect(args.where.scanId).toBe("scan-42");
+    expect(args.data.grade).toBe("F");
+    expect(args.data.score).toBe(0);
   });
 });
