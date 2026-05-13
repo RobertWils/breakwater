@@ -34,10 +34,16 @@ const SEVERITY_STYLES: Record<string, { label: string; color: string; bg: string
   },
 }
 
+/**
+ * G.4: narrow on the `tier` discriminator instead of structural `"id" in f`.
+ * EMAIL and PAID share the full-shape rendering today; PAID-specific
+ * surfacing of `remediationDetailed` lands when Plan 07+ wires the
+ * Subscription route boundary (see NOTES.md).
+ */
 function hasFullShape(
   f: FindingResponse,
 ): f is Extract<FindingResponse, { id: string }> {
-  return "id" in f
+  return f.tier === "EMAIL" || f.tier === "PAID"
 }
 
 export function FindingsList({ findings, tier, hasAnyHiddenFindings }: FindingsListProps) {

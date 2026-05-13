@@ -11,6 +11,7 @@ function makeUnauthFinding(
   overrides: Partial<FindingResponseUnauth> = {},
 ): FindingResponseUnauth {
   return {
+    tier: "UNAUTH",
     severity: "HIGH",
     publicTitle: "Potential governance hijack",
     remediationHint: "Review proposal thresholds",
@@ -22,6 +23,7 @@ function makeEmailFinding(
   overrides: Partial<FindingResponseEmail> = {},
 ): FindingResponseEmail {
   return {
+    tier: "EMAIL",
     id: "f-1",
     moduleRunId: "mr-1",
     module: "GOVERNANCE",

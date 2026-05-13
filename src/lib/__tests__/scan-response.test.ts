@@ -19,8 +19,11 @@ vi.mock("@/lib/prisma", () => ({
 import { prisma } from "@/lib/prisma";
 import {
   filterFindings,
-  shapeModuleRun,
   getScan,
+  shapeFindingEmail,
+  shapeFindingPaid,
+  shapeFindingUnauth,
+  shapeModuleRun,
 } from "@/lib/scan-response";
 import type { Finding, ModuleRun } from "@prisma/client";
 
@@ -134,15 +137,16 @@ describe("filterFindings — unauth tier", () => {
     expect(hiddenByModule.get("ORACLE")).toBe(1);
   });
 
-  it("unauth finding has ONLY severity, publicTitle, remediationHint keys", () => {
+  it("unauth finding has ONLY tier + severity + publicTitle + remediationHint keys (G.4 — tier discriminator)", () => {
     const findings = [makeFinding({ publicRank: 1 })];
 
     const { findings: shaped } = filterFindings({ findings, tier: "unauth" });
 
     expect(shaped).toHaveLength(1);
     expect(Object.keys(shaped[0]).sort()).toEqual(
-      ["publicTitle", "remediationHint", "severity"].sort(),
+      ["publicTitle", "remediationHint", "severity", "tier"].sort(),
     );
+    expect(shaped[0]).toMatchObject({ tier: "UNAUTH" });
   });
 
   it("module with no publicRank=1 finding: 0 teasers, all count as hidden", () => {
@@ -350,9 +354,9 @@ describe("getScan", () => {
     expect(result).not.toBeNull();
     // Only 1 finding (publicRank=1 teaser)
     expect(result!.findings).toHaveLength(1);
-    // Teaser has only 3 keys
+    // G.4: teaser has 4 keys — tier discriminator + 3 original.
     expect(Object.keys(result!.findings[0]).sort()).toEqual(
-      ["publicTitle", "remediationHint", "severity"].sort(),
+      ["publicTitle", "remediationHint", "severity", "tier"].sort(),
     );
     // Module has hiddenFindingsCount = 2
     expect(result!.modules[0].hiddenFindingsCount).toBe(2);
@@ -389,5 +393,45 @@ describe("getScan", () => {
     expect(result).not.toBeNull();
     expect(result!.findings).toHaveLength(0);
     expect("hiddenFindingsCount" in result!.modules[0]).toBe(false);
+  });
+});
+
+// ── tier discriminator (G.4) ─────────────────────────────────────────────────
+
+describe("FindingResponse tier discriminator (G.4)", () => {
+  it("shapeFindingUnauth stamps tier: 'UNAUTH'", () => {
+    const result = shapeFindingUnauth(makeFinding({ publicRank: 1 }));
+    expect(result.tier).toBe("UNAUTH");
+  });
+
+  it("shapeFindingEmail stamps tier: 'EMAIL'", () => {
+    const result = shapeFindingEmail(makeFinding({ id: "f-email" }));
+    expect(result.tier).toBe("EMAIL");
+  });
+
+  it("shapeFindingPaid stamps tier: 'PAID' (overrides spread EMAIL discriminator)", () => {
+    const result = shapeFindingPaid(
+      makeFinding({ id: "f-paid", remediationDetailed: "Step 1: rotate keys" }),
+    );
+    expect(result.tier).toBe("PAID");
+    expect(result.remediationDetailed).toBe("Step 1: rotate keys");
+  });
+
+  it("filterFindings (unauth) returns findings narrowable by tier discriminator", () => {
+    const findings = [makeFinding({ publicRank: 1 })];
+    const { findings: shaped } = filterFindings({ findings, tier: "unauth" });
+    expect(shaped[0].tier).toBe("UNAUTH");
+  });
+
+  it("filterFindings (email) returns findings with tier: 'EMAIL'", () => {
+    const findings = [makeFinding({ id: "f1" })];
+    const { findings: shaped } = filterFindings({ findings, tier: "email" });
+    expect(shaped[0].tier).toBe("EMAIL");
+  });
+
+  it("filterFindings (paid) returns findings with tier: 'PAID'", () => {
+    const findings = [makeFinding({ id: "f1" })];
+    const { findings: shaped } = filterFindings({ findings, tier: "paid" });
+    expect(shaped[0].tier).toBe("PAID");
   });
 });
