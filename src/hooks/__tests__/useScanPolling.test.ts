@@ -127,6 +127,34 @@ describe("useScanPolling — normal polling flow", () => {
     expect(result.current.currentStatus).toBe("RUNNING");
   });
 
+  it("polledModules is null before the first poll succeeds (G.5 I1)", () => {
+    const { result } = renderHook(() => useScanPolling("scan-1", "QUEUED"));
+    expect(result.current.polledModules).toBeNull();
+  });
+
+  it("captures the modules array on the first successful poll (G.5 I1)", async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        id: "scan-1",
+        status: "RUNNING",
+        modules: [
+          { module: "GOVERNANCE", status: "RUNNING", grade: null },
+          { module: "ORACLE", status: "QUEUED", grade: null },
+        ],
+      }),
+    } as Response);
+
+    const { result } = renderHook(() => useScanPolling("scan-1", "QUEUED"));
+    await advance(3_000);
+
+    expect(result.current.polledModules).toEqual([
+      { module: "GOVERNANCE", status: "RUNNING", grade: null },
+      { module: "ORACLE", status: "QUEUED", grade: null },
+    ]);
+  });
+
   it("continues polling at 3 s intervals while non-terminal", async () => {
     mockStatusOnce("RUNNING");
     mockStatusOnce("RUNNING");

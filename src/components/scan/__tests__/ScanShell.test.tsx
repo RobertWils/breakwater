@@ -6,7 +6,7 @@ import {
   it,
   vi,
 } from "vitest"
-import { cleanup, render, screen } from "@testing-library/react"
+import { cleanup, render, screen, within } from "@testing-library/react"
 
 import type { ScanResponse } from "@/lib/scan-response"
 
@@ -14,10 +14,16 @@ import type { ScanResponse } from "@/lib/scan-response"
 // into its children. The polling behavior itself is covered in
 // src/hooks/__tests__/useScanPolling.test.ts. Hoisted so the vi.mock
 // factory below can see the spy.
+type PolledModuleState = { module: string; status: string; grade: string | null }
+
 const { useScanPollingMock } = vi.hoisted(() => ({
-  useScanPollingMock: vi.fn<() => { currentStatus: string; errorCount: number }>(
-    () => ({ currentStatus: "QUEUED", errorCount: 0 }),
-  ),
+  useScanPollingMock: vi.fn<
+    () => {
+      currentStatus: string
+      errorCount: number
+      polledModules: { module: string; status: string; grade: string | null }[] | null
+    }
+  >(() => ({ currentStatus: "QUEUED", errorCount: 0, polledModules: null })),
 }))
 vi.mock("@/hooks/useScanPolling", () => ({
   useScanPolling: useScanPollingMock,
@@ -71,7 +77,7 @@ function makeScan(overrides: Partial<ScanResponse> = {}): ScanResponse {
 }
 
 beforeEach(() => {
-  useScanPollingMock.mockReturnValue({ currentStatus: "QUEUED", errorCount: 0 })
+  useScanPollingMock.mockReturnValue({ currentStatus: "QUEUED", errorCount: 0, polledModules: null })
 })
 
 afterEach(() => {
@@ -120,6 +126,7 @@ describe("ScanShell — composition + polling integration (Plan 02 G.3)", () => 
     useScanPollingMock.mockReturnValue({
       currentStatus: "RUNNING",
       errorCount: 0,
+      polledModules: null,
     })
     render(<ScanShell scan={makeScan({ status: "QUEUED" })} tier="unauth" />)
     // CompositePanel surfaces "Running" copy. (ModuleCard's own status
@@ -132,6 +139,7 @@ describe("ScanShell — composition + polling integration (Plan 02 G.3)", () => 
     useScanPollingMock.mockReturnValue({
       currentStatus: "RUNNING",
       errorCount: 3,
+      polledModules: null,
     })
     render(<ScanShell scan={makeScan()} tier="unauth" />)
     const statuses = screen.getAllByRole("status")
@@ -164,6 +172,7 @@ describe("ScanShell — composition + polling integration (Plan 02 G.3)", () => 
     useScanPollingMock.mockReturnValue({
       currentStatus: "COMPLETE",
       errorCount: 0,
+      polledModules: null,
     })
     render(
       <ScanShell
@@ -177,5 +186,143 @@ describe("ScanShell — composition + polling integration (Plan 02 G.3)", () => 
     )
     expect(screen.getByText("B")).toBeInTheDocument()
     expect(screen.getByText("Score: 80/100")).toBeInTheDocument()
+  })
+
+  describe("polled-module merge (G.5 I1)", () => {
+    function makeScanWithModules(modules: ScanResponse["modules"]): ScanResponse {
+      return makeScan({ modules })
+    }
+
+    function moduleRow(
+      overrides: Partial<ScanResponse["modules"][number]> = {},
+    ): ScanResponse["modules"][number] {
+      return {
+        id: "mr-1",
+        module: "GOVERNANCE",
+        status: "QUEUED",
+        grade: null,
+        score: null,
+        findingsCount: null,
+        startedAt: null,
+        completedAt: null,
+        attemptCount: 0,
+        errorMessage: null,
+        errorStack: null,
+        detectorVersions: {},
+        rpcCallsUsed: 0,
+        ...overrides,
+      }
+    }
+
+    // CompositePanel and ModuleCard share the same status label set
+    // ("Queued"/"Running"/"Complete"), so `getByText` is ambiguous when
+    // we want to assert on the per-module badge. Scope queries to the
+    // modules <section aria-labelledby="modules-heading">.
+    function modulesScope() {
+      return within(screen.getByRole("region", { name: /scan modules/i }))
+    }
+
+    it("falls back to server snapshot when polledModules is null (initial render)", () => {
+      // polledModules: null by default — ModuleCard renders the server-snapshot status badge.
+      render(
+        <ScanShell
+          scan={makeScanWithModules([moduleRow({ status: "QUEUED" })])}
+          tier="email"
+        />,
+      )
+      expect(modulesScope().getByText("Queued")).toBeInTheDocument()
+    })
+
+    it("uses polled module status over server snapshot when polledModules is populated", () => {
+      const polled: PolledModuleState[] = [
+        { module: "GOVERNANCE", status: "RUNNING", grade: null },
+      ]
+      useScanPollingMock.mockReturnValue({
+        currentStatus: "RUNNING",
+        errorCount: 0,
+        polledModules: polled,
+      })
+      render(
+        <ScanShell
+          scan={makeScanWithModules([moduleRow({ status: "QUEUED" })])}
+          tier="email"
+        />,
+      )
+      // Server snapshot is QUEUED; polled override drives ModuleCard to RUNNING.
+      expect(modulesScope().getByText("Running")).toBeInTheDocument()
+      expect(modulesScope().queryByText("Queued")).toBeNull()
+    })
+
+    it("polled module COMPLETE status surfaces the polled grade letter via ModuleCard", () => {
+      const polled: PolledModuleState[] = [
+        { module: "GOVERNANCE", status: "COMPLETE", grade: "B" },
+      ]
+      useScanPollingMock.mockReturnValue({
+        currentStatus: "COMPLETE",
+        errorCount: 0,
+        polledModules: polled,
+      })
+      render(
+        <ScanShell
+          scan={makeScanWithModules([
+            moduleRow({ status: "QUEUED", grade: null }),
+          ])}
+          tier="email"
+        />,
+      )
+      expect(modulesScope().getByText("Complete")).toBeInTheDocument()
+      // Grade letter appears in the modules section regardless of
+      // scan.compositeGrade.
+      expect(modulesScope().getByText("B")).toBeInTheDocument()
+    })
+
+    it("polled module with null grade keeps the server-side grade (no blank-out)", () => {
+      // If a late stale poll arrives after router.refresh has populated the
+      // grade, we must not overwrite it with null.
+      const polled: PolledModuleState[] = [
+        { module: "GOVERNANCE", status: "RUNNING", grade: null },
+      ]
+      useScanPollingMock.mockReturnValue({
+        currentStatus: "RUNNING",
+        errorCount: 0,
+        polledModules: polled,
+      })
+      render(
+        <ScanShell
+          scan={makeScanWithModules([
+            moduleRow({ status: "COMPLETE", grade: "A", score: 95 }),
+          ])}
+          tier="email"
+        />,
+      )
+      const scope = modulesScope()
+      // Status follows the poll (RUNNING); grade falls back to server (A).
+      expect(scope.getByText("Running")).toBeInTheDocument()
+      expect(scope.getByText("A")).toBeInTheDocument()
+    })
+
+    it("modules not present in polledModules keep server snapshot unchanged", () => {
+      const polled: PolledModuleState[] = [
+        { module: "GOVERNANCE", status: "RUNNING", grade: null },
+      ]
+      useScanPollingMock.mockReturnValue({
+        currentStatus: "RUNNING",
+        errorCount: 0,
+        polledModules: polled,
+      })
+      render(
+        <ScanShell
+          scan={makeScanWithModules([
+            moduleRow({ id: "mr-1", module: "GOVERNANCE", status: "QUEUED" }),
+            moduleRow({ id: "mr-2", module: "ORACLE", status: "QUEUED" }),
+          ])}
+          tier="email"
+        />,
+      )
+      const scope = modulesScope()
+      // GOVERNANCE is RUNNING (polled), ORACLE stays QUEUED (server).
+      expect(scope.getByText("Running")).toBeInTheDocument()
+      expect(scope.getByText("Queued")).toBeInTheDocument()
+    })
   })
 })

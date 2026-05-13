@@ -1,6 +1,8 @@
 "use client"
 
-import type { ScanResponse, VisibilityTier } from "@/lib/scan-response"
+import { useMemo } from "react"
+
+import type { ModuleRunResponse, ScanResponse, VisibilityTier } from "@/lib/scan-response"
 import { useScanPolling } from "@/hooks/useScanPolling"
 
 import { ScanHero } from "./ScanHero"
@@ -27,7 +29,31 @@ interface ScanShellProps {
  * still come from the server snapshot — never invented client-side.
  */
 export function ScanShell({ scan, tier }: ScanShellProps) {
-  const { currentStatus, errorCount } = useScanPolling(scan.id, scan.status)
+  const { currentStatus, errorCount, polledModules } = useScanPolling(
+    scan.id,
+    scan.status,
+  )
+
+  // G.5 I1: merge polled per-module state over the server snapshot.
+  // Only `status` and `grade` are polled — every other field (score,
+  // findingsCount, startedAt/completedAt, errorMessage, etc.) stays
+  // from the server. `grade` only overrides when polling has a non-null
+  // value (terminal modules); otherwise we keep the server value so a
+  // late `router.refresh()` arriving after a stale poll doesn't blank
+  // out the rendered grade.
+  const mergedModules: ModuleRunResponse[] = useMemo(() => {
+    if (!polledModules) return scan.modules
+    const byName = new Map(polledModules.map((m) => [m.module, m]))
+    return scan.modules.map((server) => {
+      const polled = byName.get(server.module)
+      if (!polled) return server
+      return {
+        ...server,
+        status: polled.status as ModuleRunResponse["status"],
+        grade: polled.grade ?? server.grade,
+      }
+    })
+  }, [scan.modules, polledModules])
 
   return (
     <div className="space-y-6">
@@ -42,7 +68,7 @@ export function ScanShell({ scan, tier }: ScanShellProps) {
           Scan modules
         </h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {scan.modules.map((module) => (
+          {mergedModules.map((module) => (
             <ModuleCard key={module.id} module={module} />
           ))}
         </div>
@@ -51,6 +77,7 @@ export function ScanShell({ scan, tier }: ScanShellProps) {
       <FindingsList
         findings={scan.findings}
         tier={tier}
+        status={currentStatus}
         hasAnyHiddenFindings={scan.modules.some(
           (m) => (m.hiddenFindingsCount ?? 0) > 0,
         )}
