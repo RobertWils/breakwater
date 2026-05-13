@@ -43,6 +43,7 @@ export function ModuleCard({ module }: ModuleCardProps) {
   const label = MODULE_LABELS[module.module] ?? module.module
   const status = STATUS_STYLES[module.status] ?? STATUS_STYLES.QUEUED
   const hasGrade = module.grade !== null
+  const isRunning = module.status === "RUNNING"
 
   return (
     <article className="glass-card p-6 space-y-4">
@@ -50,12 +51,24 @@ export function ModuleCard({ module }: ModuleCardProps) {
         <h3 className="text-lg font-semibold text-primary">
           {label}
         </h3>
-        <span
-          className="text-xs font-mono uppercase tracking-wider px-2 py-1 rounded"
-          style={{ color: status.color, backgroundColor: status.bg }}
-        >
-          {status.label}
-        </span>
+        <div className="flex items-center gap-2">
+          {isRunning && (
+            // G.3 / spec §7.3 — subtle in-progress pulse. motion-reduce
+            // disables the animation for users who prefer reduced motion.
+            <span
+              role="status"
+              aria-live="polite"
+              aria-label={`${label} module is running`}
+              className="h-2 w-2 rounded-full bg-sky animate-pulse motion-reduce:animate-none"
+            />
+          )}
+          <span
+            className="text-xs font-mono uppercase tracking-wider px-2 py-1 rounded"
+            style={{ color: status.color, backgroundColor: status.bg }}
+          >
+            {status.label}
+          </span>
+        </div>
       </div>
 
       {hasGrade ? (

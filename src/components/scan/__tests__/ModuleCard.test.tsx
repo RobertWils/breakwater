@@ -81,4 +81,33 @@ describe("ModuleCard", () => {
     render(<ModuleCard module={makeModule({ module: "UNKNOWN" })} />)
     expect(screen.getByText("UNKNOWN")).toBeInTheDocument()
   })
+
+  describe("RUNNING pulse indicator (G.3 / spec §7.3)", () => {
+    it("renders an aria-live pulse when status is RUNNING", () => {
+      render(<ModuleCard module={makeModule({ status: "RUNNING" })} />)
+      const pulse = screen.getByRole("status")
+      expect(pulse).toHaveAttribute("aria-live", "polite")
+      expect(pulse.getAttribute("aria-label") ?? "").toMatch(/running/i)
+    })
+
+    it("pulse honors prefers-reduced-motion via motion-reduce:animate-none", () => {
+      render(<ModuleCard module={makeModule({ status: "RUNNING" })} />)
+      const pulse = screen.getByRole("status")
+      expect(pulse.className).toContain("animate-pulse")
+      expect(pulse.className).toContain("motion-reduce:animate-none")
+    })
+
+    it("does not render a pulse for non-RUNNING statuses", () => {
+      for (const status of ["QUEUED", "COMPLETE", "FAILED", "SKIPPED"] as const) {
+        const { container, unmount } = render(
+          <ModuleCard module={makeModule({ status })} />,
+        )
+        expect(
+          container.querySelector('[role="status"]'),
+          `expected no pulse for status=${status}`,
+        ).toBeNull()
+        unmount()
+      }
+    })
+  })
 })

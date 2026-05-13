@@ -2,6 +2,14 @@ import type { ScanResponse } from "@/lib/scan-response"
 
 interface CompositePanelProps {
   scan: ScanResponse
+  /**
+   * Optional client-side status override (G.3). Used by `ScanShell`
+   * to feed the latest polling result so the status-copy lookup
+   * reflects the current state without waiting for the server-side
+   * snapshot refresh. Grade rendering still keys off `scan.compositeGrade`
+   * (server data); the override only affects the status-text fallback.
+   */
+  currentStatus?: string
 }
 
 const STATUS_COPY: Record<string, { label: string; description: string; color: string }> = {
@@ -37,8 +45,9 @@ const STATUS_COPY: Record<string, { label: string; description: string; color: s
   },
 }
 
-export function CompositePanel({ scan }: CompositePanelProps) {
-  const statusInfo = STATUS_COPY[scan.status] ?? STATUS_COPY.QUEUED
+export function CompositePanel({ scan, currentStatus }: CompositePanelProps) {
+  const effectiveStatus = currentStatus ?? scan.status
+  const statusInfo = STATUS_COPY[effectiveStatus] ?? STATUS_COPY.QUEUED
   const hasGrade = scan.compositeGrade !== null
 
   return (

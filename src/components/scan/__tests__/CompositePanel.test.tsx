@@ -83,4 +83,40 @@ describe("CompositePanel", () => {
     render(<CompositePanel scan={makeScan({ status: "UNKNOWN" as never })} />)
     expect(screen.getByText("Queued")).toBeInTheDocument()
   })
+
+  describe("currentStatus override (G.3 — client-polled status takes precedence)", () => {
+    it("uses currentStatus for status copy when scan.status is stale", () => {
+      // Server snapshot is QUEUED; polling hook reports RUNNING.
+      render(
+        <CompositePanel
+          scan={makeScan({ status: "QUEUED" })}
+          currentStatus="RUNNING"
+        />,
+      )
+      expect(screen.getByText("Running")).toBeInTheDocument()
+      expect(screen.queryByText("Queued")).not.toBeInTheDocument()
+    })
+
+    it("falls back to scan.status when currentStatus is undefined", () => {
+      render(<CompositePanel scan={makeScan({ status: "RUNNING" })} />)
+      expect(screen.getByText("Running")).toBeInTheDocument()
+    })
+
+    it("does not override grade rendering — compositeGrade still wins", () => {
+      // Server snapshot has the grade; client sees stale RUNNING status.
+      // Grade should render; status copy should be hidden.
+      render(
+        <CompositePanel
+          scan={makeScan({
+            status: "COMPLETE",
+            compositeGrade: "A",
+            compositeScore: 92,
+          })}
+          currentStatus="RUNNING"
+        />,
+      )
+      expect(screen.getByText("A")).toBeInTheDocument()
+      expect(screen.queryByText("Running")).not.toBeInTheDocument()
+    })
+  })
 })

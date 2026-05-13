@@ -1,5 +1,10 @@
+"use client"
+
 import type { ScanResponse, VisibilityTier } from "@/lib/scan-response"
+import { useScanPolling } from "@/hooks/useScanPolling"
+
 import { ScanHero } from "./ScanHero"
+import { ProtocolGraphDisclaimer } from "./ProtocolGraphDisclaimer"
 import { CompositePanel } from "./CompositePanel"
 import { ModuleCard } from "./ModuleCard"
 import { FindingsList } from "./FindingsList"
@@ -10,11 +15,27 @@ interface ScanShellProps {
   tier: VisibilityTier
 }
 
+/**
+ * Phase G.3: client wrapper around the scan results layout. Drives
+ * live status updates via `useScanPolling`, which calls
+ * `router.refresh()` on terminal transitions so the server-rendered
+ * snapshot (findings, grade) refreshes once detection completes.
+ *
+ * Composite + module status copy keys off `currentStatus` (polled
+ * value) for the brief window between "polling sees COMPLETE" and
+ * "server refresh delivers the grade." Grade letters and findings
+ * still come from the server snapshot — never invented client-side.
+ */
 export function ScanShell({ scan, tier }: ScanShellProps) {
+  const { currentStatus, errorCount } = useScanPolling(scan.id, scan.status)
+
   return (
     <div className="space-y-6">
       <ScanHero scan={scan} />
-      <CompositePanel scan={scan} />
+
+      <ProtocolGraphDisclaimer />
+
+      <CompositePanel scan={scan} currentStatus={currentStatus} />
 
       <section aria-labelledby="modules-heading">
         <h2 id="modules-heading" className="sr-only">
@@ -30,17 +51,22 @@ export function ScanShell({ scan, tier }: ScanShellProps) {
       <FindingsList
         findings={scan.findings}
         tier={tier}
-        hasAnyHiddenFindings={scan.modules.some((m) => (m.hiddenFindingsCount ?? 0) > 0)}
+        hasAnyHiddenFindings={scan.modules.some(
+          (m) => (m.hiddenFindingsCount ?? 0) > 0,
+        )}
       />
 
       {tier === "unauth" && <UnlockCTA scanId={scan.id} />}
 
-      <section className="glass-card p-6 text-center">
-        <p className="text-sm text-muted">
-          Our detectors are under active development. Your scan is
-          stored and will be processed when detection goes live.
+      {errorCount > 0 && (
+        <p
+          role="status"
+          aria-live="polite"
+          className="text-center text-xs font-mono text-sev-medium"
+        >
+          Connection issues detected. Retrying…
         </p>
-      </section>
+      )}
     </div>
   )
 }
