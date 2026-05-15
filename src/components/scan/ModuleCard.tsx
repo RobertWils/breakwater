@@ -100,7 +100,18 @@ export function ModuleCard({ module }: ModuleCardProps) {
         </p>
       )}
 
-      {module.errorMessage && (
+      {/*
+        H.7: only surface errorMessage on FAILED ModuleRuns. SKIPPED rows
+        carry internal audit strings (`module_not_implemented`,
+        `module_disabled_by_user`, `domain_required`) since H.6, and those
+        belong in the DB for analytics — not in a red `role="alert"` box
+        that misleads users into thinking the scan errored. The DB field
+        is still persisted; if Plan 03+ adds user-facing copy for the
+        skip reasons (e.g., "Coming soon" for `module_not_implemented`),
+        it should map the audit string to UX copy here rather than
+        dumping the raw value.
+      */}
+      {module.status === "FAILED" && module.errorMessage && (
         <p
           role="alert"
           className="text-xs p-3 rounded"

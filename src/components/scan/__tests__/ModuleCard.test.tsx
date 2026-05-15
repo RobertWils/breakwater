@@ -77,6 +77,24 @@ describe("ModuleCard", () => {
     expect(screen.getByText("Not included in this scan")).toBeInTheDocument()
   })
 
+  it("does NOT render errorMessage on SKIPPED — audit-only field (H.7)", () => {
+    // H.6 introduced `module_not_implemented` / `module_disabled_by_user` /
+    // `domain_required` on SKIPPED rows for the audit trail. H.7 hides
+    // these from the UI — they're internal strings, not user copy. The
+    // FAILED branch keeps its alert (covered by the test above).
+    render(
+      <ModuleCard
+        module={makeModule({
+          status: "SKIPPED",
+          module: "ORACLE",
+          errorMessage: "module_not_implemented",
+        })}
+      />,
+    )
+    expect(screen.queryByRole("alert")).toBeNull()
+    expect(screen.queryByText(/module_not_implemented/)).toBeNull()
+  })
+
   it("falls back to raw module name when not in MODULE_LABELS map", () => {
     render(<ModuleCard module={makeModule({ module: "UNKNOWN" })} />)
     expect(screen.getByText("UNKNOWN")).toBeInTheDocument()
