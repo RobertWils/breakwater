@@ -1,6 +1,7 @@
 import { fetchContractAbi } from "@/lib/etherscan-client";
 import { publicClient } from "@/lib/rpc-client";
 
+import { checkIsContract } from "./contract-utils";
 import { detectGovernor } from "./detect-governor";
 import { detectProxy } from "./detect-proxy";
 import { detectSafe } from "./detect-safe";
@@ -43,6 +44,26 @@ export async function captureGovernanceSnapshot(
   const { protocolAddress, declaredMultisigAddresses } = context;
 
   const blockNumber = await publicClient.getBlockNumber();
+
+  // H.8: fail-closed when the address has no deployed bytecode. Without
+  // this gate, EOAs and undeployed contracts produce empty snapshots
+  // (no governor / timelock / multisig / proxy / ABI). Every detector
+  // then returns `[]` against the empty input, the composite calc
+  // scores 100, and the UI presents a misleading grade A for a
+  // non-contract submission.
+  //
+  // We only gate on a definitive `false` from `checkIsContract`. A
+  // `null` return means the RPC call itself failed — those should fall
+  // through to the downstream calls (which have their own retries via
+  // viem's fallback transport) rather than being misclassified here as
+  // "not a contract."
+  const isContract = await checkIsContract(protocolAddress, blockNumber);
+  if (isContract === false) {
+    throw new Error(
+      `address_is_not_contract: ${protocolAddress} has no contract ` +
+        `bytecode on this chain (EOA or undeployed contract)`,
+    );
+  }
 
   const governorResult = await detectGovernor({
     protocolAddress,

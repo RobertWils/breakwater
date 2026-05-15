@@ -27,9 +27,18 @@ vi.mock("@/lib/etherscan-client", () => ({
   fetchContractAbi: vi.fn(),
 }));
 
+// H.8: captureGovernanceSnapshot now pre-flights the address via
+// checkIsContract. Mock the helper so existing tests pass through
+// unchanged (default: true → "is a contract") and the new H.8 gate
+// tests can flip the return value to false to exercise the throw.
+vi.mock("../contract-utils", () => ({
+  checkIsContract: vi.fn(),
+}));
+
 import { fetchContractAbi } from "@/lib/etherscan-client";
 import { publicClient } from "@/lib/rpc-client";
 
+import { checkIsContract } from "../contract-utils";
 import { detectGovernor } from "../detect-governor";
 import { detectProxy } from "../detect-proxy";
 import { detectSafe } from "../detect-safe";
@@ -38,6 +47,7 @@ import { detectTimelock } from "../detect-timelock";
 import { captureGovernanceSnapshot } from "../capture-snapshot";
 
 const getBlockNumberMock = vi.mocked(publicClient.getBlockNumber);
+const checkIsContractMock = vi.mocked(checkIsContract);
 const detectGovernorMock = vi.mocked(detectGovernor);
 const detectTimelockMock = vi.mocked(detectTimelock);
 const detectSafeMock = vi.mocked(detectSafe);
@@ -49,6 +59,7 @@ const PROTOCOL = "0x1111111111111111111111111111111111111111";
 describe("captureGovernanceSnapshot (Plan 02 D.3c)", () => {
   beforeEach(() => {
     getBlockNumberMock.mockReset();
+    checkIsContractMock.mockReset();
     detectGovernorMock.mockReset();
     detectTimelockMock.mockReset();
     detectSafeMock.mockReset();
@@ -62,6 +73,11 @@ describe("captureGovernanceSnapshot (Plan 02 D.3c)", () => {
       reason: "missing_api_key",
       message: "ETHERSCAN_API_KEY env var not set",
     });
+    // H.8 default: protocolAddress is a contract. Tests that exercise
+    // the EOA gate override this explicitly. Returning `null` (the
+    // "RPC failed" state) also passes the gate per H.8 semantics —
+    // only a definitive `false` triggers the throw.
+    checkIsContractMock.mockResolvedValue(true);
   });
 
   it("composes a full populated snapshot from all detector outputs", async () => {
@@ -287,5 +303,82 @@ describe("captureGovernanceSnapshot (Plan 02 D.3c)", () => {
     expect(fetchContractAbiMock).not.toHaveBeenCalled();
     expect(snapshot.protocolAbi).toBeNull();
     expect(snapshot.implementationAbi).toBe("[]");
+  });
+
+  // ── H.8: address_is_not_contract gate ──────────────────────────────────
+  //
+  // Without this gate, an EOA submission yielded a fully-null snapshot
+  // (no governor / timelock / multisig / proxy / ABI). Every detector
+  // returns [] on null input → composite score 100 → misleading grade A.
+  // The gate throws before any detector runs; executeGovernanceModule's
+  // catch block (F.1) marks the ModuleRun FAILED with the message.
+  describe("H.8 — address bytecode validation", () => {
+    it("throws address_is_not_contract when checkIsContract returns false (EOA)", async () => {
+      getBlockNumberMock.mockResolvedValue(BigInt(20_000_000));
+      checkIsContractMock.mockResolvedValue(false);
+
+      await expect(
+        captureGovernanceSnapshot({ protocolAddress: PROTOCOL }),
+      ).rejects.toThrow(/address_is_not_contract/);
+    });
+
+    it("includes the address in the error message for actionability", async () => {
+      getBlockNumberMock.mockResolvedValue(BigInt(20_000_000));
+      checkIsContractMock.mockResolvedValue(false);
+
+      await expect(
+        captureGovernanceSnapshot({ protocolAddress: PROTOCOL }),
+      ).rejects.toThrow(new RegExp(PROTOCOL));
+    });
+
+    it("does NOT invoke detectors when the address is not a contract", async () => {
+      getBlockNumberMock.mockResolvedValue(BigInt(20_000_000));
+      checkIsContractMock.mockResolvedValue(false);
+
+      await expect(
+        captureGovernanceSnapshot({ protocolAddress: PROTOCOL }),
+      ).rejects.toThrow();
+
+      expect(detectGovernorMock).not.toHaveBeenCalled();
+      expect(detectTimelockMock).not.toHaveBeenCalled();
+      expect(detectSafeMock).not.toHaveBeenCalled();
+      expect(detectProxyMock).not.toHaveBeenCalled();
+    });
+
+    it("passes the pinned blockNumber to checkIsContract (consistent snapshot)", async () => {
+      const pinned = BigInt(20_000_001);
+      getBlockNumberMock.mockResolvedValue(pinned);
+      // Re-throw via the gate so we don't have to mock the full happy path.
+      checkIsContractMock.mockResolvedValue(false);
+
+      await expect(
+        captureGovernanceSnapshot({ protocolAddress: PROTOCOL }),
+      ).rejects.toThrow();
+
+      expect(checkIsContractMock).toHaveBeenCalledWith(PROTOCOL, pinned);
+    });
+
+    it("does NOT throw when checkIsContract returns null (RPC failure is not a definitive EOA signal)", async () => {
+      getBlockNumberMock.mockResolvedValue(BigInt(20_000_000));
+      checkIsContractMock.mockResolvedValue(null);
+
+      // Fail downstream detection so we don't have to set up the full
+      // happy path — the point is the gate itself didn't throw on null.
+      detectGovernorMock.mockResolvedValue(null);
+      detectTimelockMock.mockResolvedValue(null);
+      detectProxyMock.mockResolvedValue({
+        proxyType: "NONE",
+        proxyAdminAddress: null,
+        proxyImplementation: null,
+        proxyAdminIsContract: null,
+        implementationAbi: null,
+      });
+
+      const snapshot = await captureGovernanceSnapshot({
+        protocolAddress: PROTOCOL,
+      });
+      // Reached the downstream code path = gate passed null through.
+      expect(snapshot).toBeDefined();
+    });
   });
 });
