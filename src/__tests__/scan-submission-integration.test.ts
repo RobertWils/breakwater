@@ -214,15 +214,24 @@ describe.skipIf(!hasDb)("scan submission integration", () => {
     });
     expect(modules).toHaveLength(4);
 
-    // FRONTEND skipped (no domain)
+    // GOVERNANCE: the only implemented module in Plan 02 (H.6).
+    const governance = modules.find((m) => m.module === "GOVERNANCE");
+    expect(governance!.status).toBe("QUEUED");
+    expect(governance!.errorMessage).toBeNull();
+
+    // ORACLE / SIGNER: unimplemented → SKIPPED with audit-trail reason (H.6).
+    for (const mod of ["ORACLE", "SIGNER"]) {
+      const row = modules.find((m) => m.module === mod);
+      expect(row!.status).toBe("SKIPPED");
+      expect(row!.errorMessage).toBe("module_not_implemented");
+    }
+
+    // FRONTEND: also unimplemented; module_not_implemented beats
+    // domain_required in the H.6 priority order (the test reflects
+    // that even though this scan has no domain).
     const frontend = modules.find((m) => m.module === "FRONTEND");
     expect(frontend!.status).toBe("SKIPPED");
-
-    // Others queued
-    for (const mod of ["GOVERNANCE", "ORACLE", "SIGNER"]) {
-      const row = modules.find((m) => m.module === mod);
-      expect(row!.status).toBe("QUEUED");
-    }
+    expect(frontend!.errorMessage).toBe("module_not_implemented");
 
     // ACCEPTED ScanAttempt
     const attempt = await prisma.scanAttempt.findFirst({
@@ -234,7 +243,12 @@ describe.skipIf(!hasDb)("scan submission integration", () => {
 
   // ── 2. Happy path WITH domain — FRONTEND queued ────────────────────────
 
-  it("happy path with domain: FRONTEND module is QUEUED", async () => {
+  it("happy path with domain: GOVERNANCE queued; ORACLE/SIGNER/FRONTEND SKIPPED as module_not_implemented (H.6)", async () => {
+    // H.6: domain presence no longer rescues FRONTEND from SKIPPED — the
+    // module has no Inngest handler in Plan 02, so it ships SKIPPED
+    // alongside ORACLE and SIGNER with the same `module_not_implemented`
+    // reason. When FRONTEND lands in a future plan, add it to
+    // IMPLEMENTED_MODULES and this assertion flips back to QUEUED.
     const ipHash = uniqueIpHash();
     createdScanAttemptIpHashes.push(ipHash);
 
@@ -267,9 +281,14 @@ describe.skipIf(!hasDb)("scan submission integration", () => {
     });
     expect(modules).toHaveLength(4);
 
-    for (const mod of ["GOVERNANCE", "ORACLE", "SIGNER", "FRONTEND"]) {
+    const governance = modules.find((m) => m.module === "GOVERNANCE");
+    expect(governance!.status).toBe("QUEUED");
+    expect(governance!.errorMessage).toBeNull();
+
+    for (const mod of ["ORACLE", "SIGNER", "FRONTEND"]) {
       const row = modules.find((m) => m.module === mod);
-      expect(row!.status).toBe("QUEUED");
+      expect(row!.status).toBe("SKIPPED");
+      expect(row!.errorMessage).toBe("module_not_implemented");
     }
   });
 
@@ -724,6 +743,56 @@ describe.skipIf(!hasDb)("scan submission integration", () => {
     for (const mod of ["ORACLE", "SIGNER", "FRONTEND"]) {
       const row = modules.find((m) => m.module === mod);
       expect(row!.status).toBe("SKIPPED");
+    }
+  });
+
+  // H.6 — full default modulesEnabled scenario.
+  // Confirms the skip-reason hierarchy (`module_disabled_by_user` →
+  // `module_not_implemented` → `domain_required`): with every module
+  // enabled and no domain, GOVERNANCE goes QUEUED and the other three
+  // ship SKIPPED with `module_not_implemented` (FRONTEND lands on
+  // that reason rather than `domain_required` because the module
+  // can't run at all).
+  it("H.6: full default modulesEnabled — 1 QUEUED + 3 SKIPPED with module_not_implemented", async () => {
+    const ipHash = uniqueIpHash();
+    createdScanAttemptIpHashes.push(ipHash);
+
+    const address = uniqueEthAddress();
+    const result = await submitScan({
+      input: {
+        chain: "ETHEREUM",
+        primaryContractAddress: address,
+        extraContractAddresses: [],
+        // no `domain` field — covers the FRONTEND-without-domain case
+        multisigs: [],
+        modulesEnabled: ["GOVERNANCE", "ORACLE", "SIGNER", "FRONTEND"],
+      },
+      userId: null,
+      userEmail: null,
+      ip: "1.2.3.4",
+      ipHash,
+      userAgent: "integration-test/1.0",
+    });
+    expect(result.statusCode).toBe(202);
+
+    const protocol = await prisma.protocol.findFirst({
+      where: { primaryContractAddress: address.toLowerCase(), chain: "ETHEREUM" },
+    });
+    createdProtocolIds.push(protocol!.id);
+
+    const modules = await prisma.moduleRun.findMany({
+      where: { scanId: result.scanId },
+    });
+    expect(modules).toHaveLength(4);
+
+    const gov = modules.find((m) => m.module === "GOVERNANCE");
+    expect(gov!.status).toBe("QUEUED");
+    expect(gov!.errorMessage).toBeNull();
+
+    for (const mod of ["ORACLE", "SIGNER", "FRONTEND"]) {
+      const row = modules.find((m) => m.module === mod);
+      expect(row!.status).toBe("SKIPPED");
+      expect(row!.errorMessage).toBe("module_not_implemented");
     }
   });
 

@@ -26,6 +26,33 @@ const SENTINEL_PAYLOAD_MALFORMED_JSON = "invalid:json";
 const SENTINEL_PAYLOAD_SCHEMA = "invalid:schema";
 const SENTINEL_PAYLOAD_ADDRESS = "invalid:address";
 
+/**
+ * Modules that have an Inngest handler registered in this build.
+ *
+ * Plan 02 ships only GOVERNANCE. ORACLE / SIGNER / FRONTEND are
+ * scheduled for Plan 03+. ModuleRun rows for unimplemented modules
+ * are created as SKIPPED with `errorMessage = "module_not_implemented"`
+ * so the dispatcher's `markComplete` step doesn't hang waiting for a
+ * handler that doesn't exist (Phase H manual smoke surfaced the hang).
+ *
+ * When implementing a new module in a future plan:
+ *   1. Add its Inngest function in `src/lib/inngest/functions/`.
+ *   2. Register it in `src/app/api/inngest/route.ts`.
+ *   3. Add the ModuleName enum value to this set.
+ *   4. Update `scan-submission-integration.test.ts` assertions.
+ *   5. Optionally update the ModuleCard SKIPPED copy to differentiate
+ *      "Not included" vs "Coming soon" (see Phase G visual-polish
+ *      backlog in NOTES.md).
+ *
+ * Exported so the completeness unit test in
+ * `src/lib/__tests__/scan-submission-modules.test.ts` can assert that
+ * every ModuleName enum value is either implemented or explicitly
+ * acknowledged as a Plan 03+ placeholder.
+ */
+export const IMPLEMENTED_MODULES: ReadonlySet<string> = new Set<string>([
+  "GOVERNANCE",
+]);
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function deriveDisplayName(
@@ -441,17 +468,48 @@ export async function submitScan(
       select: { id: true },
     });
 
-    // Step 10: Create 4 ModuleRun rows
+    // Step 10: Create 4 ModuleRun rows.
+    //
+    // H.6: unimplemented modules seed as SKIPPED with a distinguishing
+    // errorMessage. Without this, ModuleRun rows for ORACLE/SIGNER
+    // (and FRONTEND post-domain) sit at QUEUED forever — executeScan's
+    // markComplete waits for every module to reach a terminal state, so
+    // the Scan row stays RUNNING indefinitely. Phase H manual smoke
+    // surfaced the hang; this gate fixes it.
+    //
+    // Skip-reason priority (first match wins):
+    //   1. module_disabled_by_user — user explicitly excluded the module
+    //      from modulesEnabled. Top priority because it captures the
+    //      user's explicit intent, which is the most useful audit signal.
+    //   2. module_not_implemented — no Inngest handler registered for
+    //      this module yet. Beats domain_required because "we cannot
+    //      run this module at all" is a more fundamental reason than
+    //      "we'd need additional input to run it."
+    //   3. domain_required — FRONTEND would run, but the submission
+    //      omitted a domain. Only reached when the module is both
+    //      enabled and implemented.
     const allModules = ["GOVERNANCE", "ORACLE", "SIGNER", "FRONTEND"] as const;
     const moduleRuns = allModules.map((module) => {
       const enabled = (input.modulesEnabled as string[]).includes(module);
+      const implemented = IMPLEMENTED_MODULES.has(module);
       const requiresDomain = module === "FRONTEND";
       const hasDomain = !!input.domain;
-      const shouldSkip = !enabled || (requiresDomain && !hasDomain);
+
+      let errorMessage: string | null = null;
+      if (!enabled) {
+        errorMessage = "module_disabled_by_user";
+      } else if (!implemented) {
+        errorMessage = "module_not_implemented";
+      } else if (requiresDomain && !hasDomain) {
+        errorMessage = "domain_required";
+      }
+      const shouldSkip = errorMessage !== null;
+
       return {
         scanId: scan.id,
         module,
         status: shouldSkip ? ("SKIPPED" as const) : ("QUEUED" as const),
+        errorMessage,
         idempotencyKey: generateIdempotencyKey(scan.id, module),
         inputSnapshot: {
           chain: input.chain,
