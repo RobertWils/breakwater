@@ -74,7 +74,13 @@ Per implementation plan §H exit:
 | Real protocol scan reaches terminal state                       | ✅ Uniswap V3 → COMPLETE grade A        |
 | FAILED path graceful (per spec §6.3)                            | ✅ H.8 (EOA → FAILED with errorMessage) |
 
-5 of 5 gate items met. **No remaining limitations.**
+5 of 5 gate items met. **No remaining Phase H blockers.**
+
+**Caveats on this claim (H.9 N3):**
+
+- H.1 audit observation: 4 consecutive clean DB-integration runs against Railway. Flake risk reduced but **not proven fixed long-term** (see NOTES.md L66 — the underlying free-tier idle-connection behaviour can re-emerge under different load patterns).
+- Inngest function-body executor-driven tests remain deferred to Plan §H.3 harness work — the F-phase / G-phase suites cover the helpers; the function body itself is verified end-to-end via the manual preview smoke.
+- The "no remaining limitations" claim refers to **the spec'd Phase H exit gate**, not to all behavior. Future plans may surface follow-ups; the Plan 03+ items listed below are the known set as of this marker.
 
 ## Known follow-ups (Plan 03+ scope, non-blocking)
 

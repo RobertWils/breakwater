@@ -18,6 +18,8 @@ import { createScanAttempt } from "@/lib/scan-attempt";
 import { ScanErrors, ScanSubmissionError } from "@/lib/scan-submission/errors";
 import type { ScanSubmission } from "@/lib/schemas/scan";
 
+import { ModuleName } from "@prisma/client";
+
 // Sentinel values for NOT NULL fields on ScanAttempt when full context is unavailable.
 const SENTINEL_COOLDOWN_MALFORMED_JSON = "invalid:json";
 const SENTINEL_COOLDOWN_SCHEMA = "invalid:schema";
@@ -35,6 +37,10 @@ const SENTINEL_PAYLOAD_ADDRESS = "invalid:address";
  * so the dispatcher's `markComplete` step doesn't hang waiting for a
  * handler that doesn't exist (Phase H manual smoke surfaced the hang).
  *
+ * H.9 N1: typed as `ReadonlySet<ModuleName>` (was `<string>`) so the
+ * compiler catches a typo or stale enum value at the source of truth
+ * rather than after a runtime mismatch.
+ *
  * When implementing a new module in a future plan:
  *   1. Add its Inngest function in `src/lib/inngest/functions/`.
  *   2. Register it in `src/app/api/inngest/route.ts`.
@@ -49,9 +55,47 @@ const SENTINEL_PAYLOAD_ADDRESS = "invalid:address";
  * every ModuleName enum value is either implemented or explicitly
  * acknowledged as a Plan 03+ placeholder.
  */
-export const IMPLEMENTED_MODULES: ReadonlySet<string> = new Set<string>([
-  "GOVERNANCE",
-]);
+export const IMPLEMENTED_MODULES: ReadonlySet<ModuleName> = new Set<ModuleName>(
+  [ModuleName.GOVERNANCE],
+);
+
+/**
+ * Discriminator for why a ModuleRun ships SKIPPED. `null` means the
+ * row will ship QUEUED (no skip condition triggered).
+ */
+export type SkipReason =
+  | "module_disabled_by_user"
+  | "module_not_implemented"
+  | "domain_required"
+  | null;
+
+/**
+ * H.9 N2: pure, exported priority-resolution for the skip reason on
+ * a ModuleRun row. Priority order (first match wins):
+ *   1. `module_disabled_by_user` — user explicit opt-out beats other
+ *      reasons because their intent is the most useful audit signal.
+ *   2. `module_not_implemented` — no Inngest handler; beats
+ *      `domain_required` because "we cannot run this module at all"
+ *      is a more fundamental reason than "we'd need more input."
+ *   3. `domain_required` — the FRONTEND-needs-domain case.
+ *
+ * Returns `null` when none of the three conditions trigger — the
+ * caller seeds the row as QUEUED with `errorMessage: null`.
+ *
+ * Pure function with no IO — unit-testable without the integration
+ * fixture cost. See `scan-submission-modules.test.ts`.
+ */
+export function computeSkipReason(params: {
+  enabled: boolean;
+  implemented: boolean;
+  requiresDomain: boolean;
+  hasDomain: boolean;
+}): SkipReason {
+  if (!params.enabled) return "module_disabled_by_user";
+  if (!params.implemented) return "module_not_implemented";
+  if (params.requiresDomain && !params.hasDomain) return "domain_required";
+  return null;
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -468,62 +512,63 @@ export async function submitScan(
       select: { id: true },
     });
 
-    // Step 10: Create 4 ModuleRun rows.
+    // Step 10: Create one ModuleRun row per ModuleName enum value.
     //
-    // H.6: unimplemented modules seed as SKIPPED with a distinguishing
-    // errorMessage. Without this, ModuleRun rows for ORACLE/SIGNER
-    // (and FRONTEND post-domain) sit at QUEUED forever — executeScan's
-    // markComplete waits for every module to reach a terminal state, so
-    // the Scan row stays RUNNING indefinitely. Phase H manual smoke
-    // surfaced the hang; this gate fixes it.
-    //
-    // Skip-reason priority (first match wins):
-    //   1. module_disabled_by_user — user explicitly excluded the module
-    //      from modulesEnabled. Top priority because it captures the
-    //      user's explicit intent, which is the most useful audit signal.
-    //   2. module_not_implemented — no Inngest handler registered for
-    //      this module yet. Beats domain_required because "we cannot
-    //      run this module at all" is a more fundamental reason than
-    //      "we'd need additional input to run it."
-    //   3. domain_required — FRONTEND would run, but the submission
-    //      omitted a domain. Only reached when the module is both
-    //      enabled and implemented.
-    const allModules = ["GOVERNANCE", "ORACLE", "SIGNER", "FRONTEND"] as const;
-    const moduleRuns = allModules.map((module) => {
-      const enabled = (input.modulesEnabled as string[]).includes(module);
-      const implemented = IMPLEMENTED_MODULES.has(module);
-      const requiresDomain = module === "FRONTEND";
-      const hasDomain = !!input.domain;
+    // H.6 introduced the SKIPPED-with-audit-reason gate; H.9 refined
+    // it: iteration is now derived from the ModuleName enum
+    // (Object.values) instead of a hardcoded array — N1 future-proofing
+    // against adding a new ModuleName without updating this loop. The
+    // skip-reason priority resolution lives in the pure `computeSkipReason`
+    // helper above; this loop just applies its decision.
+    const moduleRuns = (Object.values(ModuleName) as ModuleName[]).map(
+      (name) => {
+        const enabled = (input.modulesEnabled as string[]).includes(name);
+        const implemented = IMPLEMENTED_MODULES.has(name);
+        const requiresDomain = name === ModuleName.FRONTEND;
+        const hasDomain = !!input.domain;
 
-      let errorMessage: string | null = null;
-      if (!enabled) {
-        errorMessage = "module_disabled_by_user";
-      } else if (!implemented) {
-        errorMessage = "module_not_implemented";
-      } else if (requiresDomain && !hasDomain) {
-        errorMessage = "domain_required";
-      }
-      const shouldSkip = errorMessage !== null;
+        const skipReason = computeSkipReason({
+          enabled,
+          implemented,
+          requiresDomain,
+          hasDomain,
+        });
 
-      return {
-        scanId: scan.id,
-        module,
-        status: shouldSkip ? ("SKIPPED" as const) : ("QUEUED" as const),
-        errorMessage,
-        idempotencyKey: generateIdempotencyKey(scan.id, module),
-        inputSnapshot: {
-          chain: input.chain,
-          normalizedAddress,
-          extraContractAddresses: normalizedExtras,
-          domain: input.domain ?? null,
-          multisigs: normalizedMultisigs,
-          modulesEnabled: input.modulesEnabled,
-        },
-        attemptCount: 0,
-        rpcCallsUsed: 0,
-        detectorVersions: {},
-      };
-    });
+        return {
+          scanId: scan.id,
+          module: name,
+          status: skipReason
+            ? ("SKIPPED" as const)
+            : ("QUEUED" as const),
+          errorMessage: skipReason,
+          idempotencyKey: generateIdempotencyKey(scan.id, name),
+          inputSnapshot: {
+            chain: input.chain,
+            normalizedAddress,
+            extraContractAddresses: normalizedExtras,
+            domain: input.domain ?? null,
+            multisigs: normalizedMultisigs,
+            modulesEnabled: input.modulesEnabled,
+          },
+          attemptCount: 0,
+          rpcCallsUsed: 0,
+          detectorVersions: {},
+        };
+      },
+    );
+
+    // H.9 BLOCKER Layer B: reject scans where every module would ship
+    // SKIPPED (zero runnable). Schema-level `.min(1)` catches
+    // `modulesEnabled: []`; this catches the case where only
+    // unimplemented modules are enabled (e.g. `["ORACLE"]`). Throws
+    // before `createMany` so no ModuleRun rows persist; the throw
+    // also rolls back the Scan row this tx callback already created.
+    if (!moduleRuns.some((m) => m.status === "QUEUED")) {
+      throw ScanErrors.noRunnableModules(
+        Array.from(IMPLEMENTED_MODULES).sort(),
+      );
+    }
+
     await tx.moduleRun.createMany({ data: moduleRuns });
 
     // Step 11: Write ACCEPTED ScanAttempt. ACCEPTED rows store reason=null

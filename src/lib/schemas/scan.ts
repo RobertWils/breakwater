@@ -10,8 +10,16 @@ export const ScanSubmissionSchema = z.object({
   extraContractAddresses: z.array(z.string()).optional().default([]),
   domain: z.string().optional(), // SINGULAR, no .url()
   multisigs: z.array(z.string()).optional().default([]),
+  // H.9 BLOCKER Layer A: require at least one module. Schema-level
+  // rejection prevents `modulesEnabled: []` from reaching the
+  // submission path; without this guard an empty array trickles
+  // through, every ModuleRun seeds SKIPPED, and the scan finalises
+  // with a misleading composite grade. The .min(1) check happens
+  // BEFORE the default fires (zod evaluates min on present values),
+  // so default-resolved arrays of length 4 are still valid.
   modulesEnabled: z
     .array(ModuleName)
+    .min(1, "modulesEnabled must contain at least one module")
     .optional()
     .default(["GOVERNANCE", "ORACLE", "SIGNER", "FRONTEND"]),
   submittedEmail: z.string().email().optional(),

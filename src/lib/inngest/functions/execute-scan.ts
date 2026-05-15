@@ -98,7 +98,21 @@ export async function markComplete(
   const allTerminalSuccess = scan.modules.every(
     (m) => m.status === "COMPLETE" || m.status === "SKIPPED",
   );
-  const finalStatus: ScanStatus = allTerminalSuccess ? "COMPLETE" : "FAILED";
+  // H.9 BLOCKER Layer C: require at least one module that actually ran
+  // (status COMPLETE) for a finalStatus of COMPLETE. Pre-H.9, a scan
+  // with every ModuleRun seeded SKIPPED ("0 runnable") would be
+  // classified COMPLETE here because vacuous-true + SKIPPED-counts-as-
+  // success → finalStatus=COMPLETE → composite grade A surfaced for
+  // a scan where no detector actually ran. Layer A (schema) + Layer B
+  // (submission) should already prevent this from reaching the
+  // executor, but markComplete is the last line of defense; keeping
+  // this check makes the executor robust to any future seeding path
+  // that bypasses the submission-layer gate.
+  const hasAnyCompleteModule = scan.modules.some(
+    (m) => m.status === "COMPLETE",
+  );
+  const finalStatus: ScanStatus =
+    allTerminalSuccess && hasAnyCompleteModule ? "COMPLETE" : "FAILED";
 
   // F.3: only compute composite grade on COMPLETE scans. FAILED scans
   // persist null score/grade — partial findings on a failed scan don't

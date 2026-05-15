@@ -179,13 +179,42 @@ describe("markComplete helper (C.4 B1 + I3 — finalStatus capture + race guards
     );
   });
 
-  it("with empty modules array, treats all-terminal-success as vacuously true → COMPLETE", async () => {
-    // Edge case: a scan with zero ModuleRun rows should not silently
-    // succeed in production, but the helper logic (every() over an
-    // empty array is true) needs explicit coverage so a future schema
-    // change that creates Scans without modules surfaces as an
-    // observable spec deviation rather than a silent-pass.
+  it("H.9: empty modules array → FAILED, not COMPLETE (zero-runnable defense)", async () => {
+    // Pre-H.9 this asserted COMPLETE because every() over an empty
+    // array is vacuously true. H.9 added the hasAnyCompleteModule
+    // gate: vacuous-true is correct that every module is "terminal-
+    // success" but only true because none exist; no actual work
+    // was done, so finalStatus must be FAILED. This locks in the
+    // BLOCKER fix at the executor layer (Layer C).
     const client = makeClient({ modules: [] });
+    const result = await markComplete(client, "scan-1");
+    expect(result.finalStatus).toBe("FAILED");
+  });
+
+  it("H.9: every module SKIPPED → FAILED (no runnable module ran)", async () => {
+    // Same root cause as the empty-array test: a scan where every
+    // ModuleRun is SKIPPED produces zero findings, zero detectors
+    // run, and surfaced as composite grade A pre-H.9. Layer C must
+    // catch this.
+    const client = makeClient({
+      modules: [{ status: "SKIPPED" }, { status: "SKIPPED" }],
+    });
+    const result = await markComplete(client, "scan-1");
+    expect(result.finalStatus).toBe("FAILED");
+  });
+
+  it("H.9: at least one COMPLETE + rest SKIPPED → COMPLETE (mixed real-world shape)", async () => {
+    // This is the Plan 02 happy path: GOVERNANCE COMPLETE + 3
+    // unimplemented SKIPPED. The H.9 gate must NOT degrade this
+    // to FAILED — exactly one COMPLETE module is sufficient.
+    const client = makeClient({
+      modules: [
+        { status: "COMPLETE" },
+        { status: "SKIPPED" },
+        { status: "SKIPPED" },
+        { status: "SKIPPED" },
+      ],
+    });
     const result = await markComplete(client, "scan-1");
     expect(result.finalStatus).toBe("COMPLETE");
   });

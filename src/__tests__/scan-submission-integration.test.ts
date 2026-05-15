@@ -1512,4 +1512,114 @@ describe.skipIf(!hasDb)("scan submission integration", () => {
       }
     },
   );
+
+  // ── H.9 BLOCKER Layer B — submission-layer "no runnable modules" gate ──
+  //
+  // Layer A (schema `.min(1)`) catches `modulesEnabled: []`. Layer B
+  // catches the case where the array is non-empty but every entry is
+  // unimplemented (every ModuleRun row would seed SKIPPED). Both prevent
+  // the misleading "composite grade A on no work done" outcome.
+
+  it("H.9 BLOCKER: modulesEnabled containing only unimplemented modules → no_runnable_modules", async () => {
+    const { ScanSubmissionError } = await import(
+      "@/lib/scan-submission/errors"
+    );
+
+    const ipHash = uniqueIpHash();
+    createdScanAttemptIpHashes.push(ipHash);
+
+    const address = uniqueEthAddress();
+    let caughtErr: unknown;
+    try {
+      await submitScan({
+        input: {
+          chain: "ETHEREUM",
+          primaryContractAddress: address,
+          extraContractAddresses: [],
+          multisigs: [],
+          // Both ORACLE and SIGNER are unimplemented in Plan 02. With
+          // no implemented module enabled, every ModuleRun would seed
+          // SKIPPED. Layer B throws before persistence.
+          modulesEnabled: ["ORACLE", "SIGNER"] as ("ORACLE" | "SIGNER")[],
+        },
+        userId: null,
+        userEmail: null,
+        ip: "1.2.3.4",
+        ipHash,
+        userAgent: "integration-test/1.0",
+      });
+    } catch (e) {
+      caughtErr = e;
+    }
+
+    expect(caughtErr).toBeInstanceOf(ScanSubmissionError);
+    const err = caughtErr as InstanceType<typeof ScanSubmissionError>;
+    expect(err.code).toBe("no_runnable_modules");
+    expect(err.statusCode).toBe(422);
+    expect(err.message).toMatch(/runnable modules/i);
+
+    // Tx rolled back — no Scan / ModuleRun rows persisted. (Protocol
+    // row may exist if a prior test ran against the same address, but
+    // we used a unique address so it should not.)
+    const protocol = await prisma.protocol.findFirst({
+      where: { primaryContractAddress: address.toLowerCase(), chain: "ETHEREUM" },
+    });
+    if (protocol) {
+      createdProtocolIds.push(protocol.id);
+      const scans = await prisma.scan.findMany({
+        where: { protocolId: protocol.id },
+      });
+      expect(scans).toHaveLength(0);
+    }
+  });
+
+  it("H.9 BLOCKER: implemented + unimplemented mix accepts and seeds correctly", async () => {
+    // GOVERNANCE present → at least one QUEUED → Layer B passes.
+    // ORACLE present but unimplemented → SKIPPED with module_not_implemented.
+    const ipHash = uniqueIpHash();
+    createdScanAttemptIpHashes.push(ipHash);
+
+    const address = uniqueEthAddress();
+    const result = await submitScan({
+      input: {
+        chain: "ETHEREUM",
+        primaryContractAddress: address,
+        extraContractAddresses: [],
+        multisigs: [],
+        modulesEnabled: ["GOVERNANCE", "ORACLE"] as ("GOVERNANCE" | "ORACLE")[],
+      },
+      userId: null,
+      userEmail: null,
+      ip: "1.2.3.4",
+      ipHash,
+      userAgent: "integration-test/1.0",
+    });
+
+    expect(result.statusCode).toBe(202);
+
+    const protocol = await prisma.protocol.findFirst({
+      where: { primaryContractAddress: address.toLowerCase(), chain: "ETHEREUM" },
+    });
+    createdProtocolIds.push(protocol!.id);
+
+    const modules = await prisma.moduleRun.findMany({
+      where: { scanId: result.scanId },
+    });
+    expect(modules).toHaveLength(4);
+
+    const gov = modules.find((m) => m.module === "GOVERNANCE");
+    expect(gov!.status).toBe("QUEUED");
+    expect(gov!.errorMessage).toBeNull();
+
+    const oracle = modules.find((m) => m.module === "ORACLE");
+    expect(oracle!.status).toBe("SKIPPED");
+    expect(oracle!.errorMessage).toBe("module_not_implemented");
+
+    // SIGNER and FRONTEND were not in modulesEnabled → user-disabled.
+    for (const mod of ["SIGNER", "FRONTEND"]) {
+      const row = modules.find((m) => m.module === mod);
+      expect(row!.status).toBe("SKIPPED");
+      expect(row!.errorMessage).toBe("module_disabled_by_user");
+    }
+  });
 });

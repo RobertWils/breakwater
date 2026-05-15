@@ -60,4 +60,19 @@ export const ScanErrors = {
             : null,
       },
     ),
+
+  /**
+   * H.9 BLOCKER Layer B: thrown when every ModuleRun for a submission
+   * would be SKIPPED (no runnable module). Catches the case where
+   * `modulesEnabled` contains only unimplemented modules — the
+   * schema-level `.min(1)` only rejects empty arrays. 422 because the
+   * input parses correctly but cannot be processed.
+   */
+  noRunnableModules: (implementedModules: string[]) =>
+    new ScanSubmissionError(
+      "no_runnable_modules",
+      422,
+      `Scan has no runnable modules. At least one implemented module must be enabled. Currently implemented: ${implementedModules.join(", ")}.`,
+      { implementedModules },
+    ),
 };
