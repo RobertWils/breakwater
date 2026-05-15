@@ -122,3 +122,38 @@ Observations from the Plan 01 workflow that paid off and should be repeated on f
 - Follow-up work after a phase closes is labeled against the phase that spawned it (e.g., `"G.1 follow-up: FindingsList"`) so phase exit criteria stay traceable and the follow-up is visible separate from the original phase deliverable.
 - Performance artifacts: commit `.md` summaries, never raw Lighthouse JSON. Raw runs are large (~400 KB) and often capture broken states (e.g., Chrome interstitial errors). Enforced via `.gitignore: docs/performance/*.json`.
 - Phase F.4 / F.4.x container introduced post-plan (Plan 02). Original implementation plan defined three Phase F tasks (F.1/F.2/F.3 — orchestrator/scoring/persist). During execution the boundaries re-balanced: orchestrator → F.1, standalone scoring helper → F.2, executeScan composite integration → F.3, polish/close work (executionMs clamp, DB-backed smoke test, status marker) → F.4.x. F.4 is therefore a user-introduced container with no plan blueprint; future audits should not flag this as scope creep. If repeated on future plans, document the container introduction explicitly in the status marker commit so the relationship to the frozen plan stays grep-able.
+
+### Phase H procedural observations (Plan 03+ planning value)
+
+Manual preview smoke testing rendered real value — 5 bugs caught that unit tests could not surface:
+
+1. Cloud infrastructure config (RPC providers, env var scoping).
+2. Multi-component integration gaps (`modulesEnabled` vs handler registry).
+3. UI exposure of internal audit fields.
+4. Input validation gaps (EOA / non-contract address handling).
+5. Vercel env-var environment scope mismatch (Production-only vars missing from Preview).
+
+Future plans should budget **30–50% of phase time** for manual preview smoke when shipping infrastructure-touching changes. Unit tests + DB-backed integration tests + Codex review do not substitute for real cloud deployment validation. The integration-test suite proved each component works in isolation; the preview smoke proved the real-world composition does too — and surfaced 5 inter-component bugs in one session.
+
+## Security advisories
+
+### Security advisories observed during Phase H
+
+**CVE-2026-44578: Next.js WebSocket SSRF (CVSS 8.6)**
+
+- Status: affects self-hosted Next.js, **NOT** Vercel-hosted.
+- Breakwater on Vercel = not currently vulnerable.
+- Action: planned Next.js upgrade to 15.5.16+ or 16.2.5+ in Plan 03+ prep for defense-in-depth + self-hosting optionality.
+
+**Related CVEs in same batch (May 2026):**
+
+- CVE-2026-44575: App Router `.rsc` / segment-prefetch middleware bypass.
+- CVE-2026-44574: Query-parameter middleware bypass.
+- CVE-2026-44573: Pages Router i18n SSR JSON leak.
+
+Plan 02 doesn't use middleware for auth (NextAuth handles in routes), so middleware-bypass CVEs aren't currently exploitable. **Verify before adding middleware for route protection in Plan 03+.**
+
+**CVE-2026-42047: Inngest env-var exfiltration**
+
+- Patched in Inngest 3.27.5 → 3.54.2 during Phase A.
+- Currently on 3.54.2+ — not vulnerable.
