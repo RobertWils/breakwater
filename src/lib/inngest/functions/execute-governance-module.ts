@@ -209,6 +209,23 @@ export interface PersistResult {
  * transaction. The Finding rows are linked to the existing ModuleRun
  * row for this scan + module (looked up inside the same tx so a
  * concurrent retry can't observe a stale id).
+ *
+ * I.1 FIX 1 (BLOCKER, spec §4.6 idempotency contract):
+ * delete-then-insert for findings. Without the delete step,
+ * `finding.createMany` is NOT idempotent — an Inngest step replay
+ * after a committed transaction but before the durable checkpoint
+ * would double-insert. The snapshot upsert via `persistGovernanceSnapshot`
+ * is already idempotent (Prisma upsert keyed on scanId). The
+ * deleteMany scope (scanId + module=GOVERNANCE) is safe because the
+ * ModuleRun unique constraint (`@@unique([scanId, module])` on
+ * schema L249) guarantees at most one GOVERNANCE ModuleRun per scan.
+ *
+ * I.1 FIX 2: persist ModuleRun.findingsCount in the same transaction.
+ * The field is in the schema + ModuleRunResponse + event payload but
+ * was never written. Doing it here (where findings.length is known
+ * and we already hold the moduleRun.id) keeps the writes atomic
+ * with the Finding rows themselves — a replay that re-runs this tx
+ * lands a consistent findingsCount that matches the new Finding rows.
  */
 export async function persistSnapshotAndFindings(
   tx: Prisma.TransactionClient,
@@ -230,6 +247,13 @@ export async function persistSnapshotAndFindings(
       `[execute-governance-module] ModuleRun not found for scan ${scanId} during finding persistence`,
     );
   }
+
+  // I.1 FIX 1: idempotent delete-then-insert. The delete fires
+  // unconditionally — even when `findings.length === 0` — so a replay
+  // that observes a prior partial commit's findings is cleared first.
+  await tx.finding.deleteMany({
+    where: { scanId, module: "GOVERNANCE" },
+  });
 
   if (findings.length > 0) {
     await tx.finding.createMany({
@@ -253,6 +277,14 @@ export async function persistSnapshotAndFindings(
       })),
     });
   }
+
+  // I.1 FIX 2: write findingsCount in the same tx as the Finding
+  // rows. Atomic with delete-then-insert above so a replayed tx
+  // ends with consistent (findingsCount, actual rows) state.
+  await tx.moduleRun.update({
+    where: { id: moduleRun.id },
+    data: { findingsCount: findings.length },
+  });
 
   return { snapshot: persistedSnapshot, findingCount: findings.length };
 }

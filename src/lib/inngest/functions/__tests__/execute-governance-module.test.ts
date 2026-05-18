@@ -271,6 +271,34 @@ describe("persistSnapshotAndFindings", () => {
     } as never);
   });
 
+  type AnyMockFn = ReturnType<typeof vi.fn<(args: unknown) => Promise<unknown>>>;
+
+  function buildTx(opts?: {
+    findingDeleteMany?: AnyMockFn;
+    findingCreateMany?: AnyMockFn;
+    moduleRunUpdate?: AnyMockFn;
+    findFirstResult?: { id: string } | null;
+  }) {
+    return {
+      moduleRun: {
+        findFirst: vi.fn(async () =>
+          opts?.findFirstResult === null ? null : { id: "mr-1" },
+        ),
+        update:
+          opts?.moduleRunUpdate ??
+          vi.fn<(args: unknown) => Promise<unknown>>(async () => ({})),
+      },
+      finding: {
+        deleteMany:
+          opts?.findingDeleteMany ??
+          vi.fn<(args: unknown) => Promise<unknown>>(async () => ({ count: 0 })),
+        createMany:
+          opts?.findingCreateMany ??
+          vi.fn<(args: unknown) => Promise<unknown>>(async () => ({ count: 0 })),
+      },
+    } as never;
+  }
+
   it("persists snapshot, then findings, against the supplied tx client", async () => {
     const order: string[] = [];
     persistGovernanceSnapshotMock.mockImplementation(async () => {
@@ -278,15 +306,25 @@ describe("persistSnapshotAndFindings", () => {
       return { id: "snap-1" } as never;
     });
 
-    const createMany = vi.fn(async () => {
-      order.push("findings");
+    const deleteMany = vi.fn<(args: unknown) => Promise<unknown>>(async () => {
+      order.push("delete");
+      return { count: 0 };
+    });
+    const createMany = vi.fn<(args: unknown) => Promise<unknown>>(async () => {
+      order.push("insert");
       return { count: 1 };
     });
-    const findFirst = vi.fn(async () => ({ id: "mr-1" }));
-    const tx = {
-      moduleRun: { findFirst },
-      finding: { createMany },
-    } as never;
+    const moduleRunUpdate = vi.fn<(args: unknown) => Promise<unknown>>(
+      async () => {
+        order.push("findingsCount");
+        return {};
+      },
+    );
+    const tx = buildTx({
+      findingDeleteMany: deleteMany,
+      findingCreateMany: createMany,
+      moduleRunUpdate,
+    });
 
     const finding: GovernanceFindingInput = {
       detectorId: "GOV-001",
@@ -310,22 +348,33 @@ describe("persistSnapshotAndFindings", () => {
       [finding],
     );
 
-    expect(order).toEqual(["snapshot", "findings"]);
+    // I.1 FIX 1: snapshot → delete-then-insert → findingsCount.
+    expect(order).toEqual(["snapshot", "delete", "insert", "findingsCount"]);
     expect(result.findingCount).toBe(1);
-    expect(findFirst).toHaveBeenCalledOnce();
+    expect(deleteMany).toHaveBeenCalledOnce();
     expect(createMany).toHaveBeenCalledOnce();
+    expect(moduleRunUpdate).toHaveBeenCalledOnce();
+
     // persist-snapshot helper called with the tx client (not top-level prisma).
     const persistArgs = persistGovernanceSnapshotMock.mock.calls[0];
     expect(persistArgs?.[1]).toBe(tx);
   });
 
-  it("skips finding.createMany when findings is empty", async () => {
-    const createMany = vi.fn();
-    const findFirst = vi.fn(async () => ({ id: "mr-1" }));
-    const tx = {
-      moduleRun: { findFirst },
-      finding: { createMany },
-    } as never;
+  it("skips finding.createMany when findings is empty (but still runs deleteMany + findingsCount)", async () => {
+    // I.1 FIX 1: deleteMany still fires for empty findings so a replay
+    // that observes prior rows from a partial commit gets cleared.
+    const deleteMany = vi.fn<(args: unknown) => Promise<unknown>>(
+      async () => ({ count: 0 }),
+    );
+    const createMany = vi.fn<(args: unknown) => Promise<unknown>>();
+    const moduleRunUpdate = vi.fn<(args: unknown) => Promise<unknown>>(
+      async () => ({}),
+    );
+    const tx = buildTx({
+      findingDeleteMany: deleteMany,
+      findingCreateMany: createMany,
+      moduleRunUpdate,
+    });
 
     const result = await persistSnapshotAndFindings(
       tx,
@@ -335,19 +384,137 @@ describe("persistSnapshotAndFindings", () => {
     );
 
     expect(result.findingCount).toBe(0);
+    expect(deleteMany).toHaveBeenCalledOnce();
     expect(createMany).not.toHaveBeenCalled();
+    // I.1 FIX 2: findingsCount still written (= 0) so a replay lands a
+    // consistent (findingsCount=0, zero Finding rows) terminal state.
+    expect(moduleRunUpdate).toHaveBeenCalledOnce();
+    expect(
+      (moduleRunUpdate.mock.calls[0]![0] as { data: { findingsCount: number } })
+        .data.findingsCount,
+    ).toBe(0);
   });
 
   it("throws when the ModuleRun row is missing", async () => {
-    const findFirst = vi.fn(async () => null);
-    const tx = {
-      moduleRun: { findFirst },
-      finding: { createMany: vi.fn() },
-    } as never;
+    const tx = buildTx({ findFirstResult: null });
 
     await expect(
       persistSnapshotAndFindings(tx, "scan-1", baseSnapshot(), []),
     ).rejects.toThrow(/ModuleRun not found/);
+  });
+
+  it("I.1 FIX 1 idempotency: calling twice produces N findings, not 2N", async () => {
+    // Simulate Inngest replay: two invocations of persistSnapshotAndFindings
+    // with the same input must terminate at exactly `findings.length` rows.
+    // With the delete-then-insert pattern, the second call's deleteMany
+    // clears the first call's inserts before re-creating; without it, the
+    // second createMany doubles the row count.
+    const insertedRows: number[] = [];
+    let currentRowCount = 0;
+
+    const deleteMany = vi.fn<(args: unknown) => Promise<unknown>>(
+      async () => {
+        const cleared = currentRowCount;
+        currentRowCount = 0;
+        return { count: cleared };
+      },
+    );
+    const createMany = vi.fn<(args: unknown) => Promise<unknown>>(
+      async (args) => {
+        const data = (args as { data: unknown[] }).data;
+        currentRowCount += data.length;
+        insertedRows.push(currentRowCount);
+        return { count: data.length };
+      },
+    );
+    const tx = buildTx({
+      findingDeleteMany: deleteMany,
+      findingCreateMany: createMany,
+    });
+
+    const finding: GovernanceFindingInput = {
+      detectorId: "GOV-001",
+      detectorVersion: 1,
+      severity: "CRITICAL",
+      publicTitle: "x",
+      title: "y",
+      description: "z",
+      evidence: {},
+      affectedComponent: "",
+      references: [],
+      remediationHint: "",
+      remediationDetailed: "",
+      publicRank: 1,
+    };
+
+    await persistSnapshotAndFindings(tx, "scan-1", baseSnapshot(), [
+      finding,
+      finding,
+      finding,
+    ]);
+    await persistSnapshotAndFindings(tx, "scan-1", baseSnapshot(), [
+      finding,
+      finding,
+      finding,
+    ]);
+
+    // After two replays, row count is exactly 3 — the second run's
+    // deleteMany cleared the first run's 3 rows before re-inserting.
+    expect(currentRowCount).toBe(3);
+    expect(deleteMany).toHaveBeenCalledTimes(2);
+    expect(createMany).toHaveBeenCalledTimes(2);
+    expect(insertedRows).toEqual([3, 3]); // row-count after each insert
+  });
+
+  it("I.1 FIX 2 writes findings.length into ModuleRun.findingsCount", async () => {
+    const moduleRunUpdate = vi.fn<(args: unknown) => Promise<unknown>>(
+      async () => ({}),
+    );
+    const tx = buildTx({ moduleRunUpdate });
+
+    const finding: GovernanceFindingInput = {
+      detectorId: "GOV-001",
+      detectorVersion: 1,
+      severity: "CRITICAL",
+      publicTitle: "x",
+      title: "y",
+      description: "z",
+      evidence: {},
+      affectedComponent: "",
+      references: [],
+      remediationHint: "",
+      remediationDetailed: "",
+      publicRank: 1,
+    };
+
+    await persistSnapshotAndFindings(tx, "scan-1", baseSnapshot(), [
+      finding,
+      finding,
+      finding,
+    ]);
+
+    expect(moduleRunUpdate).toHaveBeenCalledOnce();
+    const args = moduleRunUpdate.mock.calls[0]![0] as {
+      where: { id: string };
+      data: { findingsCount: number };
+    };
+    expect(args.where.id).toBe("mr-1");
+    expect(args.data.findingsCount).toBe(3);
+  });
+
+  it("I.1 FIX 1 scopes the delete to scanId + module=GOVERNANCE (no cross-scan blast)", async () => {
+    const deleteMany = vi.fn<(args: unknown) => Promise<unknown>>(
+      async () => ({ count: 0 }),
+    );
+    const tx = buildTx({ findingDeleteMany: deleteMany });
+
+    await persistSnapshotAndFindings(tx, "scan-42", baseSnapshot(), []);
+
+    const args = deleteMany.mock.calls[0]![0] as {
+      where: { scanId: string; module: string };
+    };
+    expect(args.where.scanId).toBe("scan-42");
+    expect(args.where.module).toBe("GOVERNANCE");
   });
 });
 

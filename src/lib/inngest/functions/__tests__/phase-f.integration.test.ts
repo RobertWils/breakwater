@@ -389,6 +389,64 @@ describe.skipIf(!hasDb)(
       expect(persistedFindings[0]!.moduleRunId).toBe(moduleRun.id);
       expect(persistedFindings[1]!.detectorId).toBe("GOV-003");
       expect(persistedFindings[1]!.severity).toBe("HIGH");
+
+      // I.1 FIX 2: ModuleRun.findingsCount is now populated by the
+      // persist transaction (was always null pre-I.1).
+      const persistedModule = await prisma.moduleRun.findUniqueOrThrow({
+        where: { id: moduleRun.id },
+      });
+      expect(persistedModule.findingsCount).toBe(2);
+    });
+
+    it("persistSnapshotAndFindings is idempotent — re-running yields N findings, not 2N (I.1 FIX 1)", async () => {
+      // The Inngest step.run replay contract requires this. Without
+      // delete-then-insert in persistSnapshotAndFindings, a retry
+      // after a partial commit doubles the Finding row count.
+      const { scan, moduleRun } = await seedProtocolAndScan();
+      await markRunning(prisma, scan.id);
+      await markModuleRunning(prisma, scan.id, "evt-smoke-idem");
+
+      const snapshot = baseSnapshot({ blockNumber: BigInt(20_000_002) });
+      const findings: GovernanceFindingInput[] = [
+        {
+          detectorId: "GOV-001",
+          detectorVersion: 1,
+          severity: "CRITICAL",
+          publicTitle: "Idem fixture",
+          title: "Idem fixture",
+          description: "Replay-test fixture",
+          evidence: {},
+          affectedComponent: "",
+          references: [],
+          remediationHint: "",
+          remediationDetailed: "",
+          publicRank: 1,
+        },
+      ];
+
+      // First call: 1 row.
+      await prisma.$transaction((tx) =>
+        persistSnapshotAndFindings(tx, scan.id, snapshot, findings),
+      );
+      // Second call (simulates Inngest replay): must still be 1 row.
+      await prisma.$transaction((tx) =>
+        persistSnapshotAndFindings(tx, scan.id, snapshot, findings),
+      );
+      // Third call for safety: still 1 row.
+      await prisma.$transaction((tx) =>
+        persistSnapshotAndFindings(tx, scan.id, snapshot, findings),
+      );
+
+      const rows = await prisma.finding.findMany({
+        where: { scanId: scan.id },
+      });
+      expect(rows).toHaveLength(1);
+
+      // findingsCount stays consistent with the actual row count.
+      const persistedModule = await prisma.moduleRun.findUniqueOrThrow({
+        where: { id: moduleRun.id },
+      });
+      expect(persistedModule.findingsCount).toBe(1);
     });
   },
 );
