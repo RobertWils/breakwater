@@ -15,6 +15,7 @@ import { NextRequest } from "next/server";
 
 vi.mock("@/lib/config", () => ({
   assertProductionHashSalts: vi.fn(),
+  assertProductionExternalApis: vi.fn(),
 }));
 
 // Mock next-auth so getServerSession is controllable.

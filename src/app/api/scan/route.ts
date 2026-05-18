@@ -9,7 +9,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { assertProductionHashSalts } from "@/lib/config";
+import {
+  assertProductionExternalApis,
+  assertProductionHashSalts,
+} from "@/lib/config";
 import { hashIp } from "@/lib/hash";
 import { ScanSubmissionSchema } from "@/lib/schemas/scan";
 import {
@@ -19,10 +22,15 @@ import {
 import { ScanSubmissionError } from "@/lib/scan-submission/errors";
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
-  // Enforce production salt requirements at request-time. Called inside the
-  // handler (not at module load) so Next.js page-data collection during
-  // `next build` does not trigger the assertion before env vars are read.
+  // Enforce production salt + external-API requirements at request-time.
+  // Called inside the handler (not at module load) so Next.js page-data
+  // collection during `next build` does not trigger the assertions before
+  // env vars are read. I.1 FIX 5: assertProductionExternalApis() previously
+  // existed + tested but had no runtime caller, so the Safe API "empty
+  // string in production" contract (config.ts L74-94) was dead code. Now
+  // invoked alongside the existing salt assertion at every request entry.
   assertProductionHashSalts();
+  assertProductionExternalApis();
 
   // ── Extract request metadata before body parse ──
   // These must be outside the try block so the catch can use them for
