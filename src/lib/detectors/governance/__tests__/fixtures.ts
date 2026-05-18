@@ -201,21 +201,85 @@ export const cleanUniswapV3Fixture: GovernanceSnapshotData = withProxy(
   ),
 );
 
-/**
- * Drift-like: governor present but no timelock at all. Triggers
- * GOV-001 Rule 1 (governance executes without timelock delay).
- */
-export const driftLikeFixture: GovernanceSnapshotData = withGovernor(
-  baseSnapshot(),
-);
+// I.1 FIX 4: incident-anchor fixtures rebuilt as genuine multi-detector
+// snapshots so each fires exactly the spec §14 detector set listed in
+// `Drift-like fixture triggers GOV-001, GOV-002, GOV-003 (grade F)` etc.
+// Previously each fixture was a single-surface stub (drift = governor
+// only; beanstalk = thin multisig only; audius = CUSTOM proxy with null
+// ABI) and only triggered ONE detector apiece — that broke the
+// multi-detector regression contract spec §10.3 ("Breakwater would
+// detect Drift") relies on.
 
 /**
- * Beanstalk-like: thin multisig (1-of-2) is the dominant governance
- * surface. Triggers GOV-003 (multisig concentration); other detectors
- * stay quiet.
+ * ABI fragment containing a bypass-pattern function. Matches GOV-002's
+ * `/^emergency[A-Z]/` regex. Re-used across the drift fixture (as
+ * protocolAbi for non-proxy contracts) and the beanstalk fixture below
+ * with a different bypass-pattern function name for variety.
  */
-export const beanstalkLikeFixture: GovernanceSnapshotData = withMultisig(
-  baseSnapshot(),
+const DRIFT_BYPASS_ABI = JSON.stringify([
+  {
+    type: "function",
+    name: "emergencyWithdraw",
+    inputs: [],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+]);
+
+const BEANSTALK_BYPASS_ABI = JSON.stringify([
+  {
+    type: "function",
+    name: "forceUpgrade",
+    inputs: [],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+]);
+
+/**
+ * ABI fragment without any pause-pattern function. Pairs with the
+ * audius fixture's `proxyType: "CUSTOM"` to fire GOV-006 (upgradeable
+ * contract lacks emergency pause).
+ */
+const AUDIUS_NO_PAUSE_ABI = JSON.stringify([
+  {
+    type: "function",
+    name: "transfer",
+    inputs: [],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "balanceOf",
+    inputs: [],
+    outputs: [],
+    stateMutability: "view",
+  },
+]);
+
+/**
+ * Drift-like (spec §14 — fires GOV-001, GOV-002, GOV-003; grade F).
+ *
+ * Composition:
+ *   - GOV-001 Rule 1: hasGovernor + !hasTimelock — governor exists,
+ *     no timelock delay.
+ *   - GOV-002:        protocolAbi exposes `emergencyWithdraw` (matches
+ *     the `/^emergency[A-Z]/` bypass-pattern regex).
+ *   - GOV-003 Rules 1+2: thin 1-of-2 multisig fires both the
+ *     "threshold below 3" and "owners below 4" rules.
+ *
+ * Other detectors stay quiet by design:
+ *   - GOV-004: votingSnapshotType is BLOCK_BASED (inherited from
+ *     withGovernor — the safe baseline).
+ *   - GOV-005 / GOV-006: proxyType stays NONE.
+ *
+ * Score math (per spec §5.3): 1 CRITICAL (GOV-001) + 1 CRITICAL
+ * (GOV-002) + 2 HIGH (GOV-003) = 35 + 35 + 20 + 20 = 110 penalty →
+ * clamped score 0 → grade F naturally.
+ */
+export const driftLikeFixture: GovernanceSnapshotData = withMultisig(
+  withGovernor(baseSnapshot({ protocolAbi: DRIFT_BYPASS_ABI })),
   {
     multisigThreshold: 1,
     multisigOwnerCount: 2,
@@ -227,15 +291,44 @@ export const beanstalkLikeFixture: GovernanceSnapshotData = withMultisig(
 );
 
 /**
- * Audius-like: non-standard proxy pattern. proxyType = CUSTOM
- * (downgraded from EIP_1822_UUPS in D.5 I2). Triggers GOV-005 with
- * "couldn't classify" semantics; other detectors stay quiet.
+ * Beanstalk-like (spec §14 — fires GOV-001, GOV-002, GOV-004).
+ *
+ * Composition:
+ *   - GOV-001 Rule 1: hasGovernor + !hasTimelock.
+ *   - GOV-002:        protocolAbi exposes `forceUpgrade` (matches
+ *     the `/^force[A-Z]/` bypass-pattern regex).
+ *   - GOV-004:        hasGovernor + votingSnapshotType=CURRENT_BALANCE
+ *     (flash-loan-vulnerable voting weight source) — the canonical
+ *     governance pattern the Beanstalk exploit weaponised.
+ *
+ * Other detectors stay quiet: no multisig (GOV-003); proxyType NONE
+ * (GOV-005 / GOV-006).
+ */
+export const beanstalkLikeFixture: GovernanceSnapshotData = withGovernor(
+  baseSnapshot({ protocolAbi: BEANSTALK_BYPASS_ABI }),
+  { votingSnapshotType: "CURRENT_BALANCE" },
+);
+
+/**
+ * Audius-like (spec §14 — fires GOV-005, GOV-006).
+ *
+ * Composition:
+ *   - GOV-005 Rule 2: proxyType=CUSTOM (non-standard proxy pattern,
+ *     MEDIUM) — Audius's non-standard upgrade pattern is the anchor.
+ *     proxyAdminAddress stays null so Rule 1 (EOA admin CRITICAL)
+ *     does NOT also fire — keeps the fixture scoped to the spec set.
+ *   - GOV-006:        proxyType != NONE + implementationAbi present
+ *     + functions present + no pause-pattern function in the ABI →
+ *     MEDIUM "upgradeable contract lacks emergency pause".
+ *
+ * Other detectors stay quiet: no governor (GOV-001 / GOV-004); no
+ * bypass-pattern functions in the ABI (GOV-002); no multisig (GOV-003).
  */
 export const audiusLikeFixture: GovernanceSnapshotData = baseSnapshot({
   proxyType: "CUSTOM",
   proxyAdminAddress: null,
   proxyImplementation: "0x7777777777777777777777777777777777777777",
-  proxyVerified: false,
+  proxyVerified: true,
   proxyAdminIsContract: null,
-  implementationAbi: null,
+  implementationAbi: AUDIUS_NO_PAUSE_ABI,
 });

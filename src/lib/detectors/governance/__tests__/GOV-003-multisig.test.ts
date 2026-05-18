@@ -7,6 +7,7 @@ import {
   baseSnapshot,
   beanstalkLikeFixture,
   cleanUniswapV3Fixture,
+  driftLikeFixture,
   withMultisig,
 } from "./fixtures";
 
@@ -189,13 +190,25 @@ describe("GOV-003 detectGov003 (Plan 02 E.3)", () => {
       expect(detectGov003(cleanUniswapV3Fixture)).toHaveLength(0);
     });
 
-    it("fires Rules 1 + 2 for beanstalkLikeFixture (1-of-2)", () => {
-      const findings = detectGov003(beanstalkLikeFixture);
+    it("fires Rules 1 + 2 for driftLikeFixture (1-of-2 multisig — I.1 FIX 4)", () => {
+      // Spec §14 moved the 1-of-2 multisig anchor from beanstalkLikeFixture
+      // (which is now the governor + ABI-bypass + CURRENT_BALANCE shape
+      // for GOV-001/002/004 coverage) into driftLikeFixture (which adds
+      // the multisig as a third surface alongside governor + ABI to
+      // fire GOV-001/002/003 per spec).
+      const findings = detectGov003(driftLikeFixture);
 
       expect(findings).toHaveLength(2);
       expect(findings.every((f) => f.severity === "HIGH")).toBe(true);
       const r3 = findings.find((f) => f.title.includes("above 50%"));
       expect(r3).toBeUndefined();
+    });
+
+    it("stays quiet on beanstalkLikeFixture (no multisig surface — I.1 FIX 4)", () => {
+      // beanstalkLikeFixture is now governor + ABI + CURRENT_BALANCE
+      // voting only — no multisig at all. GOV-003 needs hasMultisig=true
+      // to fire any rule.
+      expect(detectGov003(beanstalkLikeFixture)).toHaveLength(0);
     });
 
     it("returns empty findings for healthy 3-of-7 multisig", () => {

@@ -250,11 +250,32 @@ describe("GOV-006 detectGov006 (Plan 02 E.6)", () => {
       expect(detectGov006(cleanUniswapV3Fixture)).toHaveLength(0);
     });
 
-    it("audiusLikeFixture: implementationAbi is null → quiet skip", () => {
-      // audiusLikeFixture explicitly carries implementationAbi: null
-      // (Etherscan didn't have an ABI for the non-standard impl).
-      // GOV-006 graceful-skips rather than firing on absent data.
-      expect(detectGov006(audiusLikeFixture)).toHaveLength(0);
+    it("audiusLikeFixture fires MEDIUM — CUSTOM proxy + ABI without pause (I.1 FIX 4)", () => {
+      // Spec §14: audiusLikeFixture triggers GOV-005 + GOV-006. The
+      // I.1 FIX 4 rebuild populates implementationAbi with an ERC20-
+      // style surface (transfer/balanceOf) but no pause-pattern
+      // function, so GOV-006 fires MEDIUM "upgradeable contract lacks
+      // emergency pause" — previously the fixture stubbed the ABI
+      // to null and silently skipped.
+      const findings = detectGov006(audiusLikeFixture);
+      expect(findings).toHaveLength(1);
+      expect(findings[0]).toMatchObject({
+        detectorId: "GOV-006",
+        severity: "MEDIUM",
+      });
+    });
+
+    it("graceful-skips when implementationAbi is null (replaces audius-null case)", () => {
+      // The original audiusLikeFixture-as-null-ABI test moved out: the
+      // graceful-skip behavior is still important to lock in, just
+      // not via the audius fixture (which now carries a real ABI).
+      const snapshot = baseSnapshot({
+        proxyType: "CUSTOM",
+        proxyImplementation: "0xdead",
+        proxyVerified: false,
+        implementationAbi: null,
+      });
+      expect(detectGov006(snapshot)).toHaveLength(0);
     });
   });
 
