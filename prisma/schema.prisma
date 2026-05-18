@@ -246,6 +246,15 @@ model ModuleRun {
   inngestEventId String?
   inngestRunId   String?
 
+  // Count of detectors that threw during the module run (Plan 02 I.1 FIX 3).
+  // Persists the value that runDetectors tracks in-memory as
+  // `errorDetectorIds.length`. Drives `Scan.isPartialGrade` at scan
+  // finalization: a COMPLETE module with errorDetectorCount > 0 means
+  // "a detector that should have run crashed", which degrades the
+  // composite-grade confidence. Defaults to 0 so existing rows + FAILED
+  // ModuleRuns (where the persist tx doesn't run) read cleanly.
+  errorDetectorCount Int @default(0)
+
   @@unique([scanId, module])
 }
 

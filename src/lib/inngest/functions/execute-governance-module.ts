@@ -232,6 +232,14 @@ export async function persistSnapshotAndFindings(
   scanId: string,
   snapshot: GovernanceSnapshotData,
   findings: GovernanceFindingInput[],
+  /**
+   * I.1 FIX 3: number of detectors that threw during this run. Persisted
+   * onto ModuleRun in the same transaction as findings + findingsCount
+   * so all three result-metadata fields land atomically. Drives
+   * `Scan.isPartialGrade` at scan finalization. Default 0 keeps the
+   * signature backward-compatible for callers that didn't run detectors.
+   */
+  errorDetectorCount: number = 0,
 ): Promise<PersistResult> {
   const persistedSnapshot = await persistGovernanceSnapshot(
     { scanId, snapshot },
@@ -278,12 +286,16 @@ export async function persistSnapshotAndFindings(
     });
   }
 
-  // I.1 FIX 2: write findingsCount in the same tx as the Finding
-  // rows. Atomic with delete-then-insert above so a replayed tx
-  // ends with consistent (findingsCount, actual rows) state.
+  // I.1 FIX 2 + FIX 3: write findingsCount AND errorDetectorCount in
+  // the same tx as the Finding rows. Atomic with delete-then-insert
+  // above so a replayed tx ends with consistent (findingsCount,
+  // errorDetectorCount, actual rows) state.
   await tx.moduleRun.update({
     where: { id: moduleRun.id },
-    data: { findingsCount: findings.length },
+    data: {
+      findingsCount: findings.length,
+      errorDetectorCount,
+    },
   });
 
   return { snapshot: persistedSnapshot, findingCount: findings.length };
@@ -459,7 +471,13 @@ export const executeGovernanceModule = inngest.createFunction(
           });
 
         await prisma.$transaction((tx) =>
-          persistSnapshotAndFindings(tx, scanId, snapshot, findings),
+          persistSnapshotAndFindings(
+            tx,
+            scanId,
+            snapshot,
+            findings,
+            errorDetectorIds.length,
+          ),
         );
 
         const compositeGrade = calculateCompositeGrade(findings);

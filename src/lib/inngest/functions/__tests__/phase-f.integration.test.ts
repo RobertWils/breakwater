@@ -448,5 +448,64 @@ describe.skipIf(!hasDb)(
       });
       expect(persistedModule.findingsCount).toBe(1);
     });
+
+    it("I.1 FIX 3: errorDetectorCount persisted → Scan.isPartialGrade = true", async () => {
+      // Simulates the "detector threw" path end-to-end against real DB:
+      // 1. Seed Scan + GOVERNANCE ModuleRun
+      // 2. Call persistSnapshotAndFindings with errorDetectorCount=2
+      //    (the runDetectors signal that 2 detectors threw)
+      // 3. Mark the module COMPLETE
+      // 4. Run scan-level markComplete → reads ModuleRun.errorDetectorCount
+      //    and flips Scan.isPartialGrade
+      const { scan, moduleRun } = await seedProtocolAndScan();
+      await markRunning(prisma, scan.id);
+      await markModuleRunning(prisma, scan.id, "evt-i1-fix3");
+
+      const snapshot = baseSnapshot({ blockNumber: BigInt(20_000_003) });
+      const findings: GovernanceFindingInput[] = [
+        {
+          detectorId: "GOV-001",
+          detectorVersion: 1,
+          severity: "MEDIUM",
+          publicTitle: "I.1 FIX 3 fixture finding",
+          title: "I.1 FIX 3 fixture finding",
+          description: "Used to verify isPartialGrade end-to-end.",
+          evidence: {},
+          affectedComponent: "",
+          references: [],
+          remediationHint: "",
+          remediationDetailed: "",
+          publicRank: 1,
+        },
+      ];
+
+      await prisma.$transaction((tx) =>
+        persistSnapshotAndFindings(tx, scan.id, snapshot, findings, 2),
+      );
+
+      // ModuleRun.errorDetectorCount is now 2 on disk.
+      const persistedModule = await prisma.moduleRun.findUniqueOrThrow({
+        where: { id: moduleRun.id },
+      });
+      expect(persistedModule.errorDetectorCount).toBe(2);
+
+      // Flip module COMPLETE so scan-level markComplete sees a terminal
+      // module to read errorDetectorCount from.
+      await markModuleComplete(prisma, scan.id, "COMPLETE", null, "C", 70);
+
+      const scanResult = await markComplete(prisma, scan.id);
+      if (scanResult.finalStatus === null) {
+        throw new Error(
+          `expected finalised result, got ${JSON.stringify(scanResult)}`,
+        );
+      }
+      expect(scanResult.finalStatus).toBe("COMPLETE");
+      expect(scanResult.isPartialGrade).toBe(true);
+
+      const persistedScan = await prisma.scan.findUniqueOrThrow({
+        where: { id: scan.id },
+      });
+      expect(persistedScan.isPartialGrade).toBe(true);
+    });
   },
 );

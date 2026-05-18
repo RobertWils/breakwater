@@ -67,6 +67,8 @@ export type MarkCompleteResult =
       findingsCount: number;
       /** Wall-clock ms from executionStartedAt → now. 0 if executionStartedAt missing. */
       executionMs: number;
+      /** True when any COMPLETE module had detector errors (I.1 FIX 3). */
+      isPartialGrade: boolean;
     }
   | { finalStatus: null; deferred: true; alreadyFinalized: false }
   | { finalStatus: null; deferred: false; alreadyFinalized: true };
@@ -132,6 +134,19 @@ export async function markComplete(
     compositeGrade = result.grade;
   }
 
+  // I.1 FIX 3: isPartialGrade fires when a COMPLETE module had one
+  // or more detectors throw. A degraded coverage signal — distinct
+  // from a clean COMPLETE (all detectors ran) and from a FAILED
+  // scan (no useful grade at all). Product decision: NOT triggered
+  // by `module_not_implemented` SKIPPED rows — those are Plan 02
+  // scope (single-module by design), not coverage degradation, and
+  // are surfaced separately via the per-module SKIPPED card.
+  // FAILED modules also don't count: those represent module-level
+  // failure, not partial coverage.
+  const isPartialGrade = scan.modules.some(
+    (m) => m.status === "COMPLETE" && (m.errorDetectorCount ?? 0) > 0,
+  );
+
   const completedAt = new Date();
   const updated = await client.scan.updateMany({
     where: { id: scanId, status: "RUNNING" },
@@ -140,6 +155,7 @@ export async function markComplete(
       completedAt,
       compositeScore,
       compositeGrade,
+      isPartialGrade,
     },
   });
   if (updated.count === 0) {
@@ -161,6 +177,7 @@ export async function markComplete(
     compositeGrade,
     findingsCount,
     executionMs,
+    isPartialGrade,
   };
 }
 

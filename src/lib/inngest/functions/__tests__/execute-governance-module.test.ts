@@ -516,6 +516,45 @@ describe("persistSnapshotAndFindings", () => {
     expect(args.where.scanId).toBe("scan-42");
     expect(args.where.module).toBe("GOVERNANCE");
   });
+
+  it("I.1 FIX 3 writes errorDetectorCount alongside findingsCount", async () => {
+    const moduleRunUpdate = vi.fn<(args: unknown) => Promise<unknown>>(
+      async () => ({}),
+    );
+    const tx = buildTx({ moduleRunUpdate });
+
+    await persistSnapshotAndFindings(
+      tx,
+      "scan-1",
+      baseSnapshot(),
+      [],
+      2, // 2 detectors threw
+    );
+
+    expect(moduleRunUpdate).toHaveBeenCalledOnce();
+    const args = moduleRunUpdate.mock.calls[0]![0] as {
+      data: { findingsCount: number; errorDetectorCount: number };
+    };
+    expect(args.data.findingsCount).toBe(0);
+    expect(args.data.errorDetectorCount).toBe(2);
+  });
+
+  it("I.1 FIX 3 defaults errorDetectorCount to 0 when omitted (signature backward-compat)", async () => {
+    // Callers that don't pass the 5th param land 0 — preserves the
+    // pre-FIX-3 signature contract; the only Plan 02 caller (the
+    // Inngest function body) was updated to thread the real count.
+    const moduleRunUpdate = vi.fn<(args: unknown) => Promise<unknown>>(
+      async () => ({}),
+    );
+    const tx = buildTx({ moduleRunUpdate });
+
+    await persistSnapshotAndFindings(tx, "scan-1", baseSnapshot(), []);
+
+    const args = moduleRunUpdate.mock.calls[0]![0] as {
+      data: { errorDetectorCount: number };
+    };
+    expect(args.data.errorDetectorCount).toBe(0);
+  });
 });
 
 describe("markModuleComplete (compare-and-set on RUNNING)", () => {

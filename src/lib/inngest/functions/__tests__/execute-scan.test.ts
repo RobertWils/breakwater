@@ -70,7 +70,14 @@ describe("markRunning helper (C.4 B2 — compare-and-set on QUEUED)", () => {
 });
 
 describe("markComplete helper (C.4 B1 + I3 — finalStatus capture + race guards)", () => {
-  type Module = { status: "QUEUED" | "RUNNING" | "COMPLETE" | "FAILED" | "SKIPPED" };
+  // I.1 FIX 3: include errorDetectorCount so the isPartialGrade gate
+  // can be exercised by these existing race-guard tests + the new
+  // dedicated FIX 3 tests below. Default 0 keeps existing assertions
+  // (which expect isPartialGrade=false) passing.
+  type Module = {
+    status: "QUEUED" | "RUNNING" | "COMPLETE" | "FAILED" | "SKIPPED";
+    errorDetectorCount?: number;
+  };
   type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
 
   function makeClient(opts: {
@@ -87,7 +94,10 @@ describe("markComplete helper (C.4 B1 + I3 — finalStatus capture + race guards
             ? null
             : {
                 id: "scan-1",
-                modules: opts.modules,
+                modules: opts.modules.map((m) => ({
+                  errorDetectorCount: 0,
+                  ...m,
+                })),
                 executionStartedAt:
                   opts.executionStartedAt === undefined
                     ? new Date("2026-05-05T12:00:00.000Z")
@@ -221,7 +231,10 @@ describe("markComplete helper (C.4 B1 + I3 — finalStatus capture + race guards
 });
 
 describe("markComplete grade integration (F.3 — compositeScore + compositeGrade + executionMs)", () => {
-  type Module = { status: "QUEUED" | "RUNNING" | "COMPLETE" | "FAILED" | "SKIPPED" };
+  type Module = {
+    status: "QUEUED" | "RUNNING" | "COMPLETE" | "FAILED" | "SKIPPED";
+    errorDetectorCount?: number;
+  };
   type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
 
   type FinalizedResult = Extract<
@@ -250,7 +263,10 @@ describe("markComplete grade integration (F.3 — compositeScore + compositeGrad
       scan: {
         findUnique: vi.fn(async () => ({
           id: "scan-1",
-          modules: opts.modules,
+          modules: opts.modules.map((m) => ({
+            errorDetectorCount: 0,
+            ...m,
+          })),
           executionStartedAt:
             opts.executionStartedAt === undefined
               ? new Date(Date.now() - 1234)
@@ -436,6 +452,87 @@ describe("markComplete grade integration (F.3 — compositeScore + compositeGrad
       finalStatus: null,
       deferred: false,
       alreadyFinalized: true,
+    });
+  });
+
+  describe("isPartialGrade (I.1 FIX 3 — detector errors degrade composite confidence)", () => {
+    it("isPartialGrade=true when a COMPLETE module has errorDetectorCount > 0", async () => {
+      const client = makeClient({
+        modules: [{ status: "COMPLETE", errorDetectorCount: 2 }],
+        findings: [{ severity: "MEDIUM" }],
+      });
+      const result = expectFinalized(await markComplete(client, "scan-1"));
+      expect(result.finalStatus).toBe("COMPLETE");
+      expect(result.isPartialGrade).toBe(true);
+    });
+
+    it("isPartialGrade=false when every detector ran cleanly (errorDetectorCount=0)", async () => {
+      const client = makeClient({
+        modules: [{ status: "COMPLETE", errorDetectorCount: 0 }],
+        findings: [],
+      });
+      const result = expectFinalized(await markComplete(client, "scan-1"));
+      expect(result.isPartialGrade).toBe(false);
+    });
+
+    it("isPartialGrade=false when modules are only SKIPPED (not_implemented stays scope, not partial coverage)", async () => {
+      // Product decision: not_implemented SKIPPED modules don't trigger
+      // isPartialGrade. They're surfaced via the per-module SKIPPED
+      // card; partial-grade is reserved for genuine coverage
+      // degradation from detector throws.
+      const client = makeClient({
+        modules: [
+          { status: "COMPLETE", errorDetectorCount: 0 },
+          { status: "SKIPPED", errorDetectorCount: 0 },
+          { status: "SKIPPED", errorDetectorCount: 0 },
+        ],
+        findings: [{ severity: "LOW" }],
+      });
+      const result = expectFinalized(await markComplete(client, "scan-1"));
+      expect(result.isPartialGrade).toBe(false);
+    });
+
+    it("isPartialGrade=false when only FAILED modules have errors (FAILED != partial)", async () => {
+      // A FAILED module produced no useful grade contribution. The
+      // gate excludes FAILED so a fully-failed module doesn't mascarade
+      // as "partial" — finalStatus FAILED handles that case.
+      const client = makeClient({
+        modules: [{ status: "FAILED", errorDetectorCount: 5 }],
+      });
+      const result = expectFinalized(await markComplete(client, "scan-1"));
+      expect(result.finalStatus).toBe("FAILED");
+      expect(result.isPartialGrade).toBe(false);
+    });
+
+    it("isPartialGrade=true when one COMPLETE has errors, sibling COMPLETE is clean", async () => {
+      // Any single error-bearing COMPLETE module is enough to flip the
+      // flag. The aggregate composite over both modules' findings is
+      // still the grade source; isPartialGrade just marks degraded
+      // confidence.
+      const client = makeClient({
+        modules: [
+          { status: "COMPLETE", errorDetectorCount: 0 },
+          { status: "COMPLETE", errorDetectorCount: 1 },
+        ],
+        findings: [{ severity: "MEDIUM" }],
+      });
+      const result = expectFinalized(await markComplete(client, "scan-1"));
+      expect(result.isPartialGrade).toBe(true);
+    });
+
+    it("writes isPartialGrade into the Scan.updateMany call", async () => {
+      const client = makeClient({
+        modules: [{ status: "COMPLETE", errorDetectorCount: 1 }],
+        findings: [{ severity: "HIGH" }],
+      });
+      await markComplete(client, "scan-1");
+      const updateMany = client.scan.updateMany as unknown as {
+        mock: { calls: unknown[][] };
+      };
+      const args = updateMany.mock.calls[0]![0] as {
+        data: { isPartialGrade: boolean };
+      };
+      expect(args.data.isPartialGrade).toBe(true);
     });
   });
 });
