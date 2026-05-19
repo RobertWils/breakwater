@@ -1,24 +1,27 @@
 # Phase H — Status Marker
 
-**Status:** COMPLETE
+**Status:** COMPLETE (closed by H.9; widened by holistic Phase I review — see footer)
 **Branch:** plan-02-dispatcher
-**Closing commit:** see `docs: Phase H status marker (COMPLETE)`
-**Test count:** 644/644 green
+**Closing commit (original H.5):** `926036f`
+**Test count at H.5 close:** 644/644 green. At Phase H close (after H.9): **658/658** green.
 
 ## Sub-task progression
 
 | Sub-task     | Commit      | Subject                                                    |
 | ------------ | ----------- | ---------------------------------------------------------- |
 | H.1          | (audit only) | DB-backed integration audit — 4 runs clean, 0 flakes      |
-| H.1 docs     | ca1d7e7     | NOTES.md L66 audit annotation                              |
-| H.1 prep     | 5dcd718     | H.2/H.3 manual checklists + test protocols                 |
-| H.6 (hotfix) | 54b5847     | mark unimplemented modules SKIPPED at creation             |
-| H.7 (hotfix) | 3a1303b     | hide errorMessage on SKIPPED ModuleCards                   |
-| H.8 (hotfix) | de09473     | validate contract bytecode in snapshot capture             |
-| H.5          | [this commit] | Phase H status marker                                   |
+| H.1 docs     | `ca1d7e7`   | NOTES.md L66 audit annotation                              |
+| H.1 prep     | `5dcd718`   | H.2/H.3 manual checklists + test protocols                 |
+| H.6 (hotfix) | `54b5847`   | mark unimplemented modules SKIPPED at creation             |
+| H.7 (hotfix) | `3a1303b`   | hide errorMessage on SKIPPED ModuleCards                   |
+| H.8 (hotfix) | `de09473`   | validate contract bytecode in snapshot capture             |
+| H.5          | `926036f`   | Phase H status marker (this doc — original close)          |
+| H.9          | `e05e904`   | Codex Phase H review BLOCKER + N1 + N2 + N3 (post-marker)  |
 
-Test progression: 634 (G.6) → 638 (H.6) → 639 (H.7) → 644 (H.8).
-Phase H net: **+10 tests** across 3 functional commits + 1 status marker.
+Test progression: 634 (G.6) → 638 (H.6) → 639 (H.7) → 644 (H.8) → **658** (H.9).
+Phase H net: **+24 tests** (10 from H.6/H.7/H.8 + 14 from H.9) across 4 functional commits + 1 status marker.
+
+**Note on H.9:** the original H.5 marker (committed at `926036f`) predates H.9 and lists Phase H test count as 644. After the Codex Phase H review surfaced 1 BLOCKER (`modulesEnabled: []` and only-unimplemented inputs would finalise as COMPLETE with composite grade A) + 3 NICE_TO_HAVEs, H.9 landed the three-layer defense (schema `.min(1)` → submission no-runnable-modules throw → executor `hasAnyCompleteModule` gate). This doc was updated in Phase I.2 to reflect the post-H.9 state. The "no remaining Phase H blockers" claim from the original H.5 marker was true for the Phase H scope at marker time; the holistic Phase I review later widened the lens and surfaced additional cross-cutting issues (idempotency, isPartialGrade) that were closed in I.1 — see `docs/superpowers/plans/phase-i-status.md` if/when written, or the I.1 commits `5ddec4b` / `8df38ff` / `34cf6ad` / `050e95c`.
 
 ## What Phase H validated
 

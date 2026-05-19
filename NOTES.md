@@ -39,21 +39,46 @@ Future spec updates: replace "via next/font/google" with "via geist npm package"
 
 Spec gradient `#0C1C3A → #17306B` was visually imperceptible on large screens. Expanded to 3-stop gradient `#0A1530 → #0C1C3A → #1E3D85` while preserving `--bg-base` and `--bg-elevated` values for other uses.
 
-## Plan 02 — In progress
+## Plan 02 — Completed
 
-Spec frozen on main at commit `400053c` (2026-04-22). File: `docs/superpowers/specs/2026-04-22-breakwater-plan-02-design.md`. Research backfill at `docs/research/2026-04-22-governance-incidents.md` (commit `c1d9642`).
+Plan 02 shipped 2026-05-19 on branch `plan-02-dispatcher` (62 commits, +16k LOC). Spec frozen on main at commit `400053c` (2026-04-22); implementation plan at `docs/superpowers/plans/2026-04-22-breakwater-plan-02-implementation.md`; research backfill at `docs/research/2026-04-22-governance-incidents.md`.
 
-Scope: Inngest dispatcher + Governance module for Ethereum mainnet. 6 detectors (GOV-001 through GOV-006) anchored to Drift, Beanstalk, Compound 62, Ronin, Audius incidents. Public RPC endpoints only (Ankr + Cloudflare via viem `fallback` transport) — no paid provider keys in Plan 02.
+**Scope shipped:**
 
-Branch: `plan-02-dispatcher` (to be created post spec-freeze + Codex review).
-Worktree: `/Users/robertwils/breakwater-plan-02` (to be created on branch cut).
-Next step: implementation.md generation.
+- Phase A — Inngest 3.54.2 + viem 2.21.55 + public-RPC fallback (Ankr + Cloudflare; H.2 added Alchemy) + config assertions + feature flag.
+- Phase B — `GovernanceSnapshot` model + 5 Plan-02 migrations (B.2 schema; B.3 ScanAttempt.reason nullable + slug collision fix; C.4 `Scan.inngestEventId`; D.6 `GovernanceSnapshot.timelockAdminIsContract`; E.2 `GovernanceSnapshot.protocolAbi`; I.1 `ModuleRun.errorDetectorCount`).
+- Phase C — Inngest serve handler + `executeScan` dispatcher orchestrator with compare-and-set idempotency.
+- Phase D — Multicall wrapper + EIP-1967 proxy reader + Safe Transaction Service client + Etherscan v2 client + `captureGovernanceSnapshot` composer.
+- Phase E — 6 governance detectors (GOV-001 timelock through GOV-006 emergency pause) with anchored regression fixtures (Drift / Beanstalk / Audius per spec §14).
+- Phase F — `executeGovernanceModule` Inngest function + `calculateCompositeGrade` scoring (spec §5.3 with floor overrides) + DB-backed smoke test.
+- Phase G — `GET /api/scan/[id]/status` polling endpoint + `useScanPolling` hook + `ScanShell` client conversion with RUNNING pulse + `FindingResponse` 3-way discriminated union refactor (closes Plan 01 backlog item).
+- Phase H — DB-backed integration audit (4 clean runs, 0 flakes) + Vercel preview smoke + 4 hotfixes from manual smoke (H.6 unimplemented-module gate, H.7 errorMessage UI hide, H.8 bytecode validation, H.9 BLOCKER zero-runnable-module rejection at 3 layers).
+- Phase I — Holistic Codex review remediation (6 fixes including BLOCKER idempotent persistence, isPartialGrade wiring, spec §14 fixtures, coverage tooling) + docs + PR.
+
+**Test progression:** Plan 01 baseline 204 → Plan 02 close **689** tests (+485). 8 migrations total on disk (2 Plan 01 + 5 Plan 02 schema + 1 I.1 FIX 3 column). Detector subtree coverage **96.75% statements / 93.79% branches / 96% functions / 97.36% lines** — well above spec §14's ≥85% gate. `pnpm test:coverage` script + threshold in `vitest.config.ts` lock this in.
+
+**Codex review dispositions (per-phase + holistic):**
+
+- Phase E: 1 IMPORTANT + 4 NICE_TO_HAVEs → resolved in E.7 (`03b5fea`).
+- Phase F: 2 IMPORTANTs + 3 NICE_TO_HAVEs → resolved in F.5 (`65db452`).
+- Phase G: 1 IMPORTANT + 2 NICE_TO_HAVEs → resolved in G.5 (`d546e17`).
+- Phase H: 1 BLOCKER + 3 NICE_TO_HAVEs → resolved in H.9 (`e05e904`).
+- Phase I (holistic A–H): 1 BLOCKER + 3 IMPORTANTs + 2 NICE_TO_HAVEs → resolved across `5ddec4b` / `8df38ff` / `34cf6ad` / `050e95c`. Findings: idempotent finding persistence (delete-then-insert per spec §4.6), `ModuleRun.findingsCount` persistence, `isPartialGrade` wiring on detector errors via new `ModuleRun.errorDetectorCount` column, incident-anchor fixtures rebuilt to satisfy spec §14 multi-detector regression contract, `assertProductionExternalApis` runtime caller, coverage script + 85% detector threshold.
+
+**Plan 01 backlog closed by Plan 02:**
+
+- ✅ ScanAttempt.reason nullability (B.3 migration `20260505153034_plan_02_scan_attempt_reason_nullable`).
+- ✅ Slug collision (B.3, 12-char prefix).
+- ✅ FindingResponse discriminated union (G.4 commit `ddb036f`; see entry below).
+- ⏸️ config.ts production-mode test coverage — still open, see Plan 03+ deferred items.
 
 ## Plan 02 — Deferred items
 
-- Schema: `ScanAttempt.reason` should be nullable (currently NOT NULL forces `"accepted"` sentinel for ACCEPTED status rows). Fix in Plan 02 migration: make `reason` nullable.
-- Slug collision: current implementation can fail on addresses sharing first 8 hex chars. Plan 02 should add incremental suffix strategy or longer hash input.
-- ~~FindingResponse discriminated union: currently structural union without true discriminator. Add tier-discriminator to enforce tier-specific shapes at type level.~~ **Resolved in Plan 02 G.4** (commit on `plan-02-dispatcher`): 3-way `UNAUTH | EMAIL | PAID` union with `tier` discriminator stamped by the shapers; `FindingsList` narrows on `tier` instead of `"id" in f`.
+The following items were identified during Plan 02 but deliberately deferred (Plan 03+ or beyond). Items resolved DURING Plan 02 are listed under "Plan 02 — Completed" above; this list is only the deferral set.
+
+- ~~Schema: `ScanAttempt.reason` should be nullable.~~ **Resolved in Plan 02 B.3** (migration `20260505153034_plan_02_scan_attempt_reason_nullable`).
+- ~~Slug collision: current implementation can fail on addresses sharing first 8 hex chars.~~ **Resolved in Plan 02 B.3** (12-char prefix).
+- ~~FindingResponse discriminated union: currently structural union without true discriminator. Add tier-discriminator to enforce tier-specific shapes at type level.~~ **Resolved in Plan 02 G.4** (commit `ddb036f`): 3-way `UNAUTH | EMAIL | PAID` union with `tier` discriminator stamped by the shapers; `FindingsList` narrows on `tier` instead of `"id" in f`.
 - config.ts production-guard tests: add production-mode coverage for `assertProductionHashSalts()` with missing `SCAN_IP_SALT` / `SCAN_EMAIL_SALT` (Codex NICE_TO_HAVE).
 - /scan/[id] client polling: server-rendered snapshot only in Plan 01. Add client polling against GET /api/scan/[id] when Plan 02 dispatcher introduces QUEUED→COMPLETE state transitions. Design considerations: polling interval (2-5s), exponential backoff on errors, stop on terminal states (COMPLETE/FAILED/EXPIRED), bail after N failures.
 - inngest 4.x evaluation: Plan 02 pinned to inngest@3.27.5 (Phase A.1). v4 line is available; evaluate upgrade once Plan 02 is stable end-to-end and the v3→v4 changelog can be reviewed without blocking dispatcher work.
@@ -63,7 +88,7 @@ Next step: implementation.md generation.
 - detectorVersion field type: currently `Int`, considered for `String` semver format (e.g., "1.0.0") in spec §3.2. Deferred during B.2 to keep that phase additive-only and avoid Plan 01 code disruption (`scan-response.ts:73` types it as `number`; 3 test files use literal `1`). Reconsider in Plan 03+ if string-based versioning becomes needed (e.g., for user-facing version display). If converted, the migration must `ALTER COLUMN ... TYPE TEXT USING detectorVersion::text` and the public response shape (`scan-response.ts`) plus tests must update in lockstep.
 - generateSlug Solana case-sensitivity: the trailing `.toLowerCase()` in `generateSlug` (`src/lib/scan-submission.ts`) corrupts base58 uniqueness for Solana addresses — `dRiftyHA…` and `Driftyha…` slug-collide. Pre-existing Plan 01 issue, deliberately not fixed in B.3 to keep that phase scoped to the prefix-length bump. Address when Solana detectors land in Plan 03+: branch the lowercase step on `chain === "ETHEREUM"` (or normalize via a chain-aware helper), and update `slug-collision.test.ts` which currently pins the corrupted-but-deterministic behavior.
 - ModuleRun structured error code: currently `errorMessage` stores free-form strings (e.g., `"module_timeout"` written by C.1's executeScan timeout path). Consider adding `errorCode String?` enum-style column for programmatic error categorization (rate_limit, module_timeout, rpc_failure, …) in Plan 03+ if observability needs grow. Migration would be additive `ALTER TABLE "ModuleRun" ADD COLUMN "errorCode" TEXT`; backfill existing rows by parsing common errorMessage prefixes if useful.
-- Railway free-tier idle connection drops cause transient failures in `scan-submission-integration.test.ts` (typically 1–2 per run, varying which tests fail). Pattern: Prisma `Server has closed the connection`. Not a deterministic regression — the tests pass in isolation and a different test fails each full-suite run. Candidate fixes: connection warm-up at test setup, retry shim with exponential backoff, or move integration tests to CI with a pinned local DB. Defer until it actively blocks development. **Audit 2026-05-13 (Plan 02 H.1): 4 consecutive clean runs against Railway, zero connection drops observed — risk likely reduced but not proven fixed; keep this entry until a sustained-load run confirms.**
+- Railway free-tier idle connection drops cause transient failures in `scan-submission-integration.test.ts` (typically 1–2 per run, varying which tests fail). Pattern: Prisma `Server has closed the connection`. Not a deterministic regression — the tests pass in isolation and a different test fails each full-suite run. Candidate fixes: connection warm-up at test setup, retry shim with exponential backoff, or move integration tests to CI with a pinned local DB. Defer until it actively blocks development. **Audit 2026-05-13 (Plan 02 H.1): 4 consecutive clean runs against Railway, zero connection drops observed — risk likely reduced but not proven fixed; keep this entry until a sustained-load run confirms.** **Audit 2026-05-19 (Plan 02 I.2): the flake came back. Across 4 consecutive runs the suite varied between 0 failed, 1 failed (auth-integration "links anonymous scans"), 2 failed, and 6 failed; failing tests scattered across `auth-integration.test.ts`, `scan-get-integration.test.ts`, `scan-submission-integration.test.ts` with no overlap between runs — same Railway-drop signature as the original report. A run with the same code completed 689/689 green minutes earlier. Confirms the risk is not fixed; CI should add a retry shim (auto-rerun failed integration tests once) before this becomes a merge-blocker for Plan 03+.**
 - waitForEvent multi-module match (NICE_TO_HAVE from Codex C-phase review): C.1's `executeScan.step.waitForEvent` matches on `data.scanId` only. Tolerable for the single-module skeleton (governance only). When Phase F adds a second module dispatch, tighten the match to `data.scanId` AND `data.module` to avoid cross-module accidental wakes — otherwise the governance waiter could resume on an oracle/signer/frontend completion event with the same scanId.
 - Cascade-delete coverage on Scan-related tables (Codex C-phase observation): `GovernanceSnapshot.scan` has `onDelete: Cascade` but `ScanAttempt`, `ModuleRun`, and `Finding` do not. Plan 02 has no scan-deletion path so this is currently unreachable. When TTL purge (or admin-side delete) lands in Plan 03+, either (a) extend cascade to the other relations in a migration, or (b) implement explicit ordered cleanup in the purge job. Document the choice; mismatched cascade semantics tend to leak orphan rows quietly.
 
