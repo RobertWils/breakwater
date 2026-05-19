@@ -13,9 +13,9 @@ import { NextRequest } from "next/server";
 
 // ── Mock modules before importing the route ─────────────────────────────────
 
-// Suppress assertProductionHashSalts side effect at module load time.
 vi.mock("@/lib/config", () => ({
   assertProductionHashSalts: vi.fn(),
+  assertProductionExternalApis: vi.fn(),
 }));
 
 // Mock next-auth so getServerSession is controllable.

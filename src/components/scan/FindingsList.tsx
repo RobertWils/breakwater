@@ -3,7 +3,30 @@ import type { FindingResponse, VisibilityTier } from "@/lib/scan-response"
 interface FindingsListProps {
   findings: FindingResponse[]
   tier: VisibilityTier
+  /**
+   * Current scan status (G.5 N2). Drives the empty-state copy so a
+   * COMPLETE scan with zero findings reads "No findings detected" rather
+   * than the stale "queued" wording the Plan 01 component shipped with.
+   * Pass `currentStatus` from useScanPolling so the copy stays in sync
+   * with the live status.
+   */
+  status: string
   hasAnyHiddenFindings: boolean
+}
+
+/**
+ * Empty-state copy per scan status (G.5 N2).
+ *   - COMPLETE: scan finished cleanly with zero findings.
+ *   - FAILED: scan errored before findings could land.
+ *   - EXPIRED: scan past TTL; findings purged from DB.
+ *   - Default (QUEUED / RUNNING / PARTIAL_COMPLETE): still in progress.
+ */
+function emptyStateMessage(status: string): string {
+  if (status === "COMPLETE") return "No findings detected."
+  if (status === "FAILED") return "Scan failed. Findings unavailable."
+  if (status === "EXPIRED")
+    return "This scan has expired. Findings are no longer available."
+  return "Results will appear here when detection completes."
 }
 
 const SEVERITY_STYLES: Record<string, { label: string; color: string; bg: string }> = {
@@ -34,13 +57,19 @@ const SEVERITY_STYLES: Record<string, { label: string; color: string; bg: string
   },
 }
 
+/**
+ * G.4: narrow on the `tier` discriminator instead of structural `"id" in f`.
+ * EMAIL and PAID share the full-shape rendering today; PAID-specific
+ * surfacing of `remediationDetailed` lands when Plan 07+ wires the
+ * Subscription route boundary (see NOTES.md).
+ */
 function hasFullShape(
   f: FindingResponse,
 ): f is Extract<FindingResponse, { id: string }> {
-  return "id" in f
+  return f.tier === "EMAIL" || f.tier === "PAID"
 }
 
-export function FindingsList({ findings, tier, hasAnyHiddenFindings }: FindingsListProps) {
+export function FindingsList({ findings, tier, status, hasAnyHiddenFindings }: FindingsListProps) {
   if (findings.length === 0) {
     return (
       <section
@@ -50,9 +79,7 @@ export function FindingsList({ findings, tier, hasAnyHiddenFindings }: FindingsL
         <h2 id="findings-heading" className="text-lg font-semibold text-primary mb-2">
           Findings
         </h2>
-        <p className="text-muted text-sm">
-          No findings yet. Your scan is queued — results will appear here when detection completes.
-        </p>
+        <p className="text-muted text-sm">{emptyStateMessage(status)}</p>
       </section>
     )
   }

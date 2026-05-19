@@ -45,18 +45,35 @@ export interface ModuleRunResponse {
   rpcCallsUsed: number;
 }
 
+/**
+ * Tier-discriminated finding union (Plan 02 G.4 — resolves Plan 01 backlog).
+ *
+ * Before G.4, narrowing relied on structural checks (`"id" in f`). With
+ * the `tier` discriminator, TypeScript narrows exhaustively and downstream
+ * renderers can branch on a stable field. The discriminator is also
+ * useful at the wire boundary — clients that see `tier` know which fields
+ * to expect without sniffing for presence.
+ *
+ * Plan 02 only ever resolves to UNAUTH or EMAIL at the route boundary
+ * (session?.user?.id ? "email" : "unauth"). The PAID variant ships as a
+ * type-level provision for Plan 07+ Subscription lookup; no consumer
+ * currently selects it. See NOTES.md "Paid tier route-level subscription
+ * lookup (Plan 07+)" for the wiring plan.
+ */
 export type FindingResponse =
   | FindingResponseUnauth
   | FindingResponseEmail
   | FindingResponsePaid;
 
 export interface FindingResponseUnauth {
+  tier: "UNAUTH";
   severity: string;
   publicTitle: string;
   remediationHint: string;
 }
 
 export interface FindingResponseEmail {
+  tier: "EMAIL";
   id: string;
   moduleRunId: string;
   module: string;
@@ -74,7 +91,15 @@ export interface FindingResponseEmail {
   createdAt: string;
 }
 
-export interface FindingResponsePaid extends FindingResponseEmail {
+/**
+ * Paid variant shares the email payload but adds `remediationDetailed`.
+ * `Omit` drops the EMAIL discriminator so we can stamp PAID without
+ * structural conflict — `extends FindingResponseEmail` would lock the
+ * discriminator to "EMAIL".
+ */
+export interface FindingResponsePaid
+  extends Omit<FindingResponseEmail, "tier"> {
+  tier: "PAID";
   remediationDetailed: string;
 }
 
@@ -180,6 +205,7 @@ export function filterFindings(params: {
 
 export function shapeFindingUnauth(f: Finding): FindingResponseUnauth {
   return {
+    tier: "UNAUTH",
     severity: f.severity,
     publicTitle: f.publicTitle,
     remediationHint: f.remediationHint,
@@ -188,6 +214,7 @@ export function shapeFindingUnauth(f: Finding): FindingResponseUnauth {
 
 export function shapeFindingEmail(f: Finding): FindingResponseEmail {
   return {
+    tier: "EMAIL",
     id: f.id,
     moduleRunId: f.moduleRunId,
     module: f.module,
@@ -208,7 +235,10 @@ export function shapeFindingEmail(f: Finding): FindingResponseEmail {
 
 export function shapeFindingPaid(f: Finding): FindingResponsePaid {
   return {
+    // Spread email shape, then overwrite the discriminator so the
+    // result narrows correctly as PAID, not EMAIL.
     ...shapeFindingEmail(f),
+    tier: "PAID",
     remediationDetailed: f.remediationDetailed,
   };
 }

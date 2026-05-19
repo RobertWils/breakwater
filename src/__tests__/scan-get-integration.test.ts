@@ -229,16 +229,18 @@ describe.skipIf(!hasDb)("scan-get integration", () => {
     // Only 1 teaser finding (publicRank=1)
     expect(result!.findings).toHaveLength(1);
     const f = result!.findings[0] as {
+      tier: string;
       severity: string;
       publicTitle: string;
       remediationHint: string;
     };
     expect(f.publicTitle).toBe("Gov finding rank 1");
 
-    // Teaser has ONLY the 3 keys
+    // G.4: teaser has ONLY the 4 keys (tier discriminator + 3 original).
     expect(Object.keys(result!.findings[0]).sort()).toEqual(
-      ["publicTitle", "remediationHint", "severity"].sort(),
+      ["publicTitle", "remediationHint", "severity", "tier"].sort(),
     );
+    expect(f.tier).toBe("UNAUTH");
 
     // Module has hiddenFindingsCount = 2
     const govModule = result!.modules.find((m) => m.module === "GOVERNANCE");

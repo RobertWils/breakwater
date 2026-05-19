@@ -1,6 +1,6 @@
 {
-  "name": "breakwater-plan-01",
-  "version": "0.1.0",
+  "name": "breakwater",
+  "version": "0.2.0",
   "private": true,
   "packageManager": "pnpm@9.15.0",
   "engines": {
@@ -9,12 +9,13 @@
   },
   "scripts": {
     "dev": "next dev",
-    "build": "prisma generate && next build",
+    "build": "prisma generate && prisma migrate deploy && next build",
     "start": "next start",
     "lint": "next lint",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:ui": "vitest --ui",
+    "test:coverage": "vitest run --coverage",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy",
@@ -32,6 +33,7 @@
     "@tailwindcss/typography": "0.5.19",
     "framer-motion": "12.38.0",
     "geist": "1.7.0",
+    "inngest": "3.54.2",
     "marked": "18.0.2",
     "next": "14.2.35",
     "next-auth": "^4.24.14",
@@ -39,6 +41,7 @@
     "react": "^18",
     "react-dom": "^18",
     "resend": "4.8.0",
+    "viem": "2.21.55",
     "zod": "4.3.6"
   },
   "devDependencies": {
@@ -48,6 +51,7 @@
     "@types/react": "^18",
     "@types/react-dom": "^18",
     "@vitejs/plugin-react": "6.0.1",
+    "@vitest/coverage-v8": "4.1.4",
     "@vitest/ui": "4.1.4",
     "eslint": "^8",
     "eslint-config-next": "14.2.35",

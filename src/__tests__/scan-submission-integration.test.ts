@@ -41,7 +41,25 @@ vi.mock("@/lib/email", () => ({
 }));
 // assertProductionHashSalts is a no-op outside production.
 vi.mock("@/lib/config", () => ({
+  assertProductionConfig: vi.fn(),
   assertProductionHashSalts: vi.fn(),
+  assertProductionInngestConfig: vi.fn(),
+}));
+
+// Inngest client mock — dispatcher emission (Plan 02 C.2) is exercised in
+// this file; tests assert against `inngestSendMock` directly. Hoisted so
+// the vi.mock factory below can capture it (vi.mock is itself hoisted to
+// the top of the module before const declarations are evaluated).
+const { inngestSendMock } = vi.hoisted(() => ({
+  inngestSendMock: vi.fn<(event: unknown) => Promise<{ ids: string[] }>>(
+    async () => ({ ids: ["evt_test"] }),
+  ),
+}));
+vi.mock("@/lib/inngest/client", () => ({
+  inngest: {
+    send: inngestSendMock,
+    createFunction: vi.fn(),
+  },
 }));
 
 import { prisma } from "@/lib/prisma";
@@ -196,15 +214,24 @@ describe.skipIf(!hasDb)("scan submission integration", () => {
     });
     expect(modules).toHaveLength(4);
 
-    // FRONTEND skipped (no domain)
+    // GOVERNANCE: the only implemented module in Plan 02 (H.6).
+    const governance = modules.find((m) => m.module === "GOVERNANCE");
+    expect(governance!.status).toBe("QUEUED");
+    expect(governance!.errorMessage).toBeNull();
+
+    // ORACLE / SIGNER: unimplemented → SKIPPED with audit-trail reason (H.6).
+    for (const mod of ["ORACLE", "SIGNER"]) {
+      const row = modules.find((m) => m.module === mod);
+      expect(row!.status).toBe("SKIPPED");
+      expect(row!.errorMessage).toBe("module_not_implemented");
+    }
+
+    // FRONTEND: also unimplemented; module_not_implemented beats
+    // domain_required in the H.6 priority order (the test reflects
+    // that even though this scan has no domain).
     const frontend = modules.find((m) => m.module === "FRONTEND");
     expect(frontend!.status).toBe("SKIPPED");
-
-    // Others queued
-    for (const mod of ["GOVERNANCE", "ORACLE", "SIGNER"]) {
-      const row = modules.find((m) => m.module === mod);
-      expect(row!.status).toBe("QUEUED");
-    }
+    expect(frontend!.errorMessage).toBe("module_not_implemented");
 
     // ACCEPTED ScanAttempt
     const attempt = await prisma.scanAttempt.findFirst({
@@ -216,7 +243,12 @@ describe.skipIf(!hasDb)("scan submission integration", () => {
 
   // ── 2. Happy path WITH domain — FRONTEND queued ────────────────────────
 
-  it("happy path with domain: FRONTEND module is QUEUED", async () => {
+  it("happy path with domain: GOVERNANCE queued; ORACLE/SIGNER/FRONTEND SKIPPED as module_not_implemented (H.6)", async () => {
+    // H.6: domain presence no longer rescues FRONTEND from SKIPPED — the
+    // module has no Inngest handler in Plan 02, so it ships SKIPPED
+    // alongside ORACLE and SIGNER with the same `module_not_implemented`
+    // reason. When FRONTEND lands in a future plan, add it to
+    // IMPLEMENTED_MODULES and this assertion flips back to QUEUED.
     const ipHash = uniqueIpHash();
     createdScanAttemptIpHashes.push(ipHash);
 
@@ -249,9 +281,14 @@ describe.skipIf(!hasDb)("scan submission integration", () => {
     });
     expect(modules).toHaveLength(4);
 
-    for (const mod of ["GOVERNANCE", "ORACLE", "SIGNER", "FRONTEND"]) {
+    const governance = modules.find((m) => m.module === "GOVERNANCE");
+    expect(governance!.status).toBe("QUEUED");
+    expect(governance!.errorMessage).toBeNull();
+
+    for (const mod of ["ORACLE", "SIGNER", "FRONTEND"]) {
       const row = modules.find((m) => m.module === mod);
-      expect(row!.status).toBe("QUEUED");
+      expect(row!.status).toBe("SKIPPED");
+      expect(row!.errorMessage).toBe("module_not_implemented");
     }
   });
 
@@ -709,6 +746,56 @@ describe.skipIf(!hasDb)("scan submission integration", () => {
     }
   });
 
+  // H.6 — full default modulesEnabled scenario.
+  // Confirms the skip-reason hierarchy (`module_disabled_by_user` →
+  // `module_not_implemented` → `domain_required`): with every module
+  // enabled and no domain, GOVERNANCE goes QUEUED and the other three
+  // ship SKIPPED with `module_not_implemented` (FRONTEND lands on
+  // that reason rather than `domain_required` because the module
+  // can't run at all).
+  it("H.6: full default modulesEnabled — 1 QUEUED + 3 SKIPPED with module_not_implemented", async () => {
+    const ipHash = uniqueIpHash();
+    createdScanAttemptIpHashes.push(ipHash);
+
+    const address = uniqueEthAddress();
+    const result = await submitScan({
+      input: {
+        chain: "ETHEREUM",
+        primaryContractAddress: address,
+        extraContractAddresses: [],
+        // no `domain` field — covers the FRONTEND-without-domain case
+        multisigs: [],
+        modulesEnabled: ["GOVERNANCE", "ORACLE", "SIGNER", "FRONTEND"],
+      },
+      userId: null,
+      userEmail: null,
+      ip: "1.2.3.4",
+      ipHash,
+      userAgent: "integration-test/1.0",
+    });
+    expect(result.statusCode).toBe(202);
+
+    const protocol = await prisma.protocol.findFirst({
+      where: { primaryContractAddress: address.toLowerCase(), chain: "ETHEREUM" },
+    });
+    createdProtocolIds.push(protocol!.id);
+
+    const modules = await prisma.moduleRun.findMany({
+      where: { scanId: result.scanId },
+    });
+    expect(modules).toHaveLength(4);
+
+    const gov = modules.find((m) => m.module === "GOVERNANCE");
+    expect(gov!.status).toBe("QUEUED");
+    expect(gov!.errorMessage).toBeNull();
+
+    for (const mod of ["ORACLE", "SIGNER", "FRONTEND"]) {
+      const row = modules.find((m) => m.module === mod);
+      expect(row!.status).toBe("SKIPPED");
+      expect(row!.errorMessage).toBe("module_not_implemented");
+    }
+  });
+
   // ── 11. No new Protocol/Scan/ModuleRun on dedupe ─────────────────────
 
   it("dedupe creates no new Protocol, Scan, or ModuleRun rows", async () => {
@@ -1067,5 +1154,472 @@ describe.skipIf(!hasDb)("scan submission integration", () => {
       where: { primaryContractAddress: address.toLowerCase(), chain: "ETHEREUM" },
     });
     expect(protocolCount).toBe(1);
+  });
+
+  // ── Plan 02 C.2: Inngest dispatcher emission ──────────────────────────────
+  // These tests assert against the module-level inngestSendMock declared at
+  // the top of this file. Each test resets the mock so call counts are local.
+
+  it.skipIf(!hasDb)(
+    "C.2: successful submission emits scan.queued exactly once with the expected payload, then sets dispatchedAt",
+    async () => {
+      inngestSendMock.mockClear();
+      inngestSendMock.mockResolvedValueOnce({ ids: ["evt_happy"] });
+
+      const ipHash = uniqueIpHash();
+      const address = uniqueEthAddress();
+      createdScanAttemptIpHashes.push(ipHash);
+
+      const result = await submitScan({
+        input: {
+          chain: "ETHEREUM",
+          primaryContractAddress: address,
+          extraContractAddresses: [],
+          multisigs: [],
+          modulesEnabled: ["GOVERNANCE", "ORACLE"],
+        },
+        userId: null,
+        userEmail: null,
+        ip: "1.2.3.4",
+        ipHash,
+        userAgent: "integration-test/1.0",
+      });
+
+      expect(result.statusCode).toBe(202);
+      expect(inngestSendMock).toHaveBeenCalledTimes(1);
+
+      const sent = inngestSendMock.mock.calls[0]![0] as {
+        name: string;
+        data: {
+          scanId: string;
+          protocolId: string;
+          chain: string;
+          primaryContractAddress: string;
+          modulesEnabled: string[];
+        };
+      };
+      expect(sent.name).toBe("scan.queued");
+      expect(sent.data.scanId).toBe(result.scanId);
+      expect(sent.data.chain).toBe("ETHEREUM");
+      expect(sent.data.primaryContractAddress).toBe(address.toLowerCase());
+      expect(sent.data.modulesEnabled).toEqual(["GOVERNANCE", "ORACLE"]);
+      expect(sent.data.protocolId).toEqual(expect.any(String));
+
+      // dispatchedAt populated only after a successful emission.
+      const scan = await prisma.scan.findUnique({
+        where: { id: result.scanId },
+      });
+      expect(scan?.dispatchedAt).toBeInstanceOf(Date);
+
+      const protocol = await prisma.protocol.findUnique({
+        where: {
+          chain_primaryContractAddress: {
+            chain: "ETHEREUM",
+            primaryContractAddress: address.toLowerCase(),
+          },
+        },
+      });
+      if (protocol) createdProtocolIds.push(protocol.id);
+    },
+  );
+
+  it.skipIf(!hasDb)(
+    "C.2: duplicate submission (statusCode 200) does NOT call inngest.send",
+    async () => {
+      const ipHash = uniqueIpHash();
+      const address = uniqueEthAddress();
+      createdScanAttemptIpHashes.push(ipHash);
+
+      // First submission — should emit and clear the mock for the duplicate check.
+      const first = await submitScan({
+        input: {
+          chain: "ETHEREUM",
+          primaryContractAddress: address,
+          extraContractAddresses: [],
+          multisigs: [],
+          modulesEnabled: ["GOVERNANCE"],
+        },
+        userId: null,
+        userEmail: null,
+        ip: "1.2.3.4",
+        ipHash,
+        userAgent: "integration-test/1.0",
+      });
+      expect(first.statusCode).toBe(202);
+
+      const protocol = await prisma.protocol.findUnique({
+        where: {
+          chain_primaryContractAddress: {
+            chain: "ETHEREUM",
+            primaryContractAddress: address.toLowerCase(),
+          },
+        },
+      });
+      if (protocol) createdProtocolIds.push(protocol.id);
+
+      // Second submission with identical payload from same ip — dedupe.
+      inngestSendMock.mockClear();
+      const second = await submitScan({
+        input: {
+          chain: "ETHEREUM",
+          primaryContractAddress: address,
+          extraContractAddresses: [],
+          multisigs: [],
+          modulesEnabled: ["GOVERNANCE"],
+        },
+        userId: null,
+        userEmail: null,
+        ip: "1.2.3.4",
+        ipHash,
+        userAgent: "integration-test/1.0",
+      });
+
+      expect(second.statusCode).toBe(200);
+      expect(second.scanId).toBe(first.scanId);
+      expect(inngestSendMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.skipIf(!hasDb)(
+    "C.2: inngest.send rejection does not block scan creation (best-effort) and leaves dispatchedAt null",
+    async () => {
+      inngestSendMock.mockClear();
+      inngestSendMock.mockRejectedValueOnce(new Error("inngest unreachable"));
+
+      const ipHash = uniqueIpHash();
+      const address = uniqueEthAddress();
+      createdScanAttemptIpHashes.push(ipHash);
+
+      const result = await submitScan({
+        input: {
+          chain: "ETHEREUM",
+          primaryContractAddress: address,
+          extraContractAddresses: [],
+          multisigs: [],
+          modulesEnabled: ["GOVERNANCE"],
+        },
+        userId: null,
+        userEmail: null,
+        ip: "1.2.3.4",
+        ipHash,
+        userAgent: "integration-test/1.0",
+      });
+
+      expect(result.statusCode).toBe(202);
+      expect(result.scanId).toEqual(expect.any(String));
+
+      // Scan exists; dispatchedAt remains null because emission failed.
+      const scan = await prisma.scan.findUnique({
+        where: { id: result.scanId },
+      });
+      expect(scan).not.toBeNull();
+      expect(scan?.dispatchedAt).toBeNull();
+
+      const protocol = await prisma.protocol.findUnique({
+        where: {
+          chain_primaryContractAddress: {
+            chain: "ETHEREUM",
+            primaryContractAddress: address.toLowerCase(),
+          },
+        },
+      });
+      if (protocol) createdProtocolIds.push(protocol.id);
+    },
+  );
+
+  // ── Plan 02 C.4 (Codex-review fixes) ─────────────────────────────────────
+  // I1: dedupe race — identical concurrent submissions both observe "no
+  //     existing scan" before either's tx commits, then both create scans.
+  //     With dedupe moved inside the advisory-locked transaction the
+  //     second arrival sees the first's committed ACCEPTED row.
+  // I2: emission/update split — successful inngest.send must persist
+  //     inngestEventId on the Scan row even when dispatchedAt update has
+  //     issues; verify the event id round-trips.
+
+  it.skipIf(!hasDb)(
+    "C.4 I1: rapid identical submissions return the same scanId via dedupe inside the lock",
+    async () => {
+      inngestSendMock.mockClear();
+
+      const ipHash = uniqueIpHash();
+      const address = uniqueEthAddress();
+      createdScanAttemptIpHashes.push(ipHash);
+
+      const inputBody = {
+        chain: "ETHEREUM" as const,
+        primaryContractAddress: address,
+        extraContractAddresses: [],
+        multisigs: [],
+        modulesEnabled: ["GOVERNANCE" as const],
+      };
+      const params = {
+        input: inputBody,
+        userId: null,
+        userEmail: null,
+        ip: "1.2.3.4",
+        ipHash,
+        userAgent: "integration-test/1.0",
+      };
+
+      // Fire two submissions concurrently. The advisory lock serialises
+      // them; the second's in-tx dedupe should match the first's ACCEPTED
+      // row and return statusCode 200 with the same scanId.
+      const [first, second] = await Promise.all([
+        submitScan(params),
+        submitScan(params),
+      ]);
+
+      const protocol = await prisma.protocol.findUnique({
+        where: {
+          chain_primaryContractAddress: {
+            chain: "ETHEREUM",
+            primaryContractAddress: address.toLowerCase(),
+          },
+        },
+      });
+      if (protocol) createdProtocolIds.push(protocol.id);
+
+      // Exactly one of the two created the scan (202), the other deduped (200).
+      const codes = [first.statusCode, second.statusCode].sort();
+      expect(codes).toEqual([200, 202]);
+      // Both refer to the same scan id.
+      expect(first.scanId).toBe(second.scanId);
+
+      // Only one scan + one ACCEPTED ScanAttempt for this dedupe key.
+      const acceptedCount = await prisma.scanAttempt.count({
+        where: { ipHash, status: "ACCEPTED" },
+      });
+      expect(acceptedCount).toBe(1);
+      const scanCount = await prisma.scan.count({
+        where: { id: first.scanId },
+      });
+      expect(scanCount).toBe(1);
+    },
+  );
+
+  it.skipIf(!hasDb)(
+    "C.4 I2: successful submission persists inngestEventId on the Scan row",
+    async () => {
+      inngestSendMock.mockClear();
+      inngestSendMock.mockResolvedValueOnce({ ids: ["evt_c4_test"] });
+
+      const ipHash = uniqueIpHash();
+      const address = uniqueEthAddress();
+      createdScanAttemptIpHashes.push(ipHash);
+
+      const result = await submitScan({
+        input: {
+          chain: "ETHEREUM",
+          primaryContractAddress: address,
+          extraContractAddresses: [],
+          multisigs: [],
+          modulesEnabled: ["GOVERNANCE"],
+        },
+        userId: null,
+        userEmail: null,
+        ip: "1.2.3.4",
+        ipHash,
+        userAgent: "integration-test/1.0",
+      });
+      expect(result.statusCode).toBe(202);
+
+      const scan = await prisma.scan.findUnique({
+        where: { id: result.scanId },
+      });
+      expect(scan?.inngestEventId).toBe("evt_c4_test");
+      expect(scan?.dispatchedAt).toBeInstanceOf(Date);
+
+      const protocol = await prisma.protocol.findUnique({
+        where: {
+          chain_primaryContractAddress: {
+            chain: "ETHEREUM",
+            primaryContractAddress: address.toLowerCase(),
+          },
+        },
+      });
+      if (protocol) createdProtocolIds.push(protocol.id);
+    },
+  );
+
+  // ── Plan 02 D.5 (Codex bundled review) ───────────────────────────────────
+  // N3: emission succeeds but the bookkeeping update for dispatchedAt
+  //     fails. Per C.4 I2, submitScan splits the two operations into
+  //     separate try/catch so a Phase B (DB update) failure does not
+  //     mask Phase A (event sent) success. The scan should still return
+  //     202 with a scanId, the event should have been sent, and
+  //     dispatchedAt should remain null (recovery semantics).
+  it.skipIf(!hasDb)(
+    "D.5 N3: emission succeeds + dispatchedAt update fails — scan returns 202, event in flight, dispatchedAt left null",
+    async () => {
+      inngestSendMock.mockClear();
+      inngestSendMock.mockResolvedValueOnce({ ids: ["evt_n3"] });
+
+      // Spy on prisma.scan.update and force the next call to reject —
+      // submitScan only calls scan.update for the dispatchedAt write
+      // (the rest of the flow uses tx.scan.create), so the spy targets
+      // exactly the C.4 I2 phase-B write.
+      const updateSpy = vi
+        .spyOn(prisma.scan, "update")
+        .mockRejectedValueOnce(new Error("Connection lost"));
+
+      const ipHash = uniqueIpHash();
+      const address = uniqueEthAddress();
+      createdScanAttemptIpHashes.push(ipHash);
+
+      try {
+        const result = await submitScan({
+          input: {
+            chain: "ETHEREUM",
+            primaryContractAddress: address,
+            extraContractAddresses: [],
+            multisigs: [],
+            modulesEnabled: ["GOVERNANCE"],
+          },
+          userId: null,
+          userEmail: null,
+          ip: "1.2.3.4",
+          ipHash,
+          userAgent: "integration-test/1.0",
+        });
+
+        expect(result.statusCode).toBe(202);
+        expect(result.scanId).toEqual(expect.any(String));
+        expect(inngestSendMock).toHaveBeenCalledOnce();
+        expect(updateSpy).toHaveBeenCalledOnce();
+
+        // Recovery semantics: scan exists, event was sent, but the
+        // dispatchedAt + inngestEventId persist failed. Operators tell
+        // "event sent" from "scan orphaned" by checking inngestEventId
+        // and dispatchedAt independently.
+        const scan = await prisma.scan.findUnique({
+          where: { id: result.scanId },
+        });
+        expect(scan).not.toBeNull();
+        expect(scan?.dispatchedAt).toBeNull();
+        expect(scan?.inngestEventId).toBeNull();
+
+        const protocol = await prisma.protocol.findUnique({
+          where: {
+            chain_primaryContractAddress: {
+              chain: "ETHEREUM",
+              primaryContractAddress: address.toLowerCase(),
+            },
+          },
+        });
+        if (protocol) createdProtocolIds.push(protocol.id);
+      } finally {
+        updateSpy.mockRestore();
+      }
+    },
+  );
+
+  // ── H.9 BLOCKER Layer B — submission-layer "no runnable modules" gate ──
+  //
+  // Layer A (schema `.min(1)`) catches `modulesEnabled: []`. Layer B
+  // catches the case where the array is non-empty but every entry is
+  // unimplemented (every ModuleRun row would seed SKIPPED). Both prevent
+  // the misleading "composite grade A on no work done" outcome.
+
+  it("H.9 BLOCKER: modulesEnabled containing only unimplemented modules → no_runnable_modules", async () => {
+    const { ScanSubmissionError } = await import(
+      "@/lib/scan-submission/errors"
+    );
+
+    const ipHash = uniqueIpHash();
+    createdScanAttemptIpHashes.push(ipHash);
+
+    const address = uniqueEthAddress();
+    let caughtErr: unknown;
+    try {
+      await submitScan({
+        input: {
+          chain: "ETHEREUM",
+          primaryContractAddress: address,
+          extraContractAddresses: [],
+          multisigs: [],
+          // Both ORACLE and SIGNER are unimplemented in Plan 02. With
+          // no implemented module enabled, every ModuleRun would seed
+          // SKIPPED. Layer B throws before persistence.
+          modulesEnabled: ["ORACLE", "SIGNER"] as ("ORACLE" | "SIGNER")[],
+        },
+        userId: null,
+        userEmail: null,
+        ip: "1.2.3.4",
+        ipHash,
+        userAgent: "integration-test/1.0",
+      });
+    } catch (e) {
+      caughtErr = e;
+    }
+
+    expect(caughtErr).toBeInstanceOf(ScanSubmissionError);
+    const err = caughtErr as InstanceType<typeof ScanSubmissionError>;
+    expect(err.code).toBe("no_runnable_modules");
+    expect(err.statusCode).toBe(422);
+    expect(err.message).toMatch(/runnable modules/i);
+
+    // Tx rolled back — no Scan / ModuleRun rows persisted. (Protocol
+    // row may exist if a prior test ran against the same address, but
+    // we used a unique address so it should not.)
+    const protocol = await prisma.protocol.findFirst({
+      where: { primaryContractAddress: address.toLowerCase(), chain: "ETHEREUM" },
+    });
+    if (protocol) {
+      createdProtocolIds.push(protocol.id);
+      const scans = await prisma.scan.findMany({
+        where: { protocolId: protocol.id },
+      });
+      expect(scans).toHaveLength(0);
+    }
+  });
+
+  it("H.9 BLOCKER: implemented + unimplemented mix accepts and seeds correctly", async () => {
+    // GOVERNANCE present → at least one QUEUED → Layer B passes.
+    // ORACLE present but unimplemented → SKIPPED with module_not_implemented.
+    const ipHash = uniqueIpHash();
+    createdScanAttemptIpHashes.push(ipHash);
+
+    const address = uniqueEthAddress();
+    const result = await submitScan({
+      input: {
+        chain: "ETHEREUM",
+        primaryContractAddress: address,
+        extraContractAddresses: [],
+        multisigs: [],
+        modulesEnabled: ["GOVERNANCE", "ORACLE"] as ("GOVERNANCE" | "ORACLE")[],
+      },
+      userId: null,
+      userEmail: null,
+      ip: "1.2.3.4",
+      ipHash,
+      userAgent: "integration-test/1.0",
+    });
+
+    expect(result.statusCode).toBe(202);
+
+    const protocol = await prisma.protocol.findFirst({
+      where: { primaryContractAddress: address.toLowerCase(), chain: "ETHEREUM" },
+    });
+    createdProtocolIds.push(protocol!.id);
+
+    const modules = await prisma.moduleRun.findMany({
+      where: { scanId: result.scanId },
+    });
+    expect(modules).toHaveLength(4);
+
+    const gov = modules.find((m) => m.module === "GOVERNANCE");
+    expect(gov!.status).toBe("QUEUED");
+    expect(gov!.errorMessage).toBeNull();
+
+    const oracle = modules.find((m) => m.module === "ORACLE");
+    expect(oracle!.status).toBe("SKIPPED");
+    expect(oracle!.errorMessage).toBe("module_not_implemented");
+
+    // SIGNER and FRONTEND were not in modulesEnabled → user-disabled.
+    for (const mod of ["SIGNER", "FRONTEND"]) {
+      const row = modules.find((m) => m.module === mod);
+      expect(row!.status).toBe("SKIPPED");
+      expect(row!.errorMessage).toBe("module_disabled_by_user");
+    }
   });
 });

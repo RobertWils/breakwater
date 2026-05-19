@@ -88,6 +88,25 @@ enum SubscriptionTier {
   PAID
 }
 
+enum GovernorType {
+  OZ_GOVERNOR
+  COMPOUND_BRAVO
+  CUSTOM
+}
+
+enum ProxyType {
+  EIP_1967_TRANSPARENT
+  EIP_1822_UUPS
+  CUSTOM
+  NONE
+}
+
+enum VotingSnapshotType {
+  BLOCK_BASED
+  CURRENT_BALANCE
+  NONE
+}
+
 model Organization {
   id            String           @id @default(cuid())
   name          String
@@ -152,26 +171,32 @@ model ProtocolClaim {
 }
 
 model Scan {
-  id                    String        @id @default(uuid())
+  id                    String              @id @default(uuid())
   protocolId            String
-  protocol              Protocol      @relation("ProtocolScans", fields: [protocolId], references: [id])
-  latestDemoForProtocol Protocol[]    @relation("ProtocolLatestDemoScan")
+  protocol              Protocol            @relation("ProtocolScans", fields: [protocolId], references: [id])
+  latestDemoForProtocol Protocol[]          @relation("ProtocolLatestDemoScan")
   submittedByUserId     String?
-  submittedByUser       User?         @relation(fields: [submittedByUserId], references: [id])
+  submittedByUser       User?               @relation(fields: [submittedByUserId], references: [id])
   submittedEmail        String?
   submittedEmailHash    String?
   ipHash                String
   userAgent             String
-  status                ScanStatus    @default(QUEUED)
+  status                ScanStatus          @default(QUEUED)
   compositeScore        Int?
   compositeGrade        Grade?
-  isPartialGrade        Boolean       @default(false)
+  isPartialGrade        Boolean             @default(false)
   expiresAt             DateTime
-  createdAt             DateTime      @default(now())
+  createdAt             DateTime            @default(now())
   completedAt           DateTime?
   modules               ModuleRun[]
   findings              Finding[]
   scanAttempts          ScanAttempt[]
+  governanceSnapshot    GovernanceSnapshot?
+
+  // Dispatcher tracking (Plan 02 B.2 + C.4)
+  dispatchedAt       DateTime?
+  executionStartedAt DateTime?
+  inngestEventId     String?
 
   @@index([submittedEmail])
   @@index([expiresAt])
@@ -184,7 +209,7 @@ model ScanAttempt {
   user             User?             @relation(fields: [userId], references: [id])
   attemptedAt      DateTime          @default(now())
   status           ScanAttemptStatus
-  reason           String
+  reason           String?
   userAgent        String
   inputPayloadHash String
   cooldownKey      String // always ${chain}:${normalizedAddress} — NEVER Protocol.id; Phase D uses pg_advisory_xact_lock(hashtext(cooldownKey)) for atomic cooldown
@@ -217,6 +242,19 @@ model ModuleRun {
   idempotencyKey   String       @unique
   findings         Finding[]
 
+  // Inngest correlation (Plan 02 B.2)
+  inngestEventId String?
+  inngestRunId   String?
+
+  // Count of detectors that threw during the module run (Plan 02 I.1 FIX 3).
+  // Persists the value that runDetectors tracks in-memory as
+  // `errorDetectorIds.length`. Drives `Scan.isPartialGrade` at scan
+  // finalization: a COMPLETE module with errorDetectorCount > 0 means
+  // "a detector that should have run crashed", which degrades the
+  // composite-grade confidence. Defaults to 0 so existing rows + FAILED
+  // ModuleRuns (where the persist tx doesn't run) read cleanly.
+  errorDetectorCount Int @default(0)
+
   @@unique([scanId, module])
 }
 
@@ -241,7 +279,57 @@ model Finding {
   detectorVersion     Int
   createdAt           DateTime   @default(now())
 
+  // Reproducibility (Plan 02 B.2)
+  snapshotBlockNumber BigInt?
+
   @@index([scanId, module])
+}
+
+model GovernanceSnapshot {
+  id     String @id @default(cuid())
+  scanId String @unique
+  scan   Scan   @relation(fields: [scanId], references: [id], onDelete: Cascade)
+
+  blockNumber BigInt
+  capturedAt  DateTime @default(now())
+
+  // Governance frameworks detected
+  hasGovernor     Boolean       @default(false)
+  governorAddress String?
+  governorType    GovernorType?
+  governorVersion String?
+
+  hasTimelock             Boolean @default(false)
+  timelockAddress         String?
+  timelockMinDelay        Int?
+  timelockAdmin           String?
+  timelockAdminIsContract Boolean?
+
+  hasMultisig        Boolean  @default(false)
+  multisigAddress    String?
+  multisigThreshold  Int?
+  multisigOwnerCount Int?
+  multisigOwners     String[]
+
+  // Proxy detection (full coverage upfront per Plan 02 self-review:
+  // proxyAdminIsContract populated in Phase D.3c, implementationAbi
+  // populated in Phase E.2 — declared upfront so no retroactive
+  // schema mutations during E phases.)
+  proxyType            ProxyType?
+  proxyAdminAddress    String?
+  proxyImplementation  String?
+  proxyVerified        Boolean    @default(false)
+  proxyAdminIsContract Boolean?
+  implementationAbi    String?
+  protocolAbi          String?
+
+  // Voting token (if applicable)
+  votingTokenAddress String?
+  votingSnapshotType VotingSnapshotType?
+
+  rawState Json
+
+  @@index([scanId])
 }
 
 model Subscription {

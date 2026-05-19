@@ -6,13 +6,13 @@
  * Step 12: return { scanId } 202.
  */
 
-import { assertProductionHashSalts } from "@/lib/config";
-// Called once at module load to enforce production salt requirements.
-assertProductionHashSalts();
-
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
+import {
+  assertProductionExternalApis,
+  assertProductionHashSalts,
+} from "@/lib/config";
 import { hashIp } from "@/lib/hash";
 import { ScanSubmissionSchema } from "@/lib/schemas/scan";
 import {
@@ -22,6 +22,16 @@ import {
 import { ScanSubmissionError } from "@/lib/scan-submission/errors";
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
+  // Enforce production salt + external-API requirements at request-time.
+  // Called inside the handler (not at module load) so Next.js page-data
+  // collection during `next build` does not trigger the assertions before
+  // env vars are read. I.1 FIX 5: assertProductionExternalApis() previously
+  // existed + tested but had no runtime caller, so the Safe API "empty
+  // string in production" contract (config.ts L74-94) was dead code. Now
+  // invoked alongside the existing salt assertion at every request entry.
+  assertProductionHashSalts();
+  assertProductionExternalApis();
+
   // ── Extract request metadata before body parse ──
   // These must be outside the try block so the catch can use them for
   // best-effort ScanAttempt logging on unexpected errors (§5.1 audit trail).
@@ -103,17 +113,16 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     console.error("[POST /api/scan] Unexpected error:", err);
     try {
       const { prisma } = await import("@/lib/prisma");
-      await prisma.scanAttempt.create({
-        data: {
-          ipHash,
-          userId,
-          userAgent,
-          cooldownKey: "internal:error",
-          inputPayloadHash: "internal:error",
-          status: "INVALID",
-          reason: "internal_error",
-          scanId: null,
-        },
+      const { createScanAttempt } = await import("@/lib/scan-attempt");
+      await createScanAttempt(prisma, {
+        ipHash,
+        userId,
+        userAgent,
+        cooldownKey: "internal:error",
+        inputPayloadHash: "internal:error",
+        status: "INVALID",
+        reason: "internal_error",
+        scanId: null,
       });
     } catch (logErr) {
       console.error("[POST /api/scan] Failed to log internal error attempt:", logErr);

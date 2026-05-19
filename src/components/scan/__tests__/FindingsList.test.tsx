@@ -11,6 +11,7 @@ function makeUnauthFinding(
   overrides: Partial<FindingResponseUnauth> = {},
 ): FindingResponseUnauth {
   return {
+    tier: "UNAUTH",
     severity: "HIGH",
     publicTitle: "Potential governance hijack",
     remediationHint: "Review proposal thresholds",
@@ -22,6 +23,7 @@ function makeEmailFinding(
   overrides: Partial<FindingResponseEmail> = {},
 ): FindingResponseEmail {
   return {
+    tier: "EMAIL",
     id: "f-1",
     moduleRunId: "mr-1",
     module: "GOVERNANCE",
@@ -46,12 +48,47 @@ afterEach(() => {
 })
 
 describe("FindingsList", () => {
-  it("renders empty state when findings.length === 0", () => {
-    render(<FindingsList findings={[]} tier="unauth" hasAnyHiddenFindings={false} />)
+  it("renders empty state heading + in-progress copy when running with no findings", () => {
+    render(<FindingsList findings={[]} tier="unauth" status="RUNNING" hasAnyHiddenFindings={false} />)
     expect(screen.getByRole("heading", { name: /findings/i })).toBeInTheDocument()
     expect(
-      screen.getByText(/No findings yet.*queued.*when detection completes/i),
+      screen.getByText(/results will appear here when detection completes/i),
     ).toBeInTheDocument()
+  })
+
+  describe("empty-state copy branches on scan status (G.5 N2)", () => {
+    it("COMPLETE + no findings → 'No findings detected.'", () => {
+      render(<FindingsList findings={[]} tier="email" status="COMPLETE" hasAnyHiddenFindings={false} />)
+      expect(screen.getByText(/no findings detected/i)).toBeInTheDocument()
+      expect(screen.queryByText(/will appear here/i)).toBeNull()
+    })
+
+    it("FAILED + no findings → 'Scan failed. Findings unavailable.'", () => {
+      render(<FindingsList findings={[]} tier="email" status="FAILED" hasAnyHiddenFindings={false} />)
+      expect(screen.getByText(/scan failed.*findings unavailable/i)).toBeInTheDocument()
+      expect(screen.queryByText(/no findings detected/i)).toBeNull()
+    })
+
+    it("EXPIRED + no findings → expiry-specific copy", () => {
+      render(<FindingsList findings={[]} tier="email" status="EXPIRED" hasAnyHiddenFindings={false} />)
+      expect(
+        screen.getByText(/this scan has expired.*findings are no longer available/i),
+      ).toBeInTheDocument()
+    })
+
+    it("QUEUED + no findings → in-progress copy", () => {
+      render(<FindingsList findings={[]} tier="email" status="QUEUED" hasAnyHiddenFindings={false} />)
+      expect(
+        screen.getByText(/results will appear here when detection completes/i),
+      ).toBeInTheDocument()
+    })
+
+    it("PARTIAL_COMPLETE (non-terminal) + no findings → in-progress copy", () => {
+      render(<FindingsList findings={[]} tier="email" status="PARTIAL_COMPLETE" hasAnyHiddenFindings={false} />)
+      expect(
+        screen.getByText(/results will appear here when detection completes/i),
+      ).toBeInTheDocument()
+    })
   })
 
   it("renders multiple findings with severity badges", () => {
@@ -60,7 +97,7 @@ describe("FindingsList", () => {
       makeEmailFinding({ id: "f-2", severity: "MEDIUM", publicTitle: "Finding B" }),
       makeEmailFinding({ id: "f-3", severity: "LOW", publicTitle: "Finding C" }),
     ]
-    render(<FindingsList findings={findings} tier="email" hasAnyHiddenFindings={false} />)
+    render(<FindingsList findings={findings} tier="email" status="RUNNING" hasAnyHiddenFindings={false} />)
 
     expect(screen.getByRole("heading", { name: /findings \(3\)/i })).toBeInTheDocument()
     expect(screen.getByText("Finding A")).toBeInTheDocument()
@@ -73,7 +110,7 @@ describe("FindingsList", () => {
 
   it("unauth tier shows 'unlock all' hint when hasAnyHiddenFindings is true", () => {
     const findings: FindingResponse[] = [makeUnauthFinding()]
-    render(<FindingsList findings={findings} tier="unauth" hasAnyHiddenFindings={true} />)
+    render(<FindingsList findings={findings} tier="unauth" status="RUNNING" hasAnyHiddenFindings={true} />)
 
     expect(
       screen.getByText(/showing top finding per module.*enter email below to unlock all/i),
@@ -82,14 +119,14 @@ describe("FindingsList", () => {
 
   it("unauth tier does NOT show hint when hasAnyHiddenFindings is false", () => {
     const findings: FindingResponse[] = [makeUnauthFinding()]
-    render(<FindingsList findings={findings} tier="unauth" hasAnyHiddenFindings={false} />)
+    render(<FindingsList findings={findings} tier="unauth" status="RUNNING" hasAnyHiddenFindings={false} />)
 
     expect(screen.queryByText(/unlock all/i)).not.toBeInTheDocument()
   })
 
   it("email tier does NOT show hidden findings hint", () => {
     const findings: FindingResponse[] = [makeEmailFinding()]
-    render(<FindingsList findings={findings} tier="email" hasAnyHiddenFindings={true} />)
+    render(<FindingsList findings={findings} tier="email" status="RUNNING" hasAnyHiddenFindings={true} />)
 
     expect(screen.queryByText(/unlock all/i)).not.toBeInTheDocument()
   })
@@ -102,7 +139,7 @@ describe("FindingsList", () => {
       makeEmailFinding({ id: "f-4", severity: "LOW", publicTitle: "D" }),
       makeEmailFinding({ id: "f-5", severity: "INFO", publicTitle: "E" }),
     ]
-    render(<FindingsList findings={findings} tier="email" hasAnyHiddenFindings={false} />)
+    render(<FindingsList findings={findings} tier="email" status="RUNNING" hasAnyHiddenFindings={false} />)
 
     expect(screen.getByText("Critical")).toBeInTheDocument()
     expect(screen.getByText("High")).toBeInTheDocument()
@@ -115,7 +152,7 @@ describe("FindingsList", () => {
     const findings: FindingResponse[] = [
       makeEmailFinding({ severity: "UNKNOWN" as never, publicTitle: "Weird finding" }),
     ]
-    render(<FindingsList findings={findings} tier="email" hasAnyHiddenFindings={false} />)
+    render(<FindingsList findings={findings} tier="email" status="RUNNING" hasAnyHiddenFindings={false} />)
 
     expect(screen.getByText("Info")).toBeInTheDocument()
   })
@@ -128,7 +165,7 @@ describe("FindingsList", () => {
         description: "Admin key holds sole upgrade authority.",
       }),
     ]
-    render(<FindingsList findings={findings} tier="email" hasAnyHiddenFindings={false} />)
+    render(<FindingsList findings={findings} tier="email" status="RUNNING" hasAnyHiddenFindings={false} />)
 
     expect(screen.getByText(/GOVERNANCE · gov-admin-key/)).toBeInTheDocument()
     expect(screen.getByText("Admin key holds sole upgrade authority.")).toBeInTheDocument()
@@ -138,7 +175,7 @@ describe("FindingsList", () => {
     const findings: FindingResponse[] = [
       makeUnauthFinding({ publicTitle: "Teaser" }),
     ]
-    render(<FindingsList findings={findings} tier="unauth" hasAnyHiddenFindings={false} />)
+    render(<FindingsList findings={findings} tier="unauth" status="RUNNING" hasAnyHiddenFindings={false} />)
 
     expect(screen.getByText("Teaser")).toBeInTheDocument()
     expect(screen.queryByText(/GOVERNANCE/)).not.toBeInTheDocument()

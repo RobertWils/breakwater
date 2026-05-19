@@ -3,6 +3,10 @@
  * Returns scan data with findings shaped per §5.3 visibility rules.
  * GAP 3: scanId is the shared secret — no ownership check.
  * GAP 7: session presence → tier=email, absence → tier=unauth.
+ *
+ * Cache-Control per spec §6.2 (Plan 02 G.1):
+ *   - Non-terminal (QUEUED, RUNNING, PARTIAL_COMPLETE) → no-store
+ *   - Terminal (COMPLETE, FAILED, EXPIRED)             → private, max-age=60
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -10,6 +14,14 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { getScan } from "@/lib/scan-response";
 import { UUID_REGEX } from "@/lib/uuid";
+
+const TERMINAL_SCAN_STATUSES = ["COMPLETE", "FAILED", "EXPIRED"] as const;
+
+function cacheControlFor(status: string): string {
+  return (TERMINAL_SCAN_STATUSES as readonly string[]).includes(status)
+    ? "private, max-age=60"
+    : "no-store";
+}
 
 export async function GET(
   req: NextRequest,
@@ -40,7 +52,7 @@ export async function GET(
     return NextResponse.json(scan, {
       status: 200,
       headers: {
-        "Cache-Control": "private, no-cache, no-store, must-revalidate",
+        "Cache-Control": cacheControlFor(scan.status),
       },
     });
   } catch (err) {

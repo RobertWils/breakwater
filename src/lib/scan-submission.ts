@@ -11,9 +11,14 @@ import { prisma } from "@/lib/prisma";
 import { normalizeAddress, isValidAddress } from "@/lib/addresses";
 import { hashEmail, hashPayload } from "@/lib/hash";
 import { cooldownKey as buildCooldownKey } from "@/lib/cooldown";
-import { checkIpRateLimit, checkDedupe } from "@/lib/rate-limit";
+import { inngest } from "@/lib/inngest/client";
+import { log } from "@/lib/logging";
+import { checkIpRateLimit, DEDUPE_WINDOW_MS } from "@/lib/rate-limit";
+import { createScanAttempt } from "@/lib/scan-attempt";
 import { ScanErrors, ScanSubmissionError } from "@/lib/scan-submission/errors";
 import type { ScanSubmission } from "@/lib/schemas/scan";
+
+import { ModuleName } from "@prisma/client";
 
 // Sentinel values for NOT NULL fields on ScanAttempt when full context is unavailable.
 const SENTINEL_COOLDOWN_MALFORMED_JSON = "invalid:json";
@@ -22,6 +27,75 @@ const SENTINEL_COOLDOWN_ADDRESS = "invalid:address";
 const SENTINEL_PAYLOAD_MALFORMED_JSON = "invalid:json";
 const SENTINEL_PAYLOAD_SCHEMA = "invalid:schema";
 const SENTINEL_PAYLOAD_ADDRESS = "invalid:address";
+
+/**
+ * Modules that have an Inngest handler registered in this build.
+ *
+ * Plan 02 ships only GOVERNANCE. ORACLE / SIGNER / FRONTEND are
+ * scheduled for Plan 03+. ModuleRun rows for unimplemented modules
+ * are created as SKIPPED with `errorMessage = "module_not_implemented"`
+ * so the dispatcher's `markComplete` step doesn't hang waiting for a
+ * handler that doesn't exist (Phase H manual smoke surfaced the hang).
+ *
+ * H.9 N1: typed as `ReadonlySet<ModuleName>` (was `<string>`) so the
+ * compiler catches a typo or stale enum value at the source of truth
+ * rather than after a runtime mismatch.
+ *
+ * When implementing a new module in a future plan:
+ *   1. Add its Inngest function in `src/lib/inngest/functions/`.
+ *   2. Register it in `src/app/api/inngest/route.ts`.
+ *   3. Add the ModuleName enum value to this set.
+ *   4. Update `scan-submission-integration.test.ts` assertions.
+ *   5. Optionally update the ModuleCard SKIPPED copy to differentiate
+ *      "Not included" vs "Coming soon" (see Phase G visual-polish
+ *      backlog in NOTES.md).
+ *
+ * Exported so the completeness unit test in
+ * `src/lib/__tests__/scan-submission-modules.test.ts` can assert that
+ * every ModuleName enum value is either implemented or explicitly
+ * acknowledged as a Plan 03+ placeholder.
+ */
+export const IMPLEMENTED_MODULES: ReadonlySet<ModuleName> = new Set<ModuleName>(
+  [ModuleName.GOVERNANCE],
+);
+
+/**
+ * Discriminator for why a ModuleRun ships SKIPPED. `null` means the
+ * row will ship QUEUED (no skip condition triggered).
+ */
+export type SkipReason =
+  | "module_disabled_by_user"
+  | "module_not_implemented"
+  | "domain_required"
+  | null;
+
+/**
+ * H.9 N2: pure, exported priority-resolution for the skip reason on
+ * a ModuleRun row. Priority order (first match wins):
+ *   1. `module_disabled_by_user` — user explicit opt-out beats other
+ *      reasons because their intent is the most useful audit signal.
+ *   2. `module_not_implemented` — no Inngest handler; beats
+ *      `domain_required` because "we cannot run this module at all"
+ *      is a more fundamental reason than "we'd need more input."
+ *   3. `domain_required` — the FRONTEND-needs-domain case.
+ *
+ * Returns `null` when none of the three conditions trigger — the
+ * caller seeds the row as QUEUED with `errorMessage: null`.
+ *
+ * Pure function with no IO — unit-testable without the integration
+ * fixture cost. See `scan-submission-modules.test.ts`.
+ */
+export function computeSkipReason(params: {
+  enabled: boolean;
+  implemented: boolean;
+  requiresDomain: boolean;
+  hasDomain: boolean;
+}): SkipReason {
+  if (!params.enabled) return "module_disabled_by_user";
+  if (!params.implemented) return "module_not_implemented";
+  if (params.requiresDomain && !params.hasDomain) return "domain_required";
+  return null;
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -34,8 +108,14 @@ function deriveDisplayName(
   return `${input.chain} ${shortAddr}`;
 }
 
-function generateSlug(chain: string, normalizedAddress: string): string {
-  const shortAddr = normalizedAddress.slice(0, 8);
+export function generateSlug(
+  chain: string,
+  normalizedAddress: string,
+): string {
+  // 14-char prefix: "0x" + 12 hex chars on Ethereum, 14 base58 chars on Solana.
+  // Reduces collision probability ~65k× vs the prior 8-char prefix. See Plan 02
+  // B.3 for the bump rationale.
+  const shortAddr = normalizedAddress.slice(0, 14);
   return `${chain.toLowerCase()}-${shortAddr}`.toLowerCase();
 }
 
@@ -65,17 +145,15 @@ async function logMalformedAttempt(params: {
       ? SENTINEL_PAYLOAD_MALFORMED_JSON
       : SENTINEL_PAYLOAD_SCHEMA;
   try {
-    await prisma.scanAttempt.create({
-      data: {
-        ipHash: params.ipHash,
-        userId: params.userId,
-        userAgent: params.userAgent,
-        cooldownKey: cooldownKeyVal,
-        inputPayloadHash: payloadHashVal,
-        status: "INVALID",
-        reason: params.reason,
-        scanId: null,
-      },
+    await createScanAttempt(prisma, {
+      ipHash: params.ipHash,
+      userId: params.userId,
+      userAgent: params.userAgent,
+      cooldownKey: cooldownKeyVal,
+      inputPayloadHash: payloadHashVal,
+      status: "INVALID",
+      reason: params.reason,
+      scanId: null,
     });
   } catch (err) {
     console.error("[scan-submission] Failed to log malformed attempt:", err);
@@ -91,17 +169,15 @@ async function logInvalidAttempt(params: {
   reason: string;
 }) {
   try {
-    await prisma.scanAttempt.create({
-      data: {
-        ipHash: params.ipHash,
-        userId: params.userId,
-        userAgent: params.userAgent,
-        cooldownKey: params.cooldownKey,
-        inputPayloadHash: params.inputPayloadHash,
-        status: "INVALID",
-        reason: params.reason,
-        scanId: null,
-      },
+    await createScanAttempt(prisma, {
+      ipHash: params.ipHash,
+      userId: params.userId,
+      userAgent: params.userAgent,
+      cooldownKey: params.cooldownKey,
+      inputPayloadHash: params.inputPayloadHash,
+      status: "INVALID",
+      reason: params.reason,
+      scanId: null,
     });
   } catch (err) {
     console.error("[scan-submission] Failed to log invalid attempt:", err);
@@ -122,17 +198,15 @@ async function logInternalErrorAttempt(params: {
   reason: string;
 }): Promise<void> {
   try {
-    await prisma.scanAttempt.create({
-      data: {
-        ipHash: params.ipHash,
-        userId: params.userId,
-        userAgent: params.userAgent,
-        cooldownKey: params.cooldownKey,
-        inputPayloadHash: params.inputPayloadHash,
-        status: "INVALID",
-        reason: params.reason,
-        scanId: null,
-      },
+    await createScanAttempt(prisma, {
+      ipHash: params.ipHash,
+      userId: params.userId,
+      userAgent: params.userAgent,
+      cooldownKey: params.cooldownKey,
+      inputPayloadHash: params.inputPayloadHash,
+      status: "INVALID",
+      reason: params.reason,
+      scanId: null,
     });
   } catch (err) {
     console.error("[scan-submission] Failed to log internal error attempt:", err);
@@ -148,46 +222,18 @@ async function logRateLimitedAttempt(params: {
   reason: "ip_hour" | "user_hour";
 }) {
   try {
-    await prisma.scanAttempt.create({
-      data: {
-        ipHash: params.ipHash,
-        userId: params.userId,
-        userAgent: params.userAgent,
-        cooldownKey: params.cooldownKey,
-        inputPayloadHash: params.inputPayloadHash,
-        status: "RATE_LIMITED",
-        reason: params.reason,
-        scanId: null,
-      },
+    await createScanAttempt(prisma, {
+      ipHash: params.ipHash,
+      userId: params.userId,
+      userAgent: params.userAgent,
+      cooldownKey: params.cooldownKey,
+      inputPayloadHash: params.inputPayloadHash,
+      status: "RATE_LIMITED",
+      reason: params.reason,
+      scanId: null,
     });
   } catch (err) {
     console.error("[scan-submission] Failed to log rate-limited attempt:", err);
-  }
-}
-
-async function logDuplicateAttempt(params: {
-  ipHash: string;
-  userId: string | null;
-  userAgent: string;
-  cooldownKey: string;
-  inputPayloadHash: string;
-  scanId: string;
-}) {
-  try {
-    await prisma.scanAttempt.create({
-      data: {
-        ipHash: params.ipHash,
-        userId: params.userId,
-        userAgent: params.userAgent,
-        cooldownKey: params.cooldownKey,
-        inputPayloadHash: params.inputPayloadHash,
-        status: "DUPLICATE",
-        reason: "dedupe_recent_identical",
-        scanId: params.scanId,
-      },
-    });
-  } catch (err) {
-    console.error("[scan-submission] Failed to log duplicate attempt:", err);
   }
 }
 
@@ -282,19 +328,13 @@ export async function submitScan(
     );
   }
 
-  // ── Step 4: Payload dedupe ──
-  const { existingScanId } = await checkDedupe({ ipHash, inputPayloadHash: payloadHash });
-  if (existingScanId !== null) {
-    await logDuplicateAttempt({
-      ipHash,
-      userId,
-      userAgent,
-      cooldownKey: key,
-      inputPayloadHash: payloadHash,
-      scanId: existingScanId,
-    });
-    return { scanId: existingScanId, statusCode: 200 };
-  }
+  // ── Step 4: Payload dedupe is now performed INSIDE the transaction
+  //    after the advisory lock (Plan 02 C.4 — I1 fix). The earlier
+  //    pre-transaction check was racy: two concurrent identical POSTs
+  //    could both observe "no existing scan" before either's tx had
+  //    committed an ACCEPTED ScanAttempt. Moving dedupe under the
+  //    advisory lock serialises identical submissions on the cooldown
+  //    key so the second one sees the first's committed ACCEPTED row.
 
   // ── Step 5: Protocol lookup (read-only) ──
   const existingProtocol = await prisma.protocol.findUnique({
@@ -335,7 +375,40 @@ export async function submitScan(
     // Step 7a: Acquire advisory lock (transaction-scoped, auto-released on commit/rollback)
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
 
-    // Step 7b: Cooldown check inside lock
+    // Step 7b: Payload dedupe inside the lock (C.4 I1).
+    // Concurrent identical POSTs serialise on the advisory lock; the second
+    // arrival now sees the first's committed ACCEPTED ScanAttempt and
+    // returns the same scanId with statusCode 200 instead of double-creating.
+    const dedupeSince = new Date(Date.now() - DEDUPE_WINDOW_MS);
+    const dedupeMatch = await tx.scanAttempt.findFirst({
+      where: {
+        ipHash,
+        inputPayloadHash: payloadHash,
+        status: "ACCEPTED",
+        attemptedAt: { gte: dedupeSince },
+        scanId: { not: null },
+      },
+      orderBy: { attemptedAt: "desc" },
+      select: { scanId: true },
+    });
+    if (dedupeMatch?.scanId) {
+      await createScanAttempt(tx, {
+        ipHash,
+        userId,
+        userAgent,
+        cooldownKey: key,
+        inputPayloadHash: payloadHash,
+        status: "DUPLICATE",
+        reason: "dedupe_recent_identical",
+        scanId: dedupeMatch.scanId,
+      });
+      return {
+        type: "duplicate",
+        scanId: dedupeMatch.scanId,
+      } as const;
+    }
+
+    // Step 7c: Cooldown check inside lock
     const cooldownSince = new Date(Date.now() - COOLDOWN_WINDOW_MS);
     const recentAccepted = await tx.scanAttempt.count({
       where: {
@@ -361,17 +434,15 @@ export async function submitScan(
         : COOLDOWN_WINDOW_MS;
       const retryAfterSec = Math.max(1, Math.ceil(retryAfterMs / 1000));
 
-      await tx.scanAttempt.create({
-        data: {
-          ipHash,
-          userId,
-          userAgent,
-          cooldownKey: key,
-          inputPayloadHash: payloadHash,
-          status: "RATE_LIMITED",
-          reason: "protocol_cooldown",
-          scanId: null,
-        },
+      await createScanAttempt(tx, {
+        ipHash,
+        userId,
+        userAgent,
+        cooldownKey: key,
+        inputPayloadHash: payloadHash,
+        status: "RATE_LIMITED",
+        reason: "protocol_cooldown",
+        scanId: null,
       });
 
       return { type: "cooldown_hit", retryAfterSec } as const;
@@ -441,53 +512,165 @@ export async function submitScan(
       select: { id: true },
     });
 
-    // Step 10: Create 4 ModuleRun rows
-    const allModules = ["GOVERNANCE", "ORACLE", "SIGNER", "FRONTEND"] as const;
-    const moduleRuns = allModules.map((module) => {
-      const enabled = (input.modulesEnabled as string[]).includes(module);
-      const requiresDomain = module === "FRONTEND";
-      const hasDomain = !!input.domain;
-      const shouldSkip = !enabled || (requiresDomain && !hasDomain);
-      return {
-        scanId: scan.id,
-        module,
-        status: shouldSkip ? ("SKIPPED" as const) : ("QUEUED" as const),
-        idempotencyKey: generateIdempotencyKey(scan.id, module),
-        inputSnapshot: {
-          chain: input.chain,
-          normalizedAddress,
-          extraContractAddresses: normalizedExtras,
-          domain: input.domain ?? null,
-          multisigs: normalizedMultisigs,
-          modulesEnabled: input.modulesEnabled,
-        },
-        attemptCount: 0,
-        rpcCallsUsed: 0,
-        detectorVersions: {},
-      };
-    });
+    // Step 10: Create one ModuleRun row per ModuleName enum value.
+    //
+    // H.6 introduced the SKIPPED-with-audit-reason gate; H.9 refined
+    // it: iteration is now derived from the ModuleName enum
+    // (Object.values) instead of a hardcoded array — N1 future-proofing
+    // against adding a new ModuleName without updating this loop. The
+    // skip-reason priority resolution lives in the pure `computeSkipReason`
+    // helper above; this loop just applies its decision.
+    const moduleRuns = (Object.values(ModuleName) as ModuleName[]).map(
+      (name) => {
+        const enabled = (input.modulesEnabled as string[]).includes(name);
+        const implemented = IMPLEMENTED_MODULES.has(name);
+        const requiresDomain = name === ModuleName.FRONTEND;
+        const hasDomain = !!input.domain;
+
+        const skipReason = computeSkipReason({
+          enabled,
+          implemented,
+          requiresDomain,
+          hasDomain,
+        });
+
+        return {
+          scanId: scan.id,
+          module: name,
+          status: skipReason
+            ? ("SKIPPED" as const)
+            : ("QUEUED" as const),
+          errorMessage: skipReason,
+          idempotencyKey: generateIdempotencyKey(scan.id, name),
+          inputSnapshot: {
+            chain: input.chain,
+            normalizedAddress,
+            extraContractAddresses: normalizedExtras,
+            domain: input.domain ?? null,
+            multisigs: normalizedMultisigs,
+            modulesEnabled: input.modulesEnabled,
+          },
+          attemptCount: 0,
+          rpcCallsUsed: 0,
+          detectorVersions: {},
+        };
+      },
+    );
+
+    // H.9 BLOCKER Layer B: reject scans where every module would ship
+    // SKIPPED (zero runnable). Schema-level `.min(1)` catches
+    // `modulesEnabled: []`; this catches the case where only
+    // unimplemented modules are enabled (e.g. `["ORACLE"]`). Throws
+    // before `createMany` so no ModuleRun rows persist; the throw
+    // also rolls back the Scan row this tx callback already created.
+    if (!moduleRuns.some((m) => m.status === "QUEUED")) {
+      throw ScanErrors.noRunnableModules(
+        Array.from(IMPLEMENTED_MODULES).sort(),
+      );
+    }
+
     await tx.moduleRun.createMany({ data: moduleRuns });
 
-    // Step 11: Write ACCEPTED ScanAttempt
-    await tx.scanAttempt.create({
-      data: {
-        ipHash,
-        userId,
-        userAgent,
-        cooldownKey: key,
-        inputPayloadHash: payloadHash,
-        status: "ACCEPTED",
-        reason: "accepted",
-        scanId: scan.id,
-      },
+    // Step 11: Write ACCEPTED ScanAttempt. ACCEPTED rows store reason=null
+    // since "accepted" carried no information beyond the status itself
+    // (Plan 02 B.3 — ScanAttempt.reason made nullable).
+    await createScanAttempt(tx, {
+      ipHash,
+      userId,
+      userAgent,
+      cooldownKey: key,
+      inputPayloadHash: payloadHash,
+      status: "ACCEPTED",
+      reason: null,
+      scanId: scan.id,
     });
 
-    return { type: "success", scanId: scan.id } as const;
+    return {
+      type: "success",
+      scanId: scan.id,
+      protocolId: protocol.id,
+    } as const;
   });
 
   if (txResult.type === "cooldown_hit") {
     throw ScanErrors.protocolCooldown(txResult.retryAfterSec);
   }
+
+  if (txResult.type === "duplicate") {
+    // Identical-payload re-submission absorbed inside the lock (C.4 I1).
+    // Same shape as the prior pre-tx duplicate path: 200 + original scanId.
+    return { scanId: txResult.scanId, statusCode: 200 };
+  }
+
+  // C.2.5: Lifecycle log — scan row exists, request was accepted (202).
+  log({
+    event: "scan.submitted",
+    scanId: txResult.scanId,
+    chain: input.chain,
+    modulesEnabled: input.modulesEnabled,
+  });
+
+  // C.2 / C.4 (I2 + B2): Emit scan.queued for the dispatcher (executeScan).
+  // Two-phase best-effort:
+  //   Phase A — send the event with a deterministic Inngest event id so a
+  //             retry of submitScan for the same scan is server-side
+  //             deduplicated (B2 idempotency).
+  //   Phase B — record inngestEventId + dispatchedAt on the Scan row so
+  //             recovery jobs can tell "event sent" from "scan orphaned":
+  //               inngestEventId NOT NULL → event was sent
+  //               dispatchedAt    NULL    → DB write of (A)'s receipt failed
+  //                                          but the event is already in flight.
+  // Each phase has its own try/catch (I2) so a Phase B failure does not
+  // mask Phase A success.
+  let sentInngestEventId: string | undefined;
+  try {
+    const sendResult = await inngest.send({
+      id: `scan:${txResult.scanId}:queued`,
+      name: "scan.queued",
+      data: {
+        scanId: txResult.scanId,
+        protocolId: txResult.protocolId,
+        chain: input.chain,
+        primaryContractAddress: normalizedAddress,
+        modulesEnabled: input.modulesEnabled,
+      },
+    });
+    sentInngestEventId = sendResult.ids[0];
+  } catch (err) {
+    console.error(
+      "[scan-submission] Inngest emission failed for scan.queued:",
+      err,
+    );
+    // Phase A failed: scan exists, no event sent. A recovery job can
+    // identify the scan via inngestEventId IS NULL AND status='QUEUED'.
+    return { scanId: txResult.scanId, statusCode: 202 };
+  }
+
+  // Phase A succeeded — emission is in flight. Persist the receipt.
+  try {
+    await prisma.scan.update({
+      where: { id: txResult.scanId },
+      data: {
+        dispatchedAt: new Date(),
+        inngestEventId: sentInngestEventId ?? null,
+      },
+    });
+  } catch (err) {
+    console.error(
+      "[scan-submission] dispatchedAt/inngestEventId update failed:",
+      err,
+    );
+    // Recovery semantics: inngestEventId may still be null in the DB
+    // even though the event was sent. A recovery job MUST treat
+    // dispatchedAt IS NULL as "uncertain" rather than "not dispatched"
+    // and reconcile via the Inngest dashboard if the scan stalls.
+  }
+
+  log({
+    event: "scan.dispatched",
+    scanId: txResult.scanId,
+    inngestEventId: sentInngestEventId,
+  });
 
   return { scanId: txResult.scanId, statusCode: 202 };
 }

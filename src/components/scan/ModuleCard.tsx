@@ -43,6 +43,7 @@ export function ModuleCard({ module }: ModuleCardProps) {
   const label = MODULE_LABELS[module.module] ?? module.module
   const status = STATUS_STYLES[module.status] ?? STATUS_STYLES.QUEUED
   const hasGrade = module.grade !== null
+  const isRunning = module.status === "RUNNING"
 
   return (
     <article className="glass-card p-6 space-y-4">
@@ -50,12 +51,24 @@ export function ModuleCard({ module }: ModuleCardProps) {
         <h3 className="text-lg font-semibold text-primary">
           {label}
         </h3>
-        <span
-          className="text-xs font-mono uppercase tracking-wider px-2 py-1 rounded"
-          style={{ color: status.color, backgroundColor: status.bg }}
-        >
-          {status.label}
-        </span>
+        <div className="flex items-center gap-2">
+          {isRunning && (
+            // G.3 / spec §7.3 — subtle in-progress pulse. motion-reduce
+            // disables the animation for users who prefer reduced motion.
+            <span
+              role="status"
+              aria-live="polite"
+              aria-label={`${label} module is running`}
+              className="h-2 w-2 rounded-full bg-sky animate-pulse motion-reduce:animate-none"
+            />
+          )}
+          <span
+            className="text-xs font-mono uppercase tracking-wider px-2 py-1 rounded"
+            style={{ color: status.color, backgroundColor: status.bg }}
+          >
+            {status.label}
+          </span>
+        </div>
       </div>
 
       {hasGrade ? (
@@ -71,7 +84,16 @@ export function ModuleCard({ module }: ModuleCardProps) {
               {module.score}/100
             </span>
           )}
-          {module.findingsCount !== null && module.findingsCount > 0 && (
+          {/*
+            I.2 follow-up: render findingsCount whenever the value is
+            populated (including 0). The pre-FIX render gated on `> 0`
+            and hid 0-finding clean scans entirely, which made the I.1
+            FIX 2 persistence work invisible — a reviewer couldn't tell
+            "persisted 0" from "still null" without a DB query. The
+            null-guard remains so the line stays hidden during
+            QUEUED/RUNNING before the persist tx writes the count.
+          */}
+          {module.findingsCount !== null && (
             <span className="text-sm text-muted ml-auto">
               {module.findingsCount} finding{module.findingsCount !== 1 ? "s" : ""}
             </span>
@@ -87,7 +109,18 @@ export function ModuleCard({ module }: ModuleCardProps) {
         </p>
       )}
 
-      {module.errorMessage && (
+      {/*
+        H.7: only surface errorMessage on FAILED ModuleRuns. SKIPPED rows
+        carry internal audit strings (`module_not_implemented`,
+        `module_disabled_by_user`, `domain_required`) since H.6, and those
+        belong in the DB for analytics — not in a red `role="alert"` box
+        that misleads users into thinking the scan errored. The DB field
+        is still persisted; if Plan 03+ adds user-facing copy for the
+        skip reasons (e.g., "Coming soon" for `module_not_implemented`),
+        it should map the audit string to UX copy here rather than
+        dumping the raw value.
+      */}
+      {module.status === "FAILED" && module.errorMessage && (
         <p
           role="alert"
           className="text-xs p-3 rounded"
