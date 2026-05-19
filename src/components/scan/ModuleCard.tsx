@@ -84,7 +84,16 @@ export function ModuleCard({ module }: ModuleCardProps) {
               {module.score}/100
             </span>
           )}
-          {module.findingsCount !== null && module.findingsCount > 0 && (
+          {/*
+            I.2 follow-up: render findingsCount whenever the value is
+            populated (including 0). The pre-FIX render gated on `> 0`
+            and hid 0-finding clean scans entirely, which made the I.1
+            FIX 2 persistence work invisible — a reviewer couldn't tell
+            "persisted 0" from "still null" without a DB query. The
+            null-guard remains so the line stays hidden during
+            QUEUED/RUNNING before the persist tx writes the count.
+          */}
+          {module.findingsCount !== null && (
             <span className="text-sm text-muted ml-auto">
               {module.findingsCount} finding{module.findingsCount !== 1 ? "s" : ""}
             </span>
