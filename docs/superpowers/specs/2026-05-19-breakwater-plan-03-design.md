@@ -165,9 +165,15 @@ model Finding {
 }
 ```
 
-### §3.3 Scan — protocol-composite fields stay; per-Contract grade lives on Contract
+### §3.3 Scan — protocol-composite fields restructured
 
-`Scan.compositeScore` and `Scan.compositeGrade` remain on the Scan row — they describe the **protocol-level** composite computed by the rollup logic in §6.2. The **per-Contract** equivalents (`compositeScore`, `compositeGrade`, `isPartialGrade`) are declared on the Contract model in §3.1 above and persisted by `markComplete` (§4.5) using the Plan 02 spec §5.3 composite algorithm applied to that Contract's findings.
+The Scan row carries the **protocol-level** composite computed by the rollup logic in §6.2. Plan 03 restructures the Plan 02 single-score field into two named fields to defuse the F/50 UX disconnect (per §6.2 and IMPORTANT 1 of the Codex review):
+
+- `Scan.compositeGrade` — kept (Plan 02 carryover). Semantic now widens to "worst contributing contract's grade" per §6.2.
+- `Scan.averageContractScore` — **renamed from `Scan.compositeScore`** (PR 1 migration in §3.5). Holds the arithmetic mean of per-Contract scores across graded Contracts.
+- `Scan.worstContractScore` — **new column** (PR 1 migration). Holds the lowest `Contract.compositeScore` among Contracts whose grade matches `Scan.compositeGrade` (ties broken by lowest score per §6.2).
+
+The **per-Contract** equivalents (`compositeScore`, `compositeGrade`, `isPartialGrade`) are declared on the Contract model in §3.1 above and persisted by `markComplete` (§4.5) using the Plan 02 spec §5.3 composite algorithm applied to that Contract's findings.
 
 `Scan.isPartialGrade` retains its Plan 02 I.1 FIX 3 meaning ("a detector that should have run crashed") but now aggregates across all Contracts in the scan, with the extension described in §6.3 (FAILED Contracts in a partially-complete graph also trigger the flag).
 
@@ -183,21 +189,123 @@ The Plan 01 `Protocol.extraContractAddresses Json @default("[]")` field was wire
 
 The net effect: every Scan in the DB has ≥1 Contract row after backfill, but only Plan-03-era scans have >1.
 
-### §3.5 Migrations
+### §3.5 Migrations — two-PR deployment strategy
 
-One additive Prisma migration, planned name `plan_03_contract_model_and_per_contract_runs`:
+Plan 03 ships migrations across **two separate PRs / deploys**. This is forced by a Prisma deployment-safety constraint Codex flagged: `prisma migrate deploy` runs every pending migration sequentially, so an additive migration and a constraint-tightening migration committed to the same PR will execute back-to-back with no opportunity for a manual backfill in between. The NOT NULL constraint would violate before the backfill ever ran. Splitting across two deploys is the unambiguous fix.
 
-1. `CREATE TABLE "Contract"` with the fields from §3.1.
-2. `ALTER TABLE "ModuleRun" ADD COLUMN "contractId"` (nullable initially for migration safety, then backfilled, then `NOT NULL` in a follow-up migration if data exists).
-3. `ALTER TABLE "GovernanceSnapshot" ADD COLUMN "contractId"` (same pattern).
-4. `ALTER TABLE "Finding" ADD COLUMN "contractId"`.
-5. Drop the old `@@unique([scanId, module])` on `ModuleRun`; add the new `@@unique([scanId, module, contractId])`.
-6. Drop `GovernanceSnapshot.scanId @unique`; add `GovernanceSnapshot.contractId @unique`.
-7. Backfill: for every existing pre-Plan-03 Scan row, create exactly one Contract row from `Scan.protocol.primaryContractAddress` (role: `PRIMARY`, `isPrimary: true`), and update the corresponding ModuleRun / GovernanceSnapshot / Finding rows with that `contractId`.
+#### PR 1 — Additive migration + backfill capability
 
-**Backfill is REQUIRED before the new NOT NULL constraints land,** otherwise existing scans break. Plan 03 plans to do this in two migrations: (a) additive with nullable `contractId` + backfill; (b) follow-up that adds the NOT NULL + new unique constraints once the backfill is verified. This matches the Plan 02 B.3 precedent (additive schema land first, constraint tightening later).
+Migration name: `plan_03_add_contract_model_additive`. Explicit physical SQL behavior per table:
 
-Plan 03 confirms no destructive operations beyond the constraint-tightening migration: column drops, table drops, type changes, or RENAME operations are all avoided. Code-only rollback to Plan 02 stays possible because the Plan 02 schema is a strict subset of the post-Plan-03 schema during the additive-only phase. After the NOT NULL tightening, rollback requires migration-down (which Plan 03 ships as a documented manual SQL procedure — not as a Prisma down-migration, since Prisma's migration tooling is forward-only).
+**`Contract` (new table):**
+
+```sql
+CREATE TABLE "Contract" (
+  "id"              TEXT PRIMARY KEY,
+  "scanId"          TEXT NOT NULL REFERENCES "Scan"("id") ON DELETE CASCADE,
+  "address"         TEXT NOT NULL,
+  "chain"           "Chain" NOT NULL,
+  "role"            "ContractRole" NOT NULL,
+  "label"           TEXT,
+  "crossChainTwins" JSONB NOT NULL DEFAULT '[]',
+  "isPrimary"       BOOLEAN NOT NULL DEFAULT false,
+  "createdAt"       TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "compositeScore"  INTEGER,
+  "compositeGrade"  "Grade",
+  "isPartialGrade"  BOOLEAN NOT NULL DEFAULT false
+);
+CREATE UNIQUE INDEX "Contract_scanId_address_key" ON "Contract"("scanId", "address");
+CREATE INDEX "Contract_scanId_idx" ON "Contract"("scanId");
+```
+
+**`ModuleRun` (additive column):**
+
+```sql
+ALTER TABLE "ModuleRun" ADD COLUMN "contractId" TEXT REFERENCES "Contract"("id");
+-- The legacy @@unique([scanId, module]) stays in place for PR 1.
+-- No NOT NULL and no new composite-unique yet — those land in PR 2.
+```
+
+**`GovernanceSnapshot` (additive column + relaxation):**
+
+```sql
+ALTER TABLE "GovernanceSnapshot" ALTER COLUMN "scanId" DROP NOT NULL;
+ALTER TABLE "GovernanceSnapshot" DROP CONSTRAINT "GovernanceSnapshot_scanId_key";
+ALTER TABLE "GovernanceSnapshot" ADD COLUMN "contractId" TEXT REFERENCES "Contract"("id");
+-- contractId is nullable in PR 1; unique index on it lands in PR 2 (sparse-unique pattern would also work but Prisma's
+-- unique-index migration is simpler with NOT NULL already in place).
+```
+
+**`Finding` (additive column):**
+
+```sql
+ALTER TABLE "Finding" ADD COLUMN "contractId" TEXT REFERENCES "Contract"("id");
+```
+
+**`Scan` (new graph-aware composite columns — IMPORTANT 1):**
+
+```sql
+ALTER TABLE "Scan" RENAME COLUMN "compositeScore" TO "averageContractScore";
+ALTER TABLE "Scan" ADD COLUMN "worstContractScore" INTEGER;
+-- `compositeGrade` keeps its column name; its semantic widens to "worst contributing
+-- contract's grade" (§6.2). The column type is unchanged.
+```
+
+The `compositeScore → averageContractScore` rename is the one Plan-02-schema mutation in Plan 03. Plan 02 had no public API consumers of this column beyond the in-app UI (§13), so the rename is safe; the API/response layer in PR 1 ships the new field name.
+
+**Backfill script: `scripts/backfill-plan-03-contracts.ts`.** Idempotent and re-runnable:
+
+- For each `Scan` lacking a Contract row: create one Contract row keyed `(scanId, address = Scan.protocol.primaryContractAddress)` with `role = PRIMARY`, `isPrimary = true`, `compositeScore`/`compositeGrade`/`isPartialGrade` set from the Scan's pre-rename values where possible (compositeGrade copies from Scan.compositeGrade; the per-Contract score gets the historical Scan.averageContractScore, which post-rename holds the old single-contract score).
+- For each `ModuleRun` / `GovernanceSnapshot` / `Finding` row with null `contractId`: write the PRIMARY Contract's id into `contractId`.
+- Idempotency check: before any write, the script queries the row's current state and skips if `contractId` is already populated. Safe to re-run after partial failure.
+
+**PR 1 read paths — graceful degradation.** PR 1 ships the multi-contract execution model for *new* scans (which always have Contract rows from creation time) **and** a read-side fallback for any Scan whose Contract rows do not yet exist:
+
+- `GET /api/scan/[id]` and `GET /api/scan/[id]/status`: if the Scan has zero Contract rows, synthesise a single-Contract response from `Scan.protocol.primaryContractAddress` + the legacy `(scanId, module)`-keyed ModuleRun rows. The fallback is purely a read-side adapter — no writes happen to historical rows except via the backfill script.
+- This fallback path is **temporary**. It exists for the soak window between PR 1's deploy and the backfill's completion. PR 2 removes it.
+
+**After PR 1 deploys:** Robert runs `pnpm db:backfill-plan-03-contracts` against production manually. Verifies every Scan now has ≥1 Contract row, every ModuleRun / GovernanceSnapshot / Finding has a non-null `contractId`. Soak period: at least one production multi-contract scan completes end-to-end (Aave V3 demo) before PR 2 is considered.
+
+#### PR 2 — Constraint-tightening migration
+
+Migration name: `plan_03_tighten_contract_id_constraints`. Lands only after PR 1's backfill is verified clean in production.
+
+**`ModuleRun`:**
+
+```sql
+ALTER TABLE "ModuleRun" ALTER COLUMN "contractId" SET NOT NULL;
+ALTER TABLE "ModuleRun" DROP CONSTRAINT "ModuleRun_scanId_module_key";
+ALTER TABLE "ModuleRun" ADD CONSTRAINT "ModuleRun_scanId_module_contractId_key"
+  UNIQUE ("scanId", "module", "contractId");
+```
+
+**`GovernanceSnapshot`:**
+
+```sql
+ALTER TABLE "GovernanceSnapshot" ALTER COLUMN "contractId" SET NOT NULL;
+ALTER TABLE "GovernanceSnapshot" ADD CONSTRAINT "GovernanceSnapshot_contractId_key"
+  UNIQUE ("contractId");
+```
+
+**`Finding`:**
+
+```sql
+ALTER TABLE "Finding" ALTER COLUMN "contractId" SET NOT NULL;
+```
+
+PR 2 also removes the PR 1 read-side fallback adapter — post-PR-2, all reads go through the contractId-keyed shape exclusively.
+
+#### Legacy columns kept (no drops in Plan 03)
+
+The pre-Plan-03 `scanId` columns on `GovernanceSnapshot` and `ModuleRun` are **kept** as nullable for backward-compat reads of historical rows (which still carry the original scanId value alongside the backfilled contractId). They are NOT dropped in Plan 03. Plan 05+ can consider dropping them after a sufficient grace period and a separate destructive-migration plan.
+
+#### Rollback
+
+- **Between PR 1 deploy and backfill run:** code-only rollback to Plan 02. Plan 02 code reads cleanly because every Plan 03 column is nullable; the new Contract table is unused; the renamed `averageContractScore` column is read-only to Plan 02 (it doesn't write it). One caveat: post-PR-1 code expects the column to be named `averageContractScore` — a Plan 02 rollback would need a one-line code-side compat shim or a quick down-migration to rename back. Documented in `docs/deployment-env.md` Plan 03 addendum.
+- **Between PR 1 backfill and PR 2 deploy:** identical to above — backfill writes are pure data; rollback survives.
+- **After PR 2 deploy:** rollback requires manual SQL revert (drop the new uniques, restore the old, set `contractId` columns nullable, etc.). Same forward-only Prisma constraint Plan 02 lives with.
+
+Plan 03 confirms no destructive operations beyond the column rename (`compositeScore → averageContractScore`). No table drops, no type changes, no other RENAMEs. The Plan 02 schema is a near-strict subset of the post-PR-1 schema (modulo the one rename) which is a strict subset of the post-PR-2 schema.
 
 ---
 
@@ -245,10 +353,13 @@ export const ScanSubmissionSchema = z.object({
 
 **Validation rules:**
 
+- **Chain must equal `ETHEREUM`.** The Chain enum still includes `SOLANA` (Plan 02 §1.2 keeps curated Solana demo data static / never scanned). Any submitted Chain other than `ETHEREUM` → 400 with `unsupported_chain_for_plan_03`. Plan 04+ lifts this validation when multi-chain scanning lands; the Chain enum stays intact in Prisma so curated Solana demos continue to render unchanged.
 - **Max related contracts per scan: 20.** Exceeds → 400 with `too_many_related_contracts`. The cap is intentionally tight for Plan 03 — a graph of 5–10 contracts covers most real protocols; 20 leaves headroom; 50+ scans would dominate RPC budgets and execution time. Plan 04+ can revisit when auto-discovery surfaces graphs that genuinely exceed 20. The cap is implemented as a named constant (`MAX_RELATED_CONTRACTS` in `src/lib/config.ts` or equivalent module) referenced by the zod schema's `.max()` validator and by any UI affordance that wants to surface the limit, so future plans can revisit the value in one place. The cap is **product policy, not deployment policy** — deliberately NOT a runtime env var: a single canonical value across environments avoids per-deployment drift.
 - **Per-address validation:** each address must pass the same `isValidAddress(chain, addr)` check that primary uses today. Invalid → 400 with the specific index + field path (consistent with Plan 02's existing error shape).
-- **Deduplication:** if `primaryContractAddress` also appears in `relatedContracts`, drop the duplicate (keep the primary). If two related entries share an address, drop the second; emit no error.
-- **Primary cannot appear under a non-PRIMARY role.** If user submits `primary: 0xAAA` and `relatedContracts: [{address: 0xAAA, role: DECLARED_MULTISIG}]`, the submission layer treats this as a misconfiguration → 400 with `primary_address_in_related`.
+- **Primary-address-in-related rule (single coherent rule, replaces the contradictory pair in revision 1):**
+  - If `primaryContractAddress` also appears in `relatedContracts` with a **non-default role** (`PROXY_IMPLEMENTATION`, `DECLARED_MULTISIG`, `DECLARED_BRIDGE`, `TOKEN_CONTRACT`, `TIMELOCK`) → 400 with `primary_address_in_related`. This is a genuine misconfiguration: the user is trying to assign the primary contract two roles simultaneously, which the data model cannot represent. The error names the role the user supplied so they can fix the submission.
+  - If `primaryContractAddress` also appears in `relatedContracts` with **no role specified OR `role: RELATED`** (the legacy plain-string `extraContractAddresses` shape normalises to this) → silently dedupe; keep the PRIMARY Contract row; emit no error. This is how legacy Plan 02 API clients reach the new validator, and rejecting them would break backward compat for no product reason.
+- **Inter-related deduplication:** if two entries in `relatedContracts` share an address, drop the second; emit no error. (No role-mismatch error in the inter-related case — the user listed one address twice, which is harmless ambiguity.)
 
 ### §4.2 Scan creation
 
@@ -308,14 +419,20 @@ export type ScanModuleCompletedEventData = {
      contractIds.map((contractId) =>
        step.waitForEvent(`wait-${module}-${contractId}`, {
          event: "scan.module.completed",
-         if: `event.data.scanId == '${scanId}' && event.data.module == '${module}' && event.data.contractId == '${contractId}'`,
+         if: `event.data.scanId == async.data.scanId && async.data.module == '${module}' && async.data.contractId == '${contractId}'`,
          timeout: "5m",
        }),
      ),
    );
    ```
 
-   The compound `if` filter (Inngest's expression syntax) replaces the Plan 02 `match: "data.scanId"` single-field match — this closes NOTES.md L67. Each waitForEvent step is uniquely named per `(module, contractId)` so retries don't cross-resume across siblings.
+   **`event` vs `async` in Inngest wait expressions.** Inside `step.waitForEvent`'s `if` expression, `event` references the **original triggering event** that invoked this function (`scan.queued`) and `async` references the **incoming event being matched** (`scan.module.completed`). This is the load-bearing distinction Plan 02 sidestepped by using the simpler `match: "data.scanId"` form (which auto-pairs a single field path between the two events). Plan 03's compound match must spell out which event each field comes from:
+
+   - `event.data.scanId` — the scanId from the original `scan.queued` event (i.e., the scan we're currently executing).
+   - `async.data.scanId` — the scanId on the incoming `scan.module.completed` event. The equality `event.data.scanId == async.data.scanId` is what scopes the waiter to this scan.
+   - `async.data.module` / `async.data.contractId` — fields on the incoming event. These don't exist on `scan.queued`, so referencing them as `event.data.module` would silently fail to match.
+
+   This closes NOTES.md L67 (the Plan 02 compound-match backlog item). Each waitForEvent step is uniquely named per `(module, contractId)` so retries don't cross-resume across siblings.
 
 4. After all waits resolve (or timeout — handled per-wait in §4.4), call `markComplete` (§4.5).
 
@@ -362,13 +479,53 @@ The existing six governance detectors are pure functions of one `GovernanceSnaps
 export type GovernanceDetector = (snapshot: GovernanceSnapshotData) => GovernanceFindingInput[];
 ```
 
-**This signature does not change in Plan 03.** Each detector continues to operate on a single contract's snapshot. The orchestration layer (`executeGovernanceModule`) is what changes — it now runs the detector pass *per Contract*:
+**The detector signature does not change in Plan 03.** Each detector continues to operate on a single contract's snapshot. But the **snapshot-capture layer does change**: it becomes role-aware so that the snapshot fed to detectors carries the right facts for the Contract's role. Without this change, a Contract submitted with `role: DECLARED_MULTISIG` would be scanned as if it were a governor target — the existing Plan 02 `captureGovernanceSnapshot` only invokes `detectSafe` when a *separate* `declaredMultisigAddresses[0]` is passed (see `src/lib/detectors/governance/capture-snapshot.ts` L78–83), so a multisig submitted as the scan target itself would never trigger Safe detection and GOV-003 would never fire on it.
 
-1. `captureGovernanceSnapshot` runs once per Contract, producing one `GovernanceSnapshotData` per Contract.
+The orchestration layer (`executeGovernanceModule`) is what changes structurally:
+
+1. `captureGovernanceSnapshot` runs once per Contract, producing one `GovernanceSnapshotData` per Contract. The capture call now accepts the Contract's `role` (and any role-derived candidate addresses) and routes detector probes accordingly — see §5.1.1 below.
 2. The detector registry (`GOVERNANCE_DETECTORS`) runs against each Contract's snapshot.
 3. Findings collected per detector per Contract; each Finding row carries `contractId`.
 4. Per-Contract `Contract.compositeGrade` + `Contract.compositeScore` written in the persist transaction.
 5. ModuleRun grade / score / findingsCount / errorDetectorCount semantics unchanged from Plan 02 — but rows are now keyed `(scanId, module, contractId)` per §3.2.
+
+#### §5.1.1 Role-aware snapshot capture
+
+`CaptureSnapshotContext` widens to carry the Contract's role:
+
+```typescript
+export interface CaptureSnapshotContext {
+  contractAddress: string;           // formerly `protocolAddress`
+  role: ContractRole;                // NEW (Plan 03)
+  blockNumber?: bigint;              // optional pin for graph-wide consistency (§5.1.2)
+  declaredMultisigCandidate?: string; // sibling multisig hint, when the user supplied one
+  timelockCandidate?: string;        // sibling timelock hint, when the user supplied one
+}
+```
+
+`captureGovernanceSnapshot` branches on `role` to decide *which* probes to invoke directly against the scan target vs. cascade-from-governor:
+
+| Role | Governor probe | Timelock probe | Safe probe | Proxy probe |
+|---|---|---|---|---|
+| `PRIMARY` | direct on `contractAddress` (Plan 02 default) | cascade from governor, OR `timelockCandidate` if supplied | only if `declaredMultisigCandidate` supplied | direct on `contractAddress` (Plan 02 default) |
+| `PROXY_IMPLEMENTATION` | direct on `contractAddress` | cascade from governor (impls can be governors too) | only if `declaredMultisigCandidate` supplied | direct on `contractAddress` (returns `NONE` for impls, which is correct) |
+| `DECLARED_MULTISIG` | not invoked (multisigs aren't governors) | not invoked | **direct on `contractAddress`** — passes the scan target as `candidateAddress` to `detectSafe`. This is the load-bearing fix: GOV-003 now fires on the multisig itself | not invoked |
+| `TIMELOCK` | not invoked | **direct on `contractAddress`** — passes the scan target as `candidateAddress` to `detectTimelock` (the existing `TimelockDetectionContext.candidateAddress` field already supports this, so no new code surface). GOV-001 now grades the timelock's own posture | not invoked | direct on `contractAddress` (timelocks can be behind proxies) |
+| `TOKEN_CONTRACT` | (entire GOVERNANCE module SKIPPED per §4.2 role-applicability gate; capture not invoked) | — | — | — |
+| `DECLARED_BRIDGE` | (entire module SKIPPED per §4.2; Plan 04 GOV-007 will use a bridge-specific capture path) | — | — | — |
+| `RELATED` | Plan 02 default behavior (governor probe direct, timelock cascaded, safe only if candidate supplied, proxy direct) | | | |
+
+**Implementation cost honestly stated.** The new code surface is small:
+
+- `CaptureSnapshotContext` widens to carry `role` and optional sibling-candidate addresses. The existing `protocolAddress` field renames to `contractAddress` (a cosmetic rename that's clearer in a multi-contract world).
+- A switch on `role` inside `captureGovernanceSnapshot` selects which detector invocations happen with which inputs. The underlying detector functions (`detectSafe`, `detectTimelock`, `detectGovernor`, `detectProxy`) already accept `candidateAddress` / `protocolAddress` parameters appropriate to direct probing — Plan 02 already built that flexibility — so no new viem reads, no new Etherscan calls, and no new RPC surface area beyond what was already wired.
+- The `rawState` shape (used for debugging and persisted into `GovernanceSnapshot.rawState`) gains a `role` field naming which branch was taken, so post-hoc debugging can confirm the right capture path fired.
+
+The detector functions themselves stay pure and unchanged — they read whatever snapshot fields they care about; the snapshot now reliably carries the right facts.
+
+#### §5.1.2 Cross-Contract block-number consistency (best-effort)
+
+Plan 02's snapshot pins to `publicClient.getBlockNumber()` at capture time, giving a consistent chain view *within* one snapshot. Plan 03 captures N snapshots — running in parallel they will pin to slightly different block numbers (one block apart in the worst case, given Ethereum's 12 s blocks and the parallel fan-out timing). This is acceptable for governance reads (admin / multisig / timelock / proxy state changes are rare on a per-block timescale) and Plan 03 does NOT introduce graph-wide block coordination. If a future graph-aware detector (GOV-007, GOV-008) needs strict block-equality across snapshots, Plan 04 can add a coordinator that pins all captures to a single pre-fetched block number; the `blockNumber?` field on `CaptureSnapshotContext` is the seam where that coordinator would inject its value.
 
 ### §5.2 No new detectors in Plan 03
 
@@ -387,7 +544,25 @@ Plan 02's `captureGovernanceSnapshot` already produces, per contract, a snapshot
 
 **Plan 03 does NOT auto-add proxy implementations to the graph.** If a user submits a TransparentUpgradeableProxy as `PRIMARY` and does not also submit its implementation as a related contract, the implementation is captured *within the primary's snapshot* (existing Plan 02 D.5 behavior — `proxyImplementation` field on `GovernanceSnapshotData`) but is not separately scanned. To scan the implementation as a first-class contract, the user adds it explicitly to `relatedContracts` with `role: PROXY_IMPLEMENTATION`. Auto-promotion of implementations to Contract rows is a Plan 04 enhancement.
 
+**Detect-and-warn for un-submitted proxy implementations (Plan 03 NICE-TO-HAVE shipped).** When the user submits a proxy contract as `PRIMARY` (or any role) without also submitting its implementation as a separate Contract, the snapshot-capture path still detects the implementation address via EIP-1967 / EIP-1822 / OZ-custom (existing Plan 02 D.5 behavior). Plan 03 surfaces a non-blocking warning on that Contract's card in the UI:
+
+> "Proxy implementation detected at `0x…` — included in this contract's snapshot but not graded as a separate Contract. Resubmit this scan with the implementation as a `PROXY_IMPLEMENTATION` related contract to get a separate grade."
+
+This is **detect-and-warn**, not auto-promote: the user keeps full control over what makes it into the graph, and the UI affordance closes the usability gap that Plan 04's auto-promotion will eventually handle automatically. The warning is purely a UI signal — no schema field tracks it; `ContractResponse` derives it at response-build time by checking `snapshot.proxyImplementation !== null` against the set of `relatedContracts` already in the scan. Placement on the UI is detailed in §7.4.
+
 **Duplicate findings under user-supplied proxy + implementation.** If the user submits both a proxy contract as `PRIMARY` and its implementation as a separate Contract with role `PROXY_IMPLEMENTATION`, each is scanned independently. The implementation's snapshot data appears in BOTH the primary's snapshot (via the existing Plan 02 D.5 `proxyImplementation` field on the primary's `GovernanceSnapshotData`) AND as a standalone Contract snapshot. Detector findings on the implementation will therefore fire in both contexts. **Plan 03 does NOT deduplicate these.** The user's explicit submission of both is informative: a finding tagged with the proxy's `contractId` says "this issue exists when interacting through the proxy"; the same finding tagged with the implementation's `contractId` says "this issue exists in the implementation logic." Both framings are useful, and the UI groups findings by Contract (§7.4), so users see them as distinct entries rather than redundant duplicates. A user wanting a single scan of just the proxy or just the implementation can submit only one.
+
+#### §5.3.1 Per-contract idempotency invariant (Plan 02 I.1 FIX 1 extension)
+
+**Invariant — all snapshot, finding, and ModuleRun persistence operations are scoped by the FULL composite key `(scanId, module, contractId)`.** Plan 02 I.1 FIX 1's `deleteMany({ scanId, module: "GOVERNANCE" })` pattern in `persistSnapshotAndFindings` (see `src/lib/inngest/functions/execute-governance-module.ts` L262–264) is EXTENDED in Plan 03 to `deleteMany({ scanId, module, contractId })`. Failing to widen this scope would cause one Contract's retried module run to **erase sibling Contracts' findings** on the same Scan — every retry would silently destroy all-but-one Contract's data.
+
+The invariant applies to:
+
+- `Finding.deleteMany` — the idempotent-replay clear before `createMany`. Must include `contractId`.
+- `ModuleRun` upsert / findFirst — must key on `(scanId, module, contractId)` to locate the right row; the Plan 02 H.5 `markModuleComplete` compare-and-set widens the same way.
+- `GovernanceSnapshot` upsert — keyed on `contractId` post-PR-2 (per §3.5's `@unique` migration). The PR 1 graceful-degradation read path tolerates legacy `scanId`-keyed snapshots but writes only contractId-keyed ones for new scans.
+
+This invariant is referenced from §3.5 (migration ordering) and §14 (a hard exit-criteria integration test verifies the multi-Contract idempotency).
 
 ---
 
@@ -416,15 +591,25 @@ Per-Contract grades are persisted on `Contract.compositeScore` + `Contract.compo
 
 The Plan 03 product question: how does a protocol with one A-grade contract and one F-grade contract get graded as a *whole*?
 
-**Decision: worst-contract-wins, with score = arithmetic mean of per-Contract scores.**
+**Decision: worst-contract-wins for the grade, with two separately surfaced score fields to defuse the F/50 UX disconnect.**
+
+A naive "F, 50/100" pairing (worst-grade letter + arithmetic-mean score) confuses users — 50 looks like a borderline D, but the grade says F. Plan 03 splits the score into two named fields:
 
 ```
 gradedContracts = { c in scan.contracts : c.compositeGrade is not null }
-Scan.compositeGrade = min(c.compositeGrade for c in gradedContracts)
-Scan.compositeScore = mean(c.compositeScore for c in gradedContracts)
+Scan.compositeGrade       = min(c.compositeGrade for c in gradedContracts)            // worst contributing contract's grade
+Scan.worstContractScore   = c.compositeScore where c is the contract whose grade == Scan.compositeGrade
+                                                  (and whose score is lowest among ties, see below)
+Scan.averageContractScore = mean(c.compositeScore for c in gradedContracts)           // informational, across all graded contracts
 ```
 
 Where `min(grade)` follows the natural F → D → C → B → A ordering (F is the minimum).
+
+**Tie-breaking for `worstContractScore`.** If multiple Contracts share the worst grade letter (e.g., two Contracts both at F), `worstContractScore` is the **lowest** `Contract.compositeScore` among them. This keeps "worst contract" honest: when two contracts both grade F, the field surfaces the most damaging one's score, not an arbitrary picker. PRIMARY ordering doesn't override this — the field is purely score-driven within the tied-grade set.
+
+The two score fields surface as separate UI elements (§7.2 + §7.4): "Protocol grade: F (worst contract score: 0)" alongside "Average contract score: 50/100 across 2 contracts." This makes the disconnect *informative* ("yes the average is 50, but your worst contract is dragging you to F") instead of contradictory.
+
+**Schema implication.** `Scan.compositeScore` is renamed to `Scan.averageContractScore` (per §3.5's PR 1 migration); `Scan.worstContractScore` is added as a new nullable Int column. `Scan.compositeGrade` keeps its column name but its semantic widens to "worst contributing contract's grade." No new fields are added to the Contract model — `Contract.compositeScore` is already the per-Contract score from which both Scan-level fields derive.
 
 **Eligibility — only graded Contracts contribute.** The rollup iterates ONLY over Contracts whose `compositeGrade` is non-null — i.e., Contracts whose ModuleRuns all terminated in COMPLETE state and produced a grade:
 
@@ -432,11 +617,11 @@ Where `min(grade)` follows the natural F → D → C → B → A ordering (F is 
 - **FAILED Contracts** (snapshot capture crashed, or every detector errored out, or every ModuleRun ended FAILED) — do NOT contribute to the protocol grade. They have null `compositeGrade`, so the min/mean computations skip them. Their existence is surfaced separately via `Scan.isPartialGrade` (§6.3) so the UI can flag partial graph coverage.
 - **SKIPPED Contracts** (every applicable ModuleRun ended SKIPPED — e.g., a `DECLARED_BRIDGE` Contract for which the only implemented module GOVERNANCE doesn't apply per §4.2's role-applicability table) — do NOT contribute either. They have null `compositeGrade`. The UI lists them but they don't move the protocol grade.
 
-**Extension of Plan 02 H.9 BLOCKER Layer C to the graph layer.** If the rollup finds zero Contracts with a non-null `compositeGrade` (every Contract is FAILED, or every Contract is SKIPPED, or some mix of the two — but none COMPLETE-with-grade), the scan finalises as `FAILED` at the protocol level with null `compositeScore` + `compositeGrade`. This mirrors Plan 02's executor-layer rejection of all-SKIPPED scans (the H.9 BLOCKER Layer C guard) and prevents a misleading "no findings, grade A" outcome for a scan where the graph produced no usable data.
+**Extension of Plan 02 H.9 BLOCKER Layer C to the graph layer.** If the rollup finds zero Contracts with a non-null `compositeGrade` (every Contract is FAILED, or every Contract is SKIPPED, or some mix of the two — but none COMPLETE-with-grade), the scan finalises as `FAILED` at the protocol level with null `averageContractScore` + null `worstContractScore` + null `compositeGrade`. This mirrors Plan 02's executor-layer rejection of all-SKIPPED scans (the H.9 BLOCKER Layer C guard) and prevents a misleading "no findings, grade A" outcome for a scan where the graph produced no usable data.
 
 **Rationale for worst-grade-wins:** a protocol is only as safe as its weakest contract. If the user submits a primary contract that scores A but its declared multisig is 1-of-2, the multisig's CRITICAL finding represents a real and present risk to the protocol — the protocol grade must surface that. Averaging grades would dilute the signal; worst-grade-wins matches the same defensive logic Plan 02 §5.3 used for its CRITICAL floor override.
 
-The arithmetic mean for `Scan.compositeScore` is informational — it gives users a sense of "how bad is the overall posture" beyond the worst-grade letter.
+The `averageContractScore` field is informational — it gives users a sense of "how bad is the overall posture" beyond the worst-grade letter. `worstContractScore` quantifies how bad the worst contract is. The two fields together carry more information than a single composite number ever could.
 
 **Revisit clause.** This aggregation rule is appropriate for the defensive / due-diligence framing of Plan 02/03 (investor or security-team review of a protocol's worst posture). If design-partner validation in Plan 06+ shows that protocol-team users — who want to know their core contract's grade even when a peripheral related contract scores low — need a different model, the aggregation can be revisited. Plan 03 does not pre-emptively ship a weighted alternative because that requires a defensible weights table that does not yet exist.
 
@@ -486,14 +671,23 @@ Response body is unchanged (still `{ scanId, status }` per Plan 02 §6.1).
 
 ```typescript
 export interface ScanResponse {
-  // … existing top-level scan fields (id, status, compositeScore,
-  // compositeGrade, isPartialGrade, createdAt, completedAt, …) …
+  id: string;
+  status: ScanStatus;
+  // Protocol-level composite (Plan 03 §6.2). compositeGrade widens to
+  // "worst contributing contract's grade"; compositeScore is REMOVED
+  // from the response shape and replaced by the two named fields below.
+  compositeGrade: Grade | null;
+  averageContractScore: number | null;         // RENAMED from compositeScore (Plan 03 §6.2)
+  worstContractScore: number | null;           // NEW (Plan 03 §6.2)
+  isPartialGrade: boolean;                     // semantics per §6.3 (now graph-aware)
+  createdAt: string;
+  completedAt: string | null;
   protocol: { /* unchanged */ };
   contracts: ContractResponse[];               // NEW (Plan 03)
   findings: FindingResponse[];                 // tier-shaped, NOW grouped by contractId
   // The flat `modules` array is REMOVED from the top level — modules now
   // live under each ContractResponse. This is a breaking change for Plan
-  // 02 API consumers; document it in the response shape comments.
+  // 02 API consumers; documented in §13.
 }
 
 export interface ContractResponse {
@@ -502,12 +696,20 @@ export interface ContractResponse {
   role: ContractRole;
   label: string | null;
   isPrimary: boolean;
-  compositeScore: number | null;
+  compositeScore: number | null;               // per-Contract score (unchanged name)
   compositeGrade: string | null;
   isPartialGrade: boolean;
   crossChainTwins: { chain: string; address: string }[];
   modules: ModuleRunResponse[];                // per-contract module runs
   findingsCount: number;                       // count of findings on this contract
+  /**
+   * Plan 03 §5.3 detect-and-warn. Populated when the snapshot found a proxy
+   * implementation address but the user did not submit it as a separate
+   * Contract. Null otherwise. UI renders the warning on this Contract's card.
+   */
+  proxyImplementationWarning: {
+    detectedAddress: string;
+  } | null;
 }
 ```
 
@@ -542,8 +744,10 @@ Cache-Control rules from Plan 02 G.1 carry over: `no-store` for non-terminal, `p
 
 The `ScanShell` component (Plan 02 G.3) renders one `CompositePanel` + four `ModuleCard`s + one `FindingsList`. Plan 03 reshapes this:
 
-- **Protocol composite stays at the top.** `CompositePanel` continues to render *one* big grade — the protocol-level composite (Plan 03 §6.2). Copy updates: "Protocol grade" rather than "Composite grade." Score line: "Score: 75/100 (avg of 4 contracts)."
-- **New `ContractList` component below the composite.** One card per Contract showing: contract role + label + address (truncated) + that contract's grade letter + findings count. Cards are ordered: PRIMARY first, then by role priority (TIMELOCK, DECLARED_MULTISIG, PROXY_IMPLEMENTATION, TOKEN_CONTRACT, DECLARED_BRIDGE, RELATED), then by address. Clicking a card scrolls / filters the findings list.
+- **Protocol composite stays at the top.** `CompositePanel` continues to render *one* big grade — the protocol-level composite (Plan 03 §6.2). Copy updates: "Protocol grade" rather than "Composite grade." Two score lines, surfaced separately to defuse the F/50 UX disconnect:
+  - **Worst contract score: 0/100** (matches the grade letter; pulled from `worstContractScore`).
+  - **Average contract score: 50/100 across N contracts** (informational; pulled from `averageContractScore`).
+- **New `ContractList` component below the composite.** One card per Contract showing: contract role + label + address (truncated) + that contract's grade letter + findings count + (if applicable) the §5.3 proxy detect-and-warn affordance. Cards are ordered: PRIMARY first, then by role priority (TIMELOCK, DECLARED_MULTISIG, PROXY_IMPLEMENTATION, TOKEN_CONTRACT, DECLARED_BRIDGE, RELATED), then by address. Clicking a card scrolls / filters the findings list. The proxy detect-and-warn warning renders as a small inline note on the Contract card (not a modal), styled like `ProtocolGraphDisclaimer` (subtle accent border, no icon) so it reads as informational rather than alarming.
 - **`ModuleCard` per contract.** Currently `ModuleCard` displays one module's status across the whole scan. In Plan 03 it shows one module on one contract. Whether to render four `ModuleCard`s per contract (16 cards for a 4-contract scan) or collapse to a denser grid is a visual-polish decision — the spec requires that the data be present in the rendered DOM, not the specific layout.
 - **`FindingsList` grouped by contract.** Findings render in sections, one section per contract that has findings. Section header includes contract label + role + address. Contracts with zero findings either render an empty-section ("No findings on `<contract label>`") or are omitted; the spec leaves this to visual polish.
 - **`ProtocolGraphDisclaimer` rewrite.** The current banner text reads "Breakwater scans the submitted core contract address. Protocol-wide analysis (bridges, tokens, cross-chain deployments, related multisigs) is coming in a future release." Plan 03 replaces with:
@@ -631,11 +835,12 @@ Plan 02 §10.3 introduced fixture-based regression tests (Drift / Beanstalk / Au
 - **Bridge-protocol-like (dirty):** 3 Contracts — `PRIMARY` core (clean) + `DECLARED_BRIDGE` endpoint + `DECLARED_MULTISIG` 1-of-2. Per §4.2's role-applicability table, GOVERNANCE does NOT apply to `DECLARED_BRIDGE` (the entire module SKIPs at submission time per the H.6 priority order, with `errorMessage: "role_not_applicable_to_module"`). Expected per-Contract outcomes:
   - `PRIMARY` core: COMPLETE, grade A, zero findings.
   - `DECLARED_BRIDGE`: every applicable ModuleRun SKIPPED. Per §6.2, this Contract has null `compositeGrade` and contributes nothing to the rollup. The Contract still appears in the UI's contract list (with a SKIPPED-style affordance) but is invisible to scoring.
-  - `DECLARED_MULTISIG` 1-of-2: COMPLETE, grade F via GOV-003 (multisig concentration CRITICAL).
+  - `DECLARED_MULTISIG` 1-of-2: COMPLETE, grade F via GOV-003 (multisig concentration CRITICAL). This grade is correct given the §5.1.1 role-aware capture path: when a Contract carries `role: DECLARED_MULTISIG`, `captureGovernanceSnapshot` invokes `detectSafe` *directly against the Contract's own address* (passing `contractAddress` as `candidateAddress`), so Safe metadata (threshold, owners) populates the snapshot and GOV-003 fires on it.
   - Protocol composite: F (worst-wins over the two graded Contracts — `PRIMARY` A and `DECLARED_MULTISIG` F).
+  - `worstContractScore`: 0 (the multisig's score). `averageContractScore`: 50 (mean of 100 + 0).
   - `isPartialGrade`: false. No detector errors fired and the SKIPPED `DECLARED_BRIDGE` is not a FAILED Contract — the §6.3 partial-coverage clause only triggers on FAILED Contracts coexisting with COMPLETE ones, not on SKIPPED-by-role-applicability.
 
-  The fixture exercises three properties: (1) `min(grade)` over null-grade-filtered Contracts produces the correct worst grade, (2) role-applicability gates bridges out cleanly without erroring, (3) protocol-level grade computation tolerates a Contract that contributes nothing to the rollup.
+  The fixture exercises four properties: (1) the role-aware capture path correctly invokes `detectSafe` directly on a `DECLARED_MULTISIG` scan target, (2) `min(grade)` over null-grade-filtered Contracts produces the correct worst grade, (3) role-applicability gates bridges out cleanly without erroring, (4) `worstContractScore` and `averageContractScore` are populated independently from `compositeGrade`.
 
 ### §10.4 Manual preview smoke
 
@@ -651,15 +856,27 @@ Plan 02 §11 (privacy + security) carries over unchanged. The graph is user-supp
 
 ## §12 Deployment + rollout
 
-Plan 03 ships as a single migration set (additive then constraint-tightening, per §3.5). Rollout:
+Plan 03 ships as **two separate PRs and two separate Vercel deploys**, per §3.5's two-PR strategy (forced by `prisma migrate deploy` sequencing — see §3.5 preamble for the constraint that drove the split).
 
-1. Merge Plan 03 PR to main.
-2. Vercel deploys `main`; `prisma migrate deploy` (wired in Plan 02 I.3) applies migrations.
-3. Backfill script (Plan 03 ships it as `pnpm db:backfill-contracts` or similar — invoked manually after the additive migration before the constraint-tightening migration).
-4. Manual preview smoke against multi-contract Aave V3 demo.
-5. Production rollout — same as Plan 02 conventions.
+### §12.1 PR 1 — Multi-contract execution model + additive migration
 
-Rollback path: code rollback to Plan 02 + DB stays at Plan 03 schema. Because Plan 03 columns are nullable during the additive phase and the new Contract table is unused by Plan 02 code, Plan 02 code reads cleanly. Post-constraint-tightening rollback requires manual SQL revert (documented in `docs/deployment-env.md` Plan 03 addendum).
+1. Open PR 1 from a `plan-03-execution-model` worktree branch off main.
+2. PR 1 contents: all Plan 03 application code (multi-contract `submitScan`, role-aware capture, per-Contract fan-out + waits, per-Contract idempotency invariant, response-shape changes, UI rewrites, backfill script) plus the additive migration from §3.5 PR 1 section.
+3. Merge PR 1. Vercel deploys `main`; `prisma migrate deploy` applies the additive migration. Every new column is nullable; the legacy `(scanId, module)` ModuleRun unique constraint is still in place; the `compositeScore → averageContractScore` rename lands; the new `worstContractScore` column lands nullable.
+4. **Manually run the backfill script against production** (`pnpm db:backfill-plan-03-contracts`). Verify with a query that every Scan has ≥1 Contract row, every ModuleRun / GovernanceSnapshot / Finding row has a non-null `contractId`, no errors logged.
+5. **Soak period.** Wait until at least one production multi-contract scan completes end-to-end (Aave V3 demo backfill is the natural test). Confirm UI renders per-Contract grades, the new score fields (`worstContractScore`, `averageContractScore`) display correctly, and no read-side fallback (PR 1's graceful-degradation adapter) fires for newly-created scans.
+
+### §12.2 PR 2 — Constraint-tightening migration + fallback removal
+
+6. Only after the §12.1 soak period passes: open PR 2 from a `plan-03-tighten-constraints` worktree branch.
+7. PR 2 contents: the tightening migration from §3.5 PR 2 section (NOT NULL + new unique constraints) plus the removal of the PR 1 read-side fallback adapter (the synthetic single-Contract shape for legacy scans).
+8. Merge PR 2. Vercel deploys; `prisma migrate deploy` applies the tightening migration. Post-deploy, all reads go through the contractId-keyed shape exclusively.
+
+### §12.3 Rollback paths
+
+- **Between PR 1 deploy and PR 1 backfill:** code-only rollback to Plan 02 is possible but requires a one-line compat shim or a quick down-migration for the `averageContractScore` column rename (Plan 02 code expects `compositeScore`). Documented in `docs/deployment-env.md` Plan 03 addendum.
+- **Between PR 1 backfill and PR 2 deploy:** identical to above — backfill writes are pure data; rollback survives.
+- **Post-PR-2 deploy:** rollback requires manual SQL revert (drop new uniques, restore old `(scanId, module)` unique, set `contractId` columns nullable, etc.). Same forward-only Prisma constraint Plan 02 already lives with.
 
 ---
 
@@ -687,7 +904,8 @@ These must pass before Plan 03 can merge:
 - `prisma migrate deploy` applies Plan 03 migrations against the Production DB cleanly.
 - Manual preview smoke: Aave V3 backfilled demo → multi-contract scan completes with per-Contract grades + protocol composite A.
 - `relatedContracts` validation tests: max-20 cap rejects; per-address validation rejects; primary-in-related rejects; legacy `extraContractAddresses` shape continues to be accepted.
-- `waitForEvent` compound match verified: a `scan.module.completed` event from one scan does not cross-resume a waiter on a different scan / different contract / different module.
+- **`waitForEvent` compound match — cross-scope isolation test (BLOCKER 1 exit criterion).** Integration test that explicitly verifies the `event` vs `async` semantics work correctly: a `scan.module.completed` event from one scan, one module, or one contractId does NOT cross-resume a waiter pinned to a different (scanId, module, contractId) tuple. The test must cover all three dimensions: (a) sibling scan's completion event does not match this scan's waiter, (b) different module's completion event does not match, (c) different contractId's completion event does not match. Without this test the BLOCKER 1 fix has no regression coverage.
+- **Per-Contract idempotency isolation test (IMPORTANT 3 exit criterion).** Integration test that retries one Contract's GOVERNANCE ModuleRun and verifies sibling Contracts' findings are untouched. Concretely: create a Scan with 3 Contracts (A, B, C), persist findings on all three, retry the ModuleRun for Contract A, assert Contracts B and C still carry their original Finding rows. Without this test, a regression in the `deleteMany({ scanId, module, contractId })` scope would silently destroy sibling data.
 - ProtocolGraphDisclaimer rewrite shipped (text per §7.4).
 - Backfill script ships + runs cleanly against the dev DB; tested for idempotency.
 - Codex Phase A–I-style review with all BLOCKER + IMPORTANT findings resolved.
@@ -697,7 +915,7 @@ These must pass before Plan 03 can merge:
 These are stretch goals:
 
 - Average multi-contract scan execution time < 60 s for a 5-contract graph end-to-end (Plan 02's single-contract scan averaged ~15–30 s).
-- Five real Ethereum protocols backfilled as curated multi-contract demos (Plan 03 ships 2 — Aave V3 + Uniswap V3 — soft target adds Compound, MakerDAO, Lido).
+- Five real Ethereum protocols backfilled as curated multi-contract demos (Plan 03 ships 2 — Aave V3 + Uniswap V3 — soft target adds Compound (v3 or full Comptroller graph), MakerDAO, Lido). Compound + MakerDAO are stronger third-demo candidates than Compound v3 USDC alone because they exercise multi-multisig + timelock + bridge surface that Uniswap V3 does not.
 - UI A11y score on `/scan/[id]` ≥ 90 maintained (Plan 02 baseline).
 - No regression in the Railway integration-test flake (NOTES.md L66) — Plan 03 doesn't add Railway dependence beyond Plan 02; flake rate should stay flat.
 
@@ -714,16 +932,21 @@ These are stretch goals:
 
 ---
 
-## §17 Open questions for review
+## §17 Open questions for review — resolution state after revision 2
 
-Of the original seven open questions, two (2 and 6) resolved during the revision pass per the §6.2 and §13 updates respectively. The remaining five (1, 3, 4, 5, 7) go to Codex for adversarial review before the spec is frozen.
+Of the original seven open questions, **five are now RESOLVED**, **one is PARTIALLY RESOLVED** (proxy detect-and-warn shipped in this revision; auto-promotion deferred to Plan 04), and **one is deferred to the implementation plan** (RPC budget — implementation concern, not spec contract). The spec is therefore considered frozen pending Robert's final review of the resolution state below.
 
-1. **Max related contracts per scan.** Spec proposes 20. Higher = more protocols expressible without splitting; lower = tighter RPC budget. 20 feels balanced; verify.
-2. **Worst-grade-wins vs. weighted aggregation.** *Resolved during revision pass.* Plan 03 ships worst-wins; revisit deferred to Plan 06+ per §6.2 above.
-3. **PROXY_IMPLEMENTATION auto-promotion.** §5.3 explicitly keeps proxy implementations *inside* the primary's snapshot (not as separate Contract rows) unless the user submits them. Plan 04 would auto-promote. Verify Plan 03 stays user-supplied.
-4. **`Protocol.extraContractAddresses` fate.** §3.4 supersedes but keeps the column. Alternative: drop the column outright in Plan 03 (destructive migration). Keeping it is the conservative choice; dropping it sheds dead state. Conservative chosen.
-5. **Demo backfill choice.** §8.1 ships Aave V3 + Uniswap V3 (matching the recon's test-protocol recommendations). Compound v3 USDC is a candidate third demo. Time-bound to curate honestly.
-6. **API breaking change tolerance.** *Resolved during revision pass.* Plan 03 ships the breaking change; no public API contract exists per §13 above.
-7. **Backfill ordering.** §3.5 + §12 require manual invocation of the backfill script between the additive migration and the constraint-tightening migration. The alternative is a single migration with raw SQL backfill embedded; that ties code-deploy and DB-state more tightly. The two-step approach is safer (rollback survives partial deploy) but operationally heavier. Verify operational tolerance.
+1. **Max related contracts per scan.** UNRESOLVED at spec level — deferred to the implementation plan. The 20-Contract cap stands in §4.1; the implementation plan must define worst-case RPC budget for 20 parallel module runs and the Inngest concurrency limit for `execute-governance-module`. Whether 20 holds depends on that math; the spec captures the policy, the implementation plan validates the limit.
+2. **Worst-grade-wins vs. weighted aggregation.** *Resolved (revision 1).* Plan 03 ships worst-wins; revisit deferred to Plan 06+ per §6.2.
+3. **PROXY_IMPLEMENTATION auto-promotion.** **PARTIALLY RESOLVED (revision 2).** No auto-promotion in Plan 03; that stays Plan 04 territory. But the §5.3 detect-and-warn affordance now closes the usability gap — when the user submits a proxy without its implementation, the UI surfaces the detected implementation address and prompts a resubmit. The user retains explicit control over what makes it into the graph.
+4. **`Protocol.extraContractAddresses` fate.** *Resolved.* §3.4 supersedes but keeps the column. The schema field will gain an `@deprecated` JSDoc comment in the first implementation phase so future contributors see the dead-data signal.
+5. **Demo backfill choice.** *Resolved.* Plan 03 ships Aave V3 + Uniswap V3 (§8.1). Compound v3 / MakerDAO are stronger third-demo candidates than Compound v3 USDC alone — updated in §15 soft exit criteria below.
+6. **API breaking change tolerance.** *Resolved (revision 1).* Plan 03 ships the breaking change; no public API contract exists per §13.
+7. **Backfill ordering.** *Resolved (revision 2).* Two-PR deployment strategy (additive migration + backfill capability in PR 1; tightening in PR 2 after backfill soak) per §3.5 and §12. This removes the `prisma migrate deploy` sequencing risk Codex identified.
 
-Reviewer signoff on the five remaining questions (1, 3, 4, 5, 7) freezes the spec.
+### §17.x Deferred to the implementation plan (not spec contract)
+
+These IMPORTANTs surfaced by Codex are implementation concerns, not spec contract:
+
+- **RPC budget + Inngest concurrency math.** Implementation plan must define worst-case RPC budget for the parallel multi-Contract scan and the Inngest concurrency cap for `execute-governance-module`. Either output validates or invalidates the §4.1 MAX_RELATED_CONTRACTS = 20 cap.
+- **`isPartialGrade` reason codes.** The implementation plan can choose: (a) keep one `isPartialGrade` boolean + add a `Scan.partialReasons: PartialReason[]` enum array, or (b) split into `isPartialGrade` + `isPartialCoverage` two booleans. Either is acceptable for the spec contract; the choice is local to the persistence + response shape.
