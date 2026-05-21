@@ -92,6 +92,20 @@ model Contract {
   isPrimary       Boolean       @default(false)
   createdAt       DateTime      @default(now())
 
+  /**
+   * Per-Contract composite. Computed by `markComplete` (§4.5) using the
+   * Plan 02 spec §5.3 composite algorithm applied to this Contract's
+   * findings only. Null until the Contract's ModuleRuns finalise.
+   */
+  compositeScore  Int?
+  compositeGrade  Grade?
+  /**
+   * True when at least one of this Contract's COMPLETE ModuleRuns had
+   * `errorDetectorCount > 0` — i.e., a detector that should have run
+   * crashed. Same semantics as Plan 02 I.1 FIX 3, scoped per-Contract.
+   */
+  isPartialGrade  Boolean       @default(false)
+
   governanceSnapshot GovernanceSnapshot?
   moduleRuns         ModuleRun[]
   findings           Finding[]
@@ -151,24 +165,23 @@ model Finding {
 }
 ```
 
-### §3.3 Scan — protocol-composite fields stay; per-contract fields land on Contract
+### §3.3 Scan — protocol-composite fields stay; per-Contract grade lives on Contract
 
-`Scan.compositeScore` and `Scan.compositeGrade` remain — they describe the *protocol-level* composite (§6). Per-contract grade lands on the Contract row:
+`Scan.compositeScore` and `Scan.compositeGrade` remain on the Scan row — they describe the **protocol-level** composite computed by the rollup logic in §6.2. The **per-Contract** equivalents (`compositeScore`, `compositeGrade`, `isPartialGrade`) are declared on the Contract model in §3.1 above and persisted by `markComplete` (§4.5) using the Plan 02 spec §5.3 composite algorithm applied to that Contract's findings.
 
-```prisma
-model Contract {
-  // … fields from §3.1 …
-  compositeScore Int?    // Per-contract composite over its ModuleRuns.
-  compositeGrade Grade?
-  isPartialGrade Boolean @default(false)
-}
-```
-
-Scan-level `isPartialGrade` retains Plan 02 I.1 semantics ("a detector that should have run crashed") but now aggregates across all Contracts in the scan (§6.3).
+`Scan.isPartialGrade` retains its Plan 02 I.1 FIX 3 meaning ("a detector that should have run crashed") but now aggregates across all Contracts in the scan, with the extension described in §6.3 (FAILED Contracts in a partially-complete graph also trigger the flag).
 
 ### §3.4 `Protocol.extraContractAddresses` — superseded
 
-The Plan 01 `Protocol.extraContractAddresses Json @default("[]")` field was wired through `submitScan` but never read by any detector. Plan 03 supersedes it: the Contract model is now the authoritative representation of per-scan related contracts. `Protocol.extraContractAddresses` is **kept on the schema** for backward compatibility with Plan 01 + Plan 02 Scan rows but is no longer the source of truth for new scans. Any new scan submission writes to `Contract`; `Protocol.extraContractAddresses` is treated as descriptive metadata on the Protocol itself (legacy reads only). Plan 03 does NOT migrate existing Protocol rows' `extraContractAddresses` into Contract rows — pre-Plan-03 scans keep their Plan-02 single-contract shape; only Plan-03-era scans are multi-contract.
+The Plan 01 `Protocol.extraContractAddresses Json @default("[]")` field was wired through `submitScan` but never read by any detector. Plan 03 supersedes it: the Contract model is now the authoritative representation of per-scan related contracts.
+
+- **For new (Plan 03+) scans:** `submitScan` no longer writes `Protocol.extraContractAddresses`. Related contracts go into Contract rows instead (§4.2). The column is kept on the schema for backward-compat reads from pre-Plan-03 Protocol rows but is dead data going forward.
+
+- **For historical (pre-Plan-03) scans:** the backfill described in §3.5 step 7 creates exactly one Contract row per historical Scan (role `PRIMARY`, derived from `Scan.protocol.primaryContractAddress`), so every Scan in the database ends up with at least one Contract row — including historical scans. "Plan-02-single-contract-shape" therefore means **n=1 in the Contract table**, not bypassing the new model. The new NOT NULL `contractId` constraints on ModuleRun / GovernanceSnapshot / Finding require this.
+
+- **What backfill does NOT do:** historical `Protocol.extraContractAddresses` arrays are NOT auto-promoted into additional Contract rows. If a pre-Plan-03 Protocol row had `["0xAAA", "0xBBB"]` in `extraContractAddresses`, the backfilled scan still gets only one Contract row (the PRIMARY). Auto-promoting historical extras to Contract rows would require role inference (which role does `0xAAA` have?) and is Plan 04 territory.
+
+The net effect: every Scan in the DB has ≥1 Contract row after backfill, but only Plan-03-era scans have >1.
 
 ### §3.5 Migrations
 
@@ -232,7 +245,7 @@ export const ScanSubmissionSchema = z.object({
 
 **Validation rules:**
 
-- **Max related contracts per scan: 20.** Exceeds → 400 with `too_many_related_contracts`. The cap is intentionally tight for Plan 03 — a graph of 5–10 contracts covers most real protocols; 20 leaves headroom; 50+ scans would dominate RPC budgets and execution time. Plan 04+ can revisit when auto-discovery surfaces graphs that genuinely exceed 20.
+- **Max related contracts per scan: 20.** Exceeds → 400 with `too_many_related_contracts`. The cap is intentionally tight for Plan 03 — a graph of 5–10 contracts covers most real protocols; 20 leaves headroom; 50+ scans would dominate RPC budgets and execution time. Plan 04+ can revisit when auto-discovery surfaces graphs that genuinely exceed 20. The cap is implemented as a named constant (`MAX_RELATED_CONTRACTS` in `src/lib/config.ts` or equivalent module) referenced by the zod schema's `.max()` validator and by any UI affordance that wants to surface the limit, so future plans can revisit the value in one place. The cap is **product policy, not deployment policy** — deliberately NOT a runtime env var: a single canonical value across environments avoids per-deployment drift.
 - **Per-address validation:** each address must pass the same `isValidAddress(chain, addr)` check that primary uses today. Invalid → 400 with the specific index + field path (consistent with Plan 02's existing error shape).
 - **Deduplication:** if `primaryContractAddress` also appears in `relatedContracts`, drop the duplicate (keep the primary). If two related entries share an address, drop the second; emit no error.
 - **Primary cannot appear under a non-PRIMARY role.** If user submits `primary: 0xAAA` and `relatedContracts: [{address: 0xAAA, role: DECLARED_MULTISIG}]`, the submission layer treats this as a misconfiguration → 400 with `primary_address_in_related`.
@@ -286,30 +299,42 @@ export type ScanModuleCompletedEventData = {
 **`executeScan` fan-out:**
 
 1. Load the Scan with its Contract list.
-2. For each Contract whose ModuleRun is QUEUED, dispatch one `scan.module.requested` event with the `(scanId, module, contractId, contractAddress)` tuple.
-3. Wait for `N × M` `scan.module.completed` events (N contracts × M implemented modules) — Plan 03 = 1 implemented module (GOVERNANCE), so the fan-out is `N` events. Use `step.waitForEvent` with a compound match expression:
+2. For each Contract whose ModuleRun is QUEUED, prepare one `scan.module.requested` event with the `(scanId, module, contractId, contractAddress)` tuple. Emit all of them in a **single `step.sendEvent` call** (Inngest's API accepts an array; this is the idiomatic batch-emit) so the dispatch itself is one durable step, not N.
+3. Wait for `N × M` `scan.module.completed` events (N Contracts × M implemented modules) — Plan 03 ships M=1 (GOVERNANCE only), so the fan-out is `N` events. The waits run **in parallel** via `Promise.all` over `step.waitForEvent` calls. Inngest 3.x treats each `step.waitForEvent` as its own durable step; wrapping them in `Promise.all` is the idiomatic concurrent-wait pattern (the same shape used for parallel `step.run` calls). Each wait has its own 5-minute timeout that runs concurrently with the others, so the **scan-level wall-time cap is ~5 minutes**, not N × 5 minutes:
 
    ```typescript
-   await step.waitForEvent(`wait-${module}-${contractId}`, {
-     event: "scan.module.completed",
-     if: `event.data.scanId == '${scanId}' && event.data.module == '${module}' && event.data.contractId == '${contractId}'`,
-     timeout: "5m",
-   });
+   // Pseudocode in the spec — actual implementation lives in the plan.
+   await Promise.all(
+     contractIds.map((contractId) =>
+       step.waitForEvent(`wait-${module}-${contractId}`, {
+         event: "scan.module.completed",
+         if: `event.data.scanId == '${scanId}' && event.data.module == '${module}' && event.data.contractId == '${contractId}'`,
+         timeout: "5m",
+       }),
+     ),
+   );
    ```
 
-   The compound `if` filter (Inngest's expression syntax) replaces the Plan 02 `match: "data.scanId"` single-field match — this closes NOTES.md L67. Each waitForEvent step is uniquely named per `(module, contractId)` so retries don't cross-resume.
+   The compound `if` filter (Inngest's expression syntax) replaces the Plan 02 `match: "data.scanId"` single-field match — this closes NOTES.md L67. Each waitForEvent step is uniquely named per `(module, contractId)` so retries don't cross-resume across siblings.
 
-4. After all waits resolve (or timeout), call `markComplete` (§4.4).
+4. After all waits resolve (or timeout — handled per-wait in §4.4), call `markComplete` (§4.5).
 
-### §4.4 Orphan / timeout handling
+**Orphan / late events.** Inngest's `step.waitForEvent` matches incoming `scan.module.completed` events against the `if` expression at the time the event arrives. Events that match no active wait are **not queued for later matching** — they're dropped from the perspective of this function instance once no active waiter consumes them. Late completion events (e.g., a `scan.module.completed` that arrives after the per-wait 5-minute timeout has already fired and the `mark-module-timeout` step has written the ModuleRun row to FAILED) therefore do not retroactively affect the finalised scan state. The race between `mark-module-timeout` and a delayed late completion is rendered safe by the existing Plan 02 idempotency machinery:
 
-Plan 02 §F (mark-governance-timeout step) marks a non-terminal ModuleRun FAILED with `errorMessage: "module_timeout"` after 5 min of `waitForEvent` silence. Plan 03 generalises this:
+- `markModuleComplete` uses a compare-and-set on `status: "RUNNING"`. If the timeout step fired first and wrote FAILED, the late completion's `markModuleComplete` call finds no row in RUNNING, updates zero rows, and `finalized` returns `false` — the F.5 I1 emit-gate then skips the secondary `scan.module.completed` re-emission.
+- `mark-module-timeout` uses a status filter (`where: { status: { in: ["QUEUED", "RUNNING"] } }`). If a late completion fired first and wrote the ModuleRun to COMPLETE, the timeout step's `updateMany` matches zero rows and is a no-op.
 
-- Each `(module, contractId)` wait has its own 5 min timeout.
-- On timeout, a `mark-module-timeout` step writes the *specific* ModuleRun row (keyed by `scanId + module + contractId`) to FAILED with `errorMessage: "module_timeout"`. Sibling waits continue.
-- After all waits finish (resolved or timed-out), `markComplete` runs (§4.5).
+Whichever fires first wins; the second is idempotent against the now-terminal row. This is not a Plan 03 invention — it's the H.5/F.5 machinery applied to the per-contract dimension.
 
-This isolates failures: a hung detector against one contract doesn't poison the rest of the scan. The 5-minute-per-contract cap means a 10-contract scan with one stuck contract still completes within ~5 min of the last successful contract's completion.
+### §4.4 Per-wait timeout handling
+
+Plan 02 §F (mark-governance-timeout step) marks a non-terminal ModuleRun FAILED with `errorMessage: "module_timeout"` after 5 min of `waitForEvent` silence. Plan 03 generalises this across the parallel waits described in §4.3:
+
+- Each `(module, contractId)` wait has its own 5 min timeout that runs **concurrently** with siblings (§4.3's `Promise.all` pattern). The scan-level wall-time worst case is therefore ~5 minutes, regardless of how many Contracts are dispatched — a 20-contract scan with every wait timing out still resolves in ~5 minutes, not 100.
+- On timeout for a specific wait, a `mark-module-timeout` step writes the corresponding ModuleRun row (keyed by `scanId + module + contractId`) to FAILED with `errorMessage: "module_timeout"`. Sibling waits continue independently.
+- After every wait in the `Promise.all` settles (resolved or timed-out), `markComplete` runs (§4.5).
+
+This isolates failures: a hung detector against one Contract doesn't poison sibling Contracts. Race conditions between a per-wait timeout and a delayed completion event are handled by the idempotency machinery described at the end of §4.3 (compare-and-set on RUNNING + status-filtered updateMany).
 
 ### §4.5 `markComplete` across N contracts
 
@@ -362,6 +387,8 @@ Plan 02's `captureGovernanceSnapshot` already produces, per contract, a snapshot
 
 **Plan 03 does NOT auto-add proxy implementations to the graph.** If a user submits a TransparentUpgradeableProxy as `PRIMARY` and does not also submit its implementation as a related contract, the implementation is captured *within the primary's snapshot* (existing Plan 02 D.5 behavior — `proxyImplementation` field on `GovernanceSnapshotData`) but is not separately scanned. To scan the implementation as a first-class contract, the user adds it explicitly to `relatedContracts` with `role: PROXY_IMPLEMENTATION`. Auto-promotion of implementations to Contract rows is a Plan 04 enhancement.
 
+**Duplicate findings under user-supplied proxy + implementation.** If the user submits both a proxy contract as `PRIMARY` and its implementation as a separate Contract with role `PROXY_IMPLEMENTATION`, each is scanned independently. The implementation's snapshot data appears in BOTH the primary's snapshot (via the existing Plan 02 D.5 `proxyImplementation` field on the primary's `GovernanceSnapshotData`) AND as a standalone Contract snapshot. Detector findings on the implementation will therefore fire in both contexts. **Plan 03 does NOT deduplicate these.** The user's explicit submission of both is informative: a finding tagged with the proxy's `contractId` says "this issue exists when interacting through the proxy"; the same finding tagged with the implementation's `contractId` says "this issue exists in the implementation logic." Both framings are useful, and the UI groups findings by Contract (§7.4), so users see them as distinct entries rather than redundant duplicates. A user wanting a single scan of just the proxy or just the implementation can submit only one.
+
 ---
 
 ## §6 Scoring — composite-of-composites
@@ -392,30 +419,53 @@ The Plan 03 product question: how does a protocol with one A-grade contract and 
 **Decision: worst-contract-wins, with score = arithmetic mean of per-Contract scores.**
 
 ```
-Scan.compositeGrade = min(grade) across all Contracts in the scan
-Scan.compositeScore = mean(Contract.compositeScore across all Contracts in the scan)
+gradedContracts = { c in scan.contracts : c.compositeGrade is not null }
+Scan.compositeGrade = min(c.compositeGrade for c in gradedContracts)
+Scan.compositeScore = mean(c.compositeScore for c in gradedContracts)
 ```
 
 Where `min(grade)` follows the natural F → D → C → B → A ordering (F is the minimum).
 
-**Rationale:** a protocol is only as safe as its weakest contract. If the user submits a primary contract that scores A but its declared multisig is 1-of-2, the multisig's CRITICAL finding represents a real and present risk to the protocol — the protocol grade must surface that. Averaging grades would dilute the signal; worst-grade-wins matches the same defensive logic Plan 02 §5.3 used for its CRITICAL floor override.
+**Eligibility — only graded Contracts contribute.** The rollup iterates ONLY over Contracts whose `compositeGrade` is non-null — i.e., Contracts whose ModuleRuns all terminated in COMPLETE state and produced a grade:
 
-The arithmetic mean for `Scan.compositeScore` is informational — it gives users a sense of "how bad is the overall posture" beyond the worst-grade letter. The mean is computed only across COMPLETE Contracts (SKIPPED contracts are excluded; FAILED contracts are excluded).
+- **COMPLETE Contracts** (all ModuleRuns COMPLETE, at least one with a grade) — contribute to both `min(grade)` and `mean(score)`.
+- **FAILED Contracts** (snapshot capture crashed, or every detector errored out, or every ModuleRun ended FAILED) — do NOT contribute to the protocol grade. They have null `compositeGrade`, so the min/mean computations skip them. Their existence is surfaced separately via `Scan.isPartialGrade` (§6.3) so the UI can flag partial graph coverage.
+- **SKIPPED Contracts** (every applicable ModuleRun ended SKIPPED — e.g., a `DECLARED_BRIDGE` Contract for which the only implemented module GOVERNANCE doesn't apply per §4.2's role-applicability table) — do NOT contribute either. They have null `compositeGrade`. The UI lists them but they don't move the protocol grade.
+
+**Extension of Plan 02 H.9 BLOCKER Layer C to the graph layer.** If the rollup finds zero Contracts with a non-null `compositeGrade` (every Contract is FAILED, or every Contract is SKIPPED, or some mix of the two — but none COMPLETE-with-grade), the scan finalises as `FAILED` at the protocol level with null `compositeScore` + `compositeGrade`. This mirrors Plan 02's executor-layer rejection of all-SKIPPED scans (the H.9 BLOCKER Layer C guard) and prevents a misleading "no findings, grade A" outcome for a scan where the graph produced no usable data.
+
+**Rationale for worst-grade-wins:** a protocol is only as safe as its weakest contract. If the user submits a primary contract that scores A but its declared multisig is 1-of-2, the multisig's CRITICAL finding represents a real and present risk to the protocol — the protocol grade must surface that. Averaging grades would dilute the signal; worst-grade-wins matches the same defensive logic Plan 02 §5.3 used for its CRITICAL floor override.
+
+The arithmetic mean for `Scan.compositeScore` is informational — it gives users a sense of "how bad is the overall posture" beyond the worst-grade letter.
+
+**Revisit clause.** This aggregation rule is appropriate for the defensive / due-diligence framing of Plan 02/03 (investor or security-team review of a protocol's worst posture). If design-partner validation in Plan 06+ shows that protocol-team users — who want to know their core contract's grade even when a peripheral related contract scores low — need a different model, the aggregation can be revisited. Plan 03 does not pre-emptively ship a weighted alternative because that requires a defensible weights table that does not yet exist.
 
 **Floor override at the protocol level:** none beyond what each Contract's grade already encodes. A protocol with one Contract at F is at F; this is the same outcome the contract-level floor override would produce. Adding a protocol-level "3+ CRITICAL across all contracts → F" rule was considered and rejected — it would conflate "one contract has 3 CRITICALs" with "three contracts each have 1 CRITICAL," which are different risk shapes.
 
 ### §6.3 `isPartialGrade` semantics
 
-Plan 02 I.1 FIX 3 set `Scan.isPartialGrade = true` when any COMPLETE ModuleRun had `errorDetectorCount > 0`. Plan 03 keeps the same predicate but operates across the full Contract × Module matrix:
+Plan 02 I.1 FIX 3 set `Scan.isPartialGrade = true` when any COMPLETE ModuleRun had `errorDetectorCount > 0`. Plan 03 keeps that predicate and extends it: the flag also fires when **the graph is partially covered** — i.e., some Contracts produced a grade and others didn't:
 
 ```
-Scan.isPartialGrade = any ModuleRun in this scan where
-  status === COMPLETE AND errorDetectorCount > 0
+Scan.isPartialGrade = (
+  // Detector-error degradation (Plan 02 carry-over).
+  any ModuleRun in this scan where
+    status === COMPLETE AND errorDetectorCount > 0
+) OR (
+  // Plan 03 extension: partial graph coverage.
+  scan has >= 1 Contract with non-null compositeGrade AND
+  scan has >= 1 Contract that finalised FAILED
+)
 ```
 
-Per-Contract, the same flag lives on `Contract.isPartialGrade`. The scan-level flag is `true` if *any* contract's grade is partial.
+The two clauses capture different confidence-degradation modes:
 
-This means: a scan with 5 Contracts where 1 had a detector throw shows the protocol composite with `isPartialGrade: true`. The UI surfaces *which* contract caused the partial — that affordance was already in scope per Plan 02 I.1 product decision (`isPartialGrade` is a confidence signal, not a grade modifier).
+- **Detector-error clause (Plan 02 carry-over).** Some detectors crashed inside a COMPLETE module — the grade is real but incomplete. Per-Contract, the same predicate lives on `Contract.isPartialGrade`. The scan-level flag is `true` if *any* Contract's grade is partial.
+- **Partial-coverage clause (Plan 03 extension).** Some Contracts finalised FAILED while others COMPLETED with grades. The protocol composite is honestly computed over the COMPLETE Contracts (§6.2) but doesn't see the FAILED ones, so the grade is real but incomplete. The UI surfaces which Contracts FAILED so users can choose to re-scan or interpret the composite accordingly.
+
+Both clauses are confidence signals, not grade modifiers — the worst-grade-wins logic in §6.2 is unaffected by `isPartialGrade`. The flag tells the UI to add a "partial" affordance to whatever grade was computed.
+
+A scan where **all** Contracts FAILED has no graded Contract and is rejected by the §6.2 zero-graded-Contracts guard (the scan itself finalises FAILED with null composite). `isPartialGrade` is therefore only meaningful when the scan ends COMPLETE — it never co-exists with a FAILED scan.
 
 ---
 
@@ -576,8 +626,16 @@ Mirrors Plan 02 §10 with the multi-contract dimension added:
 
 Plan 02 §10.3 introduced fixture-based regression tests (Drift / Beanstalk / Audius). Plan 03 adds two multi-contract fixtures:
 
-- **Aave V3-like (clean)**: 4 contracts (PRIMARY + impl + timelock + 3-of-5 guardian multisig). Expected: 4 per-Contract grades all A; protocol composite A; zero findings.
-- **Bridge-protocol-like (dirty)**: 3 contracts (core + bridge endpoint + 1-of-2 multisig). Expected: core A, bridge currently un-detectable (Plan 04 GOV-007 territory — so bridge scan produces no findings, just SKIPPED detectors per role-applicability), multisig contract scores F via GOV-003. Protocol composite F (worst-wins).
+- **Aave V3-like (clean):** 4 Contracts — `PRIMARY` core + `PROXY_IMPLEMENTATION` impl + `TIMELOCK` + `DECLARED_MULTISIG` 3-of-5 guardian. Expected per-Contract outcomes: all four COMPLETE with grade A and zero findings. Protocol composite: A. `isPartialGrade`: false.
+
+- **Bridge-protocol-like (dirty):** 3 Contracts — `PRIMARY` core (clean) + `DECLARED_BRIDGE` endpoint + `DECLARED_MULTISIG` 1-of-2. Per §4.2's role-applicability table, GOVERNANCE does NOT apply to `DECLARED_BRIDGE` (the entire module SKIPs at submission time per the H.6 priority order, with `errorMessage: "role_not_applicable_to_module"`). Expected per-Contract outcomes:
+  - `PRIMARY` core: COMPLETE, grade A, zero findings.
+  - `DECLARED_BRIDGE`: every applicable ModuleRun SKIPPED. Per §6.2, this Contract has null `compositeGrade` and contributes nothing to the rollup. The Contract still appears in the UI's contract list (with a SKIPPED-style affordance) but is invisible to scoring.
+  - `DECLARED_MULTISIG` 1-of-2: COMPLETE, grade F via GOV-003 (multisig concentration CRITICAL).
+  - Protocol composite: F (worst-wins over the two graded Contracts — `PRIMARY` A and `DECLARED_MULTISIG` F).
+  - `isPartialGrade`: false. No detector errors fired and the SKIPPED `DECLARED_BRIDGE` is not a FAILED Contract — the §6.3 partial-coverage clause only triggers on FAILED Contracts coexisting with COMPLETE ones, not on SKIPPED-by-role-applicability.
+
+  The fixture exercises three properties: (1) `min(grade)` over null-grade-filtered Contracts produces the correct worst grade, (2) role-applicability gates bridges out cleanly without erroring, (3) protocol-level grade computation tolerates a Contract that contributes nothing to the rollup.
 
 ### §10.4 Manual preview smoke
 
@@ -612,6 +670,8 @@ Plan 03 introduces one API-shape breaking change:
 - `GET /api/scan/[id]` no longer returns a flat `modules` array at the top level. Modules now live under each `ContractResponse`. Plan 02 API clients reading `scan.modules` will see `undefined` post-deploy.
 
 This is acceptable because **Plan 02 had no public API consumers other than the in-app UI** — the API is internal. The in-app UI ships its own update in the same Plan 03 PR. If Plan 03 wanted to preserve the flat shape for backward compat, it would aggregate per-Contract ModuleRuns into a denormalised top-level array; this is deliberately rejected to keep the response shape honest about the new multi-Contract model.
+
+This decision was reviewed and accepted: `GET /api/scan/[id]` is treated as **internal API surface** for the Breakwater in-app UI. No public API contract exists with external consumers. If a future plan needs to expose the scan response to third parties (Plan 06+ public API, API-partner integration, on-chain attestation service), that plan **should design a stable versioned public response shape** as a deliberate product surface — Plan 03's internal shape change is not a public-contract precedent and should not be cited as one when the public API is introduced.
 
 All schema migrations are additive or column-additions during the rollout window (§3.5). The constraint-tightening follow-up migration is non-destructive but does require backfill to have completed first.
 
@@ -656,14 +716,14 @@ These are stretch goals:
 
 ## §17 Open questions for review
 
-These are explicit decisions the spec leaves to the reviewer (Robert) before the spec is frozen:
+Of the original seven open questions, two (2 and 6) resolved during the revision pass per the §6.2 and §13 updates respectively. The remaining five (1, 3, 4, 5, 7) go to Codex for adversarial review before the spec is frozen.
 
 1. **Max related contracts per scan.** Spec proposes 20. Higher = more protocols expressible without splitting; lower = tighter RPC budget. 20 feels balanced; verify.
-2. **Worst-grade-wins vs. weighted aggregation.** §6.2 chose worst-grade-wins for safety messaging. Alternative: weight each Contract's score by some heuristic (PRIMARY = 50%, TIMELOCK + multisig = 30% combined, rest = 20%) for a more nuanced protocol grade. Worst-wins is the simpler honest model; weighting is more "scorecard"-flavoured but harder to defend. Choosing simpler unless there's a reason not to.
+2. **Worst-grade-wins vs. weighted aggregation.** *Resolved during revision pass.* Plan 03 ships worst-wins; revisit deferred to Plan 06+ per §6.2 above.
 3. **PROXY_IMPLEMENTATION auto-promotion.** §5.3 explicitly keeps proxy implementations *inside* the primary's snapshot (not as separate Contract rows) unless the user submits them. Plan 04 would auto-promote. Verify Plan 03 stays user-supplied.
 4. **`Protocol.extraContractAddresses` fate.** §3.4 supersedes but keeps the column. Alternative: drop the column outright in Plan 03 (destructive migration). Keeping it is the conservative choice; dropping it sheds dead state. Conservative chosen.
 5. **Demo backfill choice.** §8.1 ships Aave V3 + Uniswap V3 (matching the recon's test-protocol recommendations). Compound v3 USDC is a candidate third demo. Time-bound to curate honestly.
-6. **API breaking change tolerance.** §13 calls out that the flat `modules` array disappears from the top of `GET /api/scan/[id]`. If there are external integrations that read this shape, that's a separate ask. The spec assumes internal-only.
+6. **API breaking change tolerance.** *Resolved during revision pass.* Plan 03 ships the breaking change; no public API contract exists per §13 above.
 7. **Backfill ordering.** §3.5 + §12 require manual invocation of the backfill script between the additive migration and the constraint-tightening migration. The alternative is a single migration with raw SQL backfill embedded; that ties code-deploy and DB-state more tightly. The two-step approach is safer (rollback survives partial deploy) but operationally heavier. Verify operational tolerance.
 
-Reviewer signoff on these seven questions freezes the spec.
+Reviewer signoff on the five remaining questions (1, 3, 4, 5, 7) freezes the spec.
