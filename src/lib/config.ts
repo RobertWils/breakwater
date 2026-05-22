@@ -1,4 +1,18 @@
 /**
+ * Plan 03 §4.1: cap on `relatedContracts` per scan submission.
+ *
+ * Implemented as a named constant (not a runtime env var) per the spec —
+ * product policy, not deployment policy. A single canonical value across
+ * environments avoids per-deployment drift. Referenced from:
+ *   - the zod schema's `.max()` validator on `relatedContracts`
+ *   - any UI affordance that wants to surface the limit
+ *
+ * Plan 04+ can revisit when auto-discovery surfaces graphs that genuinely
+ * exceed 20.
+ */
+export const MAX_RELATED_CONTRACTS = 20;
+
+/**
  * Production environment assertions.
  * Called once at module load of route handlers that depend on hash salts.
  */

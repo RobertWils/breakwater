@@ -16,7 +16,11 @@ import { log } from "@/lib/logging";
 import { checkIpRateLimit, DEDUPE_WINDOW_MS } from "@/lib/rate-limit";
 import { createScanAttempt } from "@/lib/scan-attempt";
 import { ScanErrors, ScanSubmissionError } from "@/lib/scan-submission/errors";
-import type { ScanSubmission } from "@/lib/schemas/scan";
+import {
+  validateRelatedContracts,
+  type NormalizedRelatedContract,
+  type ScanSubmission,
+} from "@/lib/schemas/scan";
 
 import { ModuleName } from "@prisma/client";
 
@@ -290,6 +294,28 @@ export async function submitScan(
     }
   }
 
+  // ── Step 1b (Plan 03 §4.1): per-related-contract address validation ──
+  // The new `relatedContracts` array goes through isValidAddress just like
+  // the primary + legacy extras above. This catches malformed entries
+  // before the normalization + dedup step below.
+  for (let i = 0; i < input.relatedContracts.length; i++) {
+    const entry = input.relatedContracts[i]!;
+    if (!isValidAddress(input.chain, entry.address)) {
+      await logInvalidAttempt({
+        ipHash,
+        userId,
+        userAgent,
+        cooldownKey: SENTINEL_COOLDOWN_ADDRESS,
+        inputPayloadHash: SENTINEL_PAYLOAD_ADDRESS,
+        reason: `invalid_relatedContracts`,
+      });
+      throw ScanErrors.invalidAddress(input.chain, entry.address, {
+        field: "relatedContracts",
+        index: i,
+      });
+    }
+  }
+
   // ── Step 2: Normalize all addresses ──
   const normalizedAddress = normalizeAddress(input.chain, input.primaryContractAddress);
   const normalizedExtras = input.extraContractAddresses.map((a) =>
@@ -298,6 +324,42 @@ export async function submitScan(
   const normalizedMultisigs = input.multisigs.map((a) =>
     normalizeAddress(input.chain, a),
   );
+
+  // ── Step 2b (Plan 03 §4.1): merge legacy extras into relatedContracts +
+  //    run validateRelatedContracts ──
+  // Legacy `extraContractAddresses` plain strings normalise to RELATED-role
+  // entries so a single validation pass covers both submission shapes. The
+  // helper handles primary-address-in-related (misconfiguration vs silent
+  // dedupe) and inter-related deduplication.
+  const mergedRelated = [
+    ...input.relatedContracts.map((entry) => ({
+      ...entry,
+      address: normalizeAddress(input.chain, entry.address),
+    })),
+    ...normalizedExtras.map((addr) => ({
+      address: addr,
+      role: "RELATED" as const,
+      label: undefined,
+      crossChainTwins: [] as { chain: string; address: string }[],
+    })),
+  ];
+  const relatedResult = validateRelatedContracts(normalizedAddress, mergedRelated);
+  if (!relatedResult.ok) {
+    await logInvalidAttempt({
+      ipHash,
+      userId,
+      userAgent,
+      cooldownKey: SENTINEL_COOLDOWN_ADDRESS,
+      inputPayloadHash: SENTINEL_PAYLOAD_ADDRESS,
+      reason: relatedResult.code,
+    });
+    throw ScanErrors.primaryAddressInRelated(
+      relatedResult.details.address,
+      relatedResult.details.role,
+    );
+  }
+  const normalizedRelatedContracts: NormalizedRelatedContract[] =
+    relatedResult.normalized;
 
   // ── Step 2 cont: Compute hashes and cooldown key ──
   const payloadHash = hashPayload({

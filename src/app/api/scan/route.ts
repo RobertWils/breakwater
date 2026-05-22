@@ -81,6 +81,23 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       );
     }
 
+    // ── Plan 03 §4.1 chain gate ──
+    // Reject non-Ethereum scans with a dedicated error code so clients
+    // can distinguish "wrong chain for this plan" from "invalid schema".
+    // The Chain enum still includes SOLANA at the type level (curated
+    // demos render unchanged); Plan 04+ lifts this gate.
+    if (parsed.data.chain !== "ETHEREUM") {
+      await logMalformedAttempt({ ipHash, userId, userAgent, reason: "schema" });
+      return NextResponse.json(
+        {
+          error: "unsupported_chain_for_plan_03",
+          message: `Plan 03 only supports ETHEREUM scans. Received chain: ${parsed.data.chain}.`,
+          chain: parsed.data.chain,
+        },
+        { status: 400 },
+      );
+    }
+
     // ── Core submission flow ──
     const result = await submitScan({
       input: parsed.data,
