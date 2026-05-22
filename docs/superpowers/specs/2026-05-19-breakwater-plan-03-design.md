@@ -218,12 +218,23 @@ CREATE UNIQUE INDEX "Contract_scanId_address_key" ON "Contract"("scanId", "addre
 CREATE INDEX "Contract_scanId_idx" ON "Contract"("scanId");
 ```
 
-**`ModuleRun` (additive column):**
+**`ModuleRun` (additive column + legacy unique drop):**
 
 ```sql
 ALTER TABLE "ModuleRun" ADD COLUMN "contractId" TEXT REFERENCES "Contract"("id");
--- The legacy @@unique([scanId, module]) stays in place for PR 1.
--- No NOT NULL and no new composite-unique yet — those land in PR 2.
+ALTER TABLE "ModuleRun" DROP CONSTRAINT "ModuleRun_scanId_module_key";
+-- contractId stays nullable in PR 1 (legacy Plan 02 ModuleRun rows
+-- have no Contract until backfill). The composite unique
+-- (scanId, module, contractId) lands in PR 2 once contractId is
+-- backfilled and tightened to NOT NULL.
+--
+-- The legacy @@unique([scanId, module]) is DROPPED in PR 1 because
+-- multi-Contract execution model (§4.2 creates one ModuleRun per
+-- (Contract, module) pair) requires multiple rows sharing the same
+-- (scanId, module). Historical Plan 02 rows remain readable through
+-- the foreign key relationships; no @unique enforcement is needed
+-- in the PR 1 window because new scans always create the right rows
+-- and historical scans aren't re-written by new code.
 ```
 
 **`GovernanceSnapshot` (additive column + relaxation):**
@@ -274,7 +285,10 @@ Migration name: `plan_03_tighten_contract_id_constraints`. Lands only after PR 1
 
 ```sql
 ALTER TABLE "ModuleRun" ALTER COLUMN "contractId" SET NOT NULL;
-ALTER TABLE "ModuleRun" DROP CONSTRAINT "ModuleRun_scanId_module_key";
+-- The legacy ModuleRun_scanId_module_key constraint was already dropped
+-- in PR 1 (§3.5 PR 1) to permit multi-Contract row creation. PR 2
+-- only adds the new composite unique now that contractId is NOT NULL
+-- across all rows.
 ALTER TABLE "ModuleRun" ADD CONSTRAINT "ModuleRun_scanId_module_contractId_key"
   UNIQUE ("scanId", "module", "contractId");
 ```
