@@ -8,6 +8,11 @@ function makeScan(overrides: Partial<ScanResponse> = {}): ScanResponse {
     id: "scan-1",
     status: "QUEUED",
     compositeScore: null,
+    // Plan 03 §3.5 PR 1 stubs.
+    averageContractScore: null,
+    worstContractScore: null,
+    isPartialCoverage: false,
+    contracts: [],
     compositeGrade: null,
     isPartialGrade: false,
     createdAt: "2026-04-22T10:00:00.000Z",

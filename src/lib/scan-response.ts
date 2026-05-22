@@ -1,15 +1,43 @@
 // @vitest-environment node
 import { prisma } from "@/lib/prisma";
-import type { ModuleRun, Finding, ScanStatus, ModuleStatus } from "@prisma/client";
+import type {
+  ContractRole,
+  Finding,
+  ModuleRun,
+  ModuleStatus,
+  ScanStatus,
+} from "@prisma/client";
 
 export type VisibilityTier = "unauth" | "email" | "paid";
 
 export interface ScanResponse {
   id: string;
   status: ScanStatus;
+  /**
+   * Plan 03 §3.5 PR 1: response keeps `compositeScore` as a backward-
+   * compat alias of `averageContractScore` for the Phase A window.
+   * Phase G removes this field once UI consumers migrate to read
+   * `averageContractScore` + `worstContractScore` separately.
+   */
   compositeScore: number | null;
+  /** Plan 03 §6.2 — arithmetic mean of per-Contract scores across graded Contracts. */
+  averageContractScore: number | null;
+  /**
+   * Plan 03 §6.2 — lowest `Contract.compositeScore` among Contracts whose
+   * grade matches `compositeGrade` (ties broken by lowest score). Stubbed
+   * to null in Phase A; populated by Phase F's protocol-rollup.
+   */
+  worstContractScore: number | null;
+  /** Plan 03 §6.2 — widens to "worst contributing contract's grade" once graphs land. */
   compositeGrade: string | null;
+  /** Plan 02 I.1 FIX 3 detector-error clause (spec §6.3). */
   isPartialGrade: boolean;
+  /**
+   * Plan 03 §6.3 graph-coverage clause — see Plan 03 plan §20 for the
+   * two-boolean implementation choice. Stubbed to false in Phase A;
+   * populated by Phase F.
+   */
+  isPartialCoverage: boolean;
   createdAt: string;
   completedAt: string | null;
   expiresAt: string;
@@ -20,10 +48,47 @@ export interface ScanResponse {
     domain: string | null;
     ownershipStatus: string;
   };
+  /**
+   * Plan 02 single-contract module list. Plan 03 keeps this at the top
+   * level during PR 1 for backward compat (UI consumers haven't migrated
+   * yet); Phase G migrates UI to read `contracts[i].modules` and Phase G
+   * or J removes this field.
+   */
   modules: ModuleRunResponse[];
+  /**
+   * Plan 03 §7.2 — per-Contract response shape. Stubbed to `[]` in Phase A
+   * (no business logic populates contracts yet); Phases B/G populate.
+   */
+  contracts: ContractResponse[];
   findings: FindingResponse[];
   // NO tier field
   // NO top-level hiddenFindingsCount (per-module in ModuleRunResponse)
+}
+
+/**
+ * Plan 03 §7.2 — per-Contract response shape. One entry per Contract row
+ * within the scan. Phase A ships the type stub only; the response builder
+ * returns `contracts: []` until Phase G wires up the populated shape.
+ */
+export interface ContractResponse {
+  id: string;
+  address: string;
+  role: ContractRole;
+  label: string | null;
+  isPrimary: boolean;
+  compositeScore: number | null;
+  compositeGrade: string | null;
+  isPartialGrade: boolean;
+  crossChainTwins: { chain: string; address: string }[];
+  modules: ModuleRunResponse[];
+  findingsCount: number;
+  /**
+   * Plan 03 §5.3 detect-and-warn. Populated when the snapshot found a
+   * proxy implementation address but the user did not submit it as a
+   * separate Contract. Null otherwise. UI renders the warning on this
+   * Contract's card.
+   */
+  proxyImplementationWarning: { detectedAddress: string } | null;
 }
 
 export interface ModuleRunResponse {
@@ -140,12 +205,18 @@ export async function getScan(params: {
   return {
     id: scan.id,
     status: scan.status,
-    // Plan 03 §3.5 PR 1: Prisma column renamed. Response field name
-    // stays `compositeScore` in A.1; Task A.3 reshapes the response
-    // interface to surface `averageContractScore` + `worstContractScore`.
+    // Plan 03 §3.5 PR 1: Prisma column renamed to `averageContractScore`.
+    // The response surfaces it under BOTH `compositeScore` (Plan 02
+    // backward-compat alias) and `averageContractScore` (Plan 03 name).
+    // Phase G removes the alias once UI consumers migrate.
     compositeScore: scan.averageContractScore,
+    averageContractScore: scan.averageContractScore,
+    // Stubbed in Phase A — populated by Phase F's protocol-rollup once
+    // multi-Contract scans land.
+    worstContractScore: scan.worstContractScore,
     compositeGrade: scan.compositeGrade,
     isPartialGrade: scan.isPartialGrade,
+    isPartialCoverage: scan.isPartialCoverage,
     createdAt: scan.createdAt.toISOString(),
     completedAt: scan.completedAt?.toISOString() ?? null,
     expiresAt: scan.expiresAt.toISOString(),
@@ -159,6 +230,10 @@ export async function getScan(params: {
     modules: scan.modules.map((m) =>
       shapeModuleRun(m, params.tier, hiddenByModule.get(m.module) ?? 0),
     ),
+    // Plan 03 §7.2 stub. Phase A's response builder doesn't read or
+    // populate Contract rows yet; Phases B/G will. Returning `[]` here
+    // keeps the response shape stable for legacy single-contract scans.
+    contracts: [],
     findings,
   };
 }
