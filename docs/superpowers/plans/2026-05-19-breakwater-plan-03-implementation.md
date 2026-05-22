@@ -178,7 +178,7 @@ Robert completes setup before any implementer subagent is dispatched:
 **Goal:** Land the additive Prisma migration described in spec §3.5 PR 1 section. Schema delta only — no application code yet uses the new tables / columns. The migration applies cleanly on local dev DB; the running app behaves identically to Plan 02. This phase is the **schema chassis**; subsequent phases populate it.
 
 **Risk:** A wrong column type or missed `ON DELETE` clause in the migration manifests only when later phases write data. Defensive measure: each migration step is tested against the spec §3.5 SQL block before committing.
-**Rollback:** Migration is additive — every new column is nullable, every new constraint is non-unique. Code-only rollback to Plan 02 is clean.
+**Rollback:** Code-only rollback to Plan 02 is NOT clean — the `Scan.compositeScore → Scan.averageContractScore` rename means a code revert would leave Plan 02 reading/writing a column under the wrong name. Rollback requires EITHER (a) keeping the renamed column and a one-line compat shim aliasing `compositeScore` → `averageContractScore` in the Plan 02 code path, OR (b) running a down-migration that renames `averageContractScore` back to `compositeScore` before reverting code. Option (a) is preferred for production speed; option (b) for clean schema state. See `docs/deployment-env.md` for the runbook entry.
 
 ### Task A.1 — Prisma schema additions
 

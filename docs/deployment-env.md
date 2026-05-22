@@ -77,3 +77,22 @@ vercel env ls <scope>
 ```
 
 All Plan 02 migrations are additive (or NOT NULL → nullable relaxations) — code rollback to a Plan 01 deployment is safe without DB rollback. See the Phase H status marker's rollback section for the playbook.
+
+## Plan 03 rollback addendum
+
+### Plan 03 PR 1 rollback (post-merge, pre-PR-2)
+
+If a defect requires reverting PR 1 (the multi-Contract execution model + additive migration), follow this runbook:
+
+1. Identify the production scope of the rollback: was the backfill script (`scripts/backfill-plan-03-contracts.ts`) run? If YES, the DB has Contract rows + populated `contractId` columns — these are safe (PR 2 hasn't tightened constraints yet), but consider whether to drop them as part of the rollback.
+
+2. Code rollback: `git revert` of the PR 1 merge commit. This restores Plan 02 code paths.
+
+3. **The `compositeScore` problem.** Plan 02 code reads/writes `Scan.compositeScore`, but the column is now named `averageContractScore` in the DB. Two options:
+
+   - **Option (a) — Compat shim (preferred for speed):** Apply a code patch to the reverted Plan 02 code that aliases `compositeScore` reads/writes to `averageContractScore`. Example: a Prisma client extension or a `@map("averageContractScore")` on a temporary `compositeScore` field. Document the shim as temporary; remove when Plan 03 re-merges.
+   - **Option (b) — Down-migration:** Create a Prisma migration that renames `averageContractScore` back to `compositeScore`. Run via `prisma migrate deploy`. Plan 02 then works against unchanged schema. Cleaner but slower (requires `migrate deploy` in production).
+
+4. The additive Plan 03 schema (Contract table, `contractId` columns, `isPartialCoverage` column, `worstContractScore` column) can stay in place — Plan 02 code ignores it. No need to drop.
+
+5. Verify rollback: production scan against Plan 02 baseline protocols (Aave V3 single-contract) returns a clean grade.
