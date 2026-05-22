@@ -149,6 +149,12 @@ model Protocol {
   displayName            String
   chain                  Chain
   primaryContractAddress String
+  /// @deprecated Plan 03 §3.4: superseded by the new Contract model. New
+  /// scans no longer write this column — related-contract data lives on
+  /// per-scan Contract rows. The column is kept on the schema for backward-
+  /// compat reads of pre-Plan-03 Protocol rows but is dead data going
+  /// forward. Plan 05+ may consider dropping it after a sufficient grace
+  /// period and a separate destructive-migration plan.
   extraContractAddresses Json            @default("[]")
   domain                 String?
   logoUrl                String?

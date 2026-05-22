@@ -1659,4 +1659,258 @@ describe.skipIf(!hasDb)("scan submission integration", () => {
       expect(row!.errorMessage).toBe("module_disabled_by_user");
     }
   });
+
+  // ── Plan 03 §4.2: multi-Contract submission ────────────────────────────
+
+  it.skipIf(!hasDb)(
+    "Plan 02 single-contract submission (no relatedContracts) creates exactly one PRIMARY Contract row",
+    async () => {
+      const ipHash = uniqueIpHash();
+      createdScanAttemptIpHashes.push(ipHash);
+      const address = uniqueEthAddress();
+
+      const result = await submitScan({
+        input: {
+          chain: "ETHEREUM",
+          primaryContractAddress: address,
+          extraContractAddresses: [],
+          relatedContracts: [],
+          multisigs: [],
+          modulesEnabled: ["GOVERNANCE", "ORACLE", "SIGNER", "FRONTEND"],
+        },
+        userId: null,
+        userEmail: null,
+        ip: "1.2.3.4",
+        ipHash,
+        userAgent: "integration-test/1.0",
+      });
+      expect(result.statusCode).toBe(202);
+
+      const protocol = await prisma.protocol.findFirst({
+        where: { primaryContractAddress: address.toLowerCase(), chain: "ETHEREUM" },
+      });
+      createdProtocolIds.push(protocol!.id);
+
+      const scan = await prisma.scan.findUnique({
+        where: { id: result.scanId },
+        include: { contracts: true, modules: true },
+      });
+
+      expect(scan!.contracts).toHaveLength(1);
+      expect(scan!.contracts[0]!.role).toBe("PRIMARY");
+      expect(scan!.contracts[0]!.isPrimary).toBe(true);
+      expect(scan!.contracts[0]!.address).toBe(address.toLowerCase());
+
+      // 1 Contract × 4 ModuleNames = 4 ModuleRun rows (Plan 02 shape preserved).
+      expect(scan!.modules).toHaveLength(4);
+      for (const m of scan!.modules) {
+        expect(m.contractId).toBe(scan!.contracts[0]!.id);
+      }
+    },
+  );
+
+  it.skipIf(!hasDb)(
+    "multi-Contract submission creates one Contract row per submitted address (PRIMARY + 3 related, no unique violation)",
+    async () => {
+      const ipHash = uniqueIpHash();
+      createdScanAttemptIpHashes.push(ipHash);
+
+      const primaryAddr = uniqueEthAddress();
+      const implAddr = uniqueEthAddress();
+      const timelockAddr = uniqueEthAddress();
+      const multisigAddr = uniqueEthAddress();
+
+      const result = await submitScan({
+        input: {
+          chain: "ETHEREUM",
+          primaryContractAddress: primaryAddr,
+          extraContractAddresses: [],
+          relatedContracts: [
+            { address: implAddr, role: "PROXY_IMPLEMENTATION", crossChainTwins: [] },
+            { address: timelockAddr, role: "TIMELOCK", crossChainTwins: [] },
+            { address: multisigAddr, role: "DECLARED_MULTISIG", crossChainTwins: [] },
+          ],
+          multisigs: [],
+          modulesEnabled: ["GOVERNANCE", "ORACLE", "SIGNER", "FRONTEND"],
+        },
+        userId: null,
+        userEmail: null,
+        ip: "1.2.3.4",
+        ipHash,
+        userAgent: "integration-test/1.0",
+      });
+      expect(result.statusCode).toBe(202);
+
+      const protocol = await prisma.protocol.findFirst({
+        where: { primaryContractAddress: primaryAddr.toLowerCase(), chain: "ETHEREUM" },
+      });
+      createdProtocolIds.push(protocol!.id);
+
+      const scan = await prisma.scan.findUnique({
+        where: { id: result.scanId },
+        include: {
+          contracts: { include: { moduleRuns: true } },
+        },
+      });
+
+      // 4 Contract rows (1 PRIMARY + 3 related)
+      expect(scan!.contracts).toHaveLength(4);
+      const byRole = new Map(scan!.contracts.map((c) => [c.role, c]));
+      expect(byRole.get("PRIMARY")!.isPrimary).toBe(true);
+      expect(byRole.get("PROXY_IMPLEMENTATION")!.address).toBe(implAddr.toLowerCase());
+      expect(byRole.get("TIMELOCK")!.address).toBe(timelockAddr.toLowerCase());
+      expect(byRole.get("DECLARED_MULTISIG")!.address).toBe(multisigAddr.toLowerCase());
+
+      // Each Contract has 4 ModuleRun rows (one per ModuleName). For the
+      // 4 governance-applicable roles, the GOVERNANCE row is QUEUED;
+      // ORACLE/SIGNER/FRONTEND are SKIPPED with module_not_implemented.
+      for (const contract of scan!.contracts) {
+        expect(contract.moduleRuns).toHaveLength(4);
+        const gov = contract.moduleRuns.find((m) => m.module === "GOVERNANCE");
+        expect(gov!.status).toBe("QUEUED");
+        expect(gov!.errorMessage).toBeNull();
+      }
+    },
+  );
+
+  it.skipIf(!hasDb)(
+    "TOKEN_CONTRACT role: GOVERNANCE ModuleRun is SKIPPED with role_not_applicable_to_module",
+    async () => {
+      const ipHash = uniqueIpHash();
+      createdScanAttemptIpHashes.push(ipHash);
+
+      const primaryAddr = uniqueEthAddress();
+      const tokenAddr = uniqueEthAddress();
+
+      const result = await submitScan({
+        input: {
+          chain: "ETHEREUM",
+          primaryContractAddress: primaryAddr,
+          extraContractAddresses: [],
+          relatedContracts: [
+            { address: tokenAddr, role: "TOKEN_CONTRACT", crossChainTwins: [] },
+          ],
+          multisigs: [],
+          modulesEnabled: ["GOVERNANCE", "ORACLE", "SIGNER", "FRONTEND"],
+        },
+        userId: null,
+        userEmail: null,
+        ip: "1.2.3.4",
+        ipHash,
+        userAgent: "integration-test/1.0",
+      });
+      expect(result.statusCode).toBe(202);
+
+      const protocol = await prisma.protocol.findFirst({
+        where: { primaryContractAddress: primaryAddr.toLowerCase(), chain: "ETHEREUM" },
+      });
+      createdProtocolIds.push(protocol!.id);
+
+      const tokenContract = await prisma.contract.findFirst({
+        where: { scanId: result.scanId, role: "TOKEN_CONTRACT" },
+        include: { moduleRuns: true },
+      });
+      const tokenGov = tokenContract!.moduleRuns.find((m) => m.module === "GOVERNANCE");
+      expect(tokenGov!.status).toBe("SKIPPED");
+      expect(tokenGov!.errorMessage).toBe("role_not_applicable_to_module");
+
+      // PRIMARY's GOVERNANCE row still QUEUED — siblings unaffected.
+      const primaryContract = await prisma.contract.findFirst({
+        where: { scanId: result.scanId, role: "PRIMARY" },
+        include: { moduleRuns: true },
+      });
+      const primaryGov = primaryContract!.moduleRuns.find((m) => m.module === "GOVERNANCE");
+      expect(primaryGov!.status).toBe("QUEUED");
+    },
+  );
+
+  it.skipIf(!hasDb)(
+    "DECLARED_BRIDGE role: GOVERNANCE ModuleRun is SKIPPED with role_not_applicable_to_module",
+    async () => {
+      const ipHash = uniqueIpHash();
+      createdScanAttemptIpHashes.push(ipHash);
+
+      const primaryAddr = uniqueEthAddress();
+      const bridgeAddr = uniqueEthAddress();
+
+      const result = await submitScan({
+        input: {
+          chain: "ETHEREUM",
+          primaryContractAddress: primaryAddr,
+          extraContractAddresses: [],
+          relatedContracts: [
+            { address: bridgeAddr, role: "DECLARED_BRIDGE", crossChainTwins: [] },
+          ],
+          multisigs: [],
+          modulesEnabled: ["GOVERNANCE", "ORACLE", "SIGNER", "FRONTEND"],
+        },
+        userId: null,
+        userEmail: null,
+        ip: "1.2.3.4",
+        ipHash,
+        userAgent: "integration-test/1.0",
+      });
+      expect(result.statusCode).toBe(202);
+
+      const protocol = await prisma.protocol.findFirst({
+        where: { primaryContractAddress: primaryAddr.toLowerCase(), chain: "ETHEREUM" },
+      });
+      createdProtocolIds.push(protocol!.id);
+
+      const bridgeContract = await prisma.contract.findFirst({
+        where: { scanId: result.scanId, role: "DECLARED_BRIDGE" },
+        include: { moduleRuns: true },
+      });
+      const bridgeGov = bridgeContract!.moduleRuns.find((m) => m.module === "GOVERNANCE");
+      expect(bridgeGov!.status).toBe("SKIPPED");
+      expect(bridgeGov!.errorMessage).toBe("role_not_applicable_to_module");
+    },
+  );
+
+  it.skipIf(!hasDb)(
+    "legacy extraContractAddresses normalises to RELATED-role Contract rows (Plan 02 backward compat)",
+    async () => {
+      const ipHash = uniqueIpHash();
+      createdScanAttemptIpHashes.push(ipHash);
+
+      const primaryAddr = uniqueEthAddress();
+      const legacyExtra = uniqueEthAddress();
+
+      const result = await submitScan({
+        input: {
+          chain: "ETHEREUM",
+          primaryContractAddress: primaryAddr,
+          extraContractAddresses: [legacyExtra],
+          relatedContracts: [],
+          multisigs: [],
+          modulesEnabled: ["GOVERNANCE", "ORACLE", "SIGNER", "FRONTEND"],
+        },
+        userId: null,
+        userEmail: null,
+        ip: "1.2.3.4",
+        ipHash,
+        userAgent: "integration-test/1.0",
+      });
+      expect(result.statusCode).toBe(202);
+
+      const protocol = await prisma.protocol.findFirst({
+        where: { primaryContractAddress: primaryAddr.toLowerCase(), chain: "ETHEREUM" },
+      });
+      createdProtocolIds.push(protocol!.id);
+
+      // The legacy address became a RELATED-role Contract row.
+      const scan = await prisma.scan.findUnique({
+        where: { id: result.scanId },
+        include: { contracts: true },
+      });
+      expect(scan!.contracts).toHaveLength(2);
+      const related = scan!.contracts.find((c) => c.role === "RELATED");
+      expect(related!.address).toBe(legacyExtra.toLowerCase());
+      expect(related!.isPrimary).toBe(false);
+
+      // Plan 03 §3.4: Protocol.extraContractAddresses is no longer written.
+      // The new Protocol row should have it as the schema default `[]`.
+      expect(protocol!.extraContractAddresses).toEqual([]);
+    },
+  );
 });
