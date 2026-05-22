@@ -353,11 +353,12 @@ describe("markComplete grade integration (F.3 — compositeScore + compositeGrad
     const args = updateMany.mock.calls[0]![0] as {
       data: {
         status: string;
-        compositeScore: number | null;
+        // Plan 03 §3.5 PR 1: column renamed from compositeScore.
+        averageContractScore: number | null;
         compositeGrade: string | null;
       };
     };
-    expect(args.data.compositeScore).toBe(80);
+    expect(args.data.averageContractScore).toBe(80);
     expect(args.data.compositeGrade).toBe("B");
   });
 
@@ -370,9 +371,12 @@ describe("markComplete grade integration (F.3 — compositeScore + compositeGrad
       mock: { calls: unknown[][] };
     };
     const args = updateMany.mock.calls[0]![0] as {
-      data: { compositeScore: number | null; compositeGrade: string | null };
+      data: {
+        averageContractScore: number | null;
+        compositeGrade: string | null;
+      };
     };
-    expect(args.data.compositeScore).toBeNull();
+    expect(args.data.averageContractScore).toBeNull();
     expect(args.data.compositeGrade).toBeNull();
   });
 

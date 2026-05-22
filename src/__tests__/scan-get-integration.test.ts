@@ -130,7 +130,10 @@ async function seedScan(
       ipHash: `test-ip-${randomBytes(8).toString("hex")}`,
       userAgent: "integration-test/1.0",
       status: overrides.status ?? ScanStatus.COMPLETE,
-      compositeScore: overrides.compositeScore ?? 80,
+      // Plan 03 §3.5 PR 1: column rename. The test helper's `compositeScore`
+      // override key stays for caller readability; it maps to the new
+      // `averageContractScore` column.
+      averageContractScore: overrides.compositeScore ?? 80,
       compositeGrade: overrides.compositeGrade ?? Grade.B,
       isPartialGrade: false,
       expiresAt: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),

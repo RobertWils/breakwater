@@ -255,7 +255,11 @@ describe.skipIf(!hasDb)(
         where: { id: scan.id },
       });
       expect(persistedScan.status).toBe("COMPLETE");
-      expect(persistedScan.compositeScore).toBe(60);
+      // Plan 03 §3.5 PR 1: column renamed. Single-contract scans (Plan 02
+      // legacy + Phase A behavior) still write the same value here — the
+      // semantic of "average of one Contract == that one Contract's score"
+      // is preserved while the schema rename lands.
+      expect(persistedScan.averageContractScore).toBe(60);
       expect(persistedScan.compositeGrade).toBe("C");
       expect(persistedScan.completedAt).not.toBeNull();
 
@@ -308,7 +312,8 @@ describe.skipIf(!hasDb)(
         where: { id: scan.id },
       });
       expect(persistedScan.status).toBe("FAILED");
-      expect(persistedScan.compositeScore).toBeNull();
+      // Plan 03 §3.5 PR 1: column renamed.
+      expect(persistedScan.averageContractScore).toBeNull();
       expect(persistedScan.compositeGrade).toBeNull();
 
       const persistedModule = await prisma.moduleRun.findUniqueOrThrow({
@@ -370,7 +375,11 @@ describe.skipIf(!hasDb)(
       expect(result.findingCount).toBe(2);
       expect(result.snapshot.scanId).toBe(scan.id);
 
-      const persistedSnapshot = await prisma.governanceSnapshot.findUnique({
+      // Plan 03 §3.5 PR 1: GovernanceSnapshot.scanId is no longer @unique,
+      // so findUnique({ where: { scanId } }) doesn't type-check. Use
+      // findFirst for the test assertion; the data invariant (one snapshot
+      // per scan) still holds for Plan-02-shape data.
+      const persistedSnapshot = await prisma.governanceSnapshot.findFirst({
         where: { scanId: scan.id },
       });
       expect(persistedSnapshot).not.toBeNull();

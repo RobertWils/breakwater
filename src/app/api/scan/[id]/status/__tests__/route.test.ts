@@ -119,7 +119,8 @@ async function seedScan(status: ScanStatus) {
       ipHash: `test-ip-${randomBytes(8).toString("hex")}`,
       userAgent: "g1-status-test/1.0",
       status,
-      compositeScore: status === "COMPLETE" ? 80 : null,
+      // Plan 03 §3.5 PR 1: column rename.
+      averageContractScore: status === "COMPLETE" ? 80 : null,
       compositeGrade: status === "COMPLETE" ? Grade.B : null,
       isPartialGrade: false,
       expiresAt: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),

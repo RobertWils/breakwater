@@ -84,7 +84,11 @@ function makeScanRow(overrides: Record<string, unknown> = {}) {
   return {
     id: "scan-abc",
     status: "COMPLETE",
-    compositeScore: 80,
+    // Plan 03 §3.5 PR 1: Prisma column renamed from `compositeScore`.
+    // The response builder reads `scan.averageContractScore` and projects
+    // it into the response's `compositeScore` field (Phase A.3 will
+    // rewrite that response shape).
+    averageContractScore: 80,
     compositeGrade: "B",
     isPartialGrade: false,
     createdAt: new Date("2026-01-01T00:00:00.000Z"),

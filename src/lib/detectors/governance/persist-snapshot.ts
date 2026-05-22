@@ -13,12 +13,30 @@ import type { GovernanceSnapshotData } from "./types";
  * Same convention as `ScanAttemptClient` in `src/lib/scan-attempt.ts` —
  * keeps the public API decoupled from Prisma's specific union types.
  */
+// Plan 03 §3.5 PR 1: the structural shape widens from a single `upsert` to
+// the findFirst → update OR create pattern that the function implementation
+// now uses (see persistGovernanceSnapshot for the rationale: scanId is no
+// longer @unique so atomic upsert is unavailable until Phase E re-keys this
+// on contractId).
+//
+// The method signatures here are deliberately narrow concrete forms that
+// match the function's exact call shape. Prisma's generic
+// `GovernanceSnapshotDelegate` is too wide for `vi.fn<T>()` to satisfy
+// (it carries `<T extends FindFirstArgs>` generics that don't survive
+// erasure into a mock); the real Prisma delegate is structurally
+// compatible with the narrow form below at every call site we make.
 export type SnapshotClient = {
   governanceSnapshot: {
-    upsert: (args: {
-      where: Prisma.GovernanceSnapshotWhereUniqueInput;
-      create: Prisma.GovernanceSnapshotUncheckedCreateInput;
-      update: Prisma.GovernanceSnapshotUncheckedUpdateInput;
+    findFirst: (args: {
+      where: { scanId: string };
+      select: { id: true };
+    }) => Promise<{ id: string } | null>;
+    update: (args: {
+      where: { id: string };
+      data: Prisma.GovernanceSnapshotUncheckedUpdateInput;
+    }) => Promise<GovernanceSnapshot>;
+    create: (args: {
+      data: Prisma.GovernanceSnapshotUncheckedCreateInput;
     }) => Promise<GovernanceSnapshot>;
   };
 };
@@ -48,10 +66,25 @@ export async function persistGovernanceSnapshot(
   const { scanId, snapshot } = context;
   const data = mapSnapshotToCreate(snapshot);
 
-  return client.governanceSnapshot.upsert({
+  // Plan 03 §3.5 PR 1: `GovernanceSnapshot.scanId` is no longer @unique,
+  // so the Plan 02 atomic `upsert({ where: { scanId } })` no longer
+  // type-checks. We split into findFirst → update OR create. This is
+  // safe under the actual Inngest retry model (step retries are
+  // sequential, not concurrent), and the surrounding tx isolates against
+  // cross-function races. Phase E re-keys this on contractId and
+  // restores a proper @unique-backed upsert at that layer.
+  const existing = await client.governanceSnapshot.findFirst({
     where: { scanId },
-    create: { scanId, ...data },
-    update: { ...data, capturedAt: new Date() },
+    select: { id: true },
+  });
+  if (existing) {
+    return client.governanceSnapshot.update({
+      where: { id: existing.id },
+      data: { ...data, capturedAt: new Date() },
+    });
+  }
+  return client.governanceSnapshot.create({
+    data: { scanId, ...data },
   });
 }
 

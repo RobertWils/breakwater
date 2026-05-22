@@ -140,7 +140,10 @@ export async function getScan(params: {
   return {
     id: scan.id,
     status: scan.status,
-    compositeScore: scan.compositeScore,
+    // Plan 03 §3.5 PR 1: Prisma column renamed. Response field name
+    // stays `compositeScore` in A.1; Task A.3 reshapes the response
+    // interface to surface `averageContractScore` + `worstContractScore`.
+    compositeScore: scan.averageContractScore,
     compositeGrade: scan.compositeGrade,
     isPartialGrade: scan.isPartialGrade,
     createdAt: scan.createdAt.toISOString(),

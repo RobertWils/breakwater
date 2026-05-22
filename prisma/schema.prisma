@@ -107,6 +107,16 @@ enum VotingSnapshotType {
   NONE
 }
 
+enum ContractRole {
+  PRIMARY
+  PROXY_IMPLEMENTATION
+  DECLARED_MULTISIG
+  DECLARED_BRIDGE
+  TOKEN_CONTRACT
+  TIMELOCK
+  RELATED
+}
+
 model Organization {
   id            String           @id @default(cuid())
   name          String
@@ -182,16 +192,36 @@ model Scan {
   ipHash                String
   userAgent             String
   status                ScanStatus          @default(QUEUED)
-  compositeScore        Int?
+  // Plan 03 §3.3: protocol-composite fields restructured.
+  // `compositeGrade` widens to "worst contributing contract's grade" (§6.2).
   compositeGrade        Grade?
+  // Plan 03 §3.5: renamed from `compositeScore`. Holds the arithmetic mean
+  // of per-Contract scores across graded Contracts (spec §6.2).
+  averageContractScore  Int?
+  // Plan 03 §6.2: lowest `Contract.compositeScore` among Contracts whose
+  // grade matches `Scan.compositeGrade` (ties broken by lowest score).
+  worstContractScore    Int?
+  // Plan 02 I.1 FIX 3 semantic carryover — detector-error degradation clause.
+  // Aggregates across all Contracts in the scan in Plan 03 (§6.3).
   isPartialGrade        Boolean             @default(false)
+  // Plan 03 §6.3 extension — graph-coverage clause. True when ≥1 graded
+  // Contract coexists with ≥1 FAILED Contract. Implementation choice per
+  // Plan 03 plan §20: two booleans rather than a partialReasons enum array.
+  isPartialCoverage     Boolean             @default(false)
   expiresAt             DateTime
   createdAt             DateTime            @default(now())
   completedAt           DateTime?
   modules               ModuleRun[]
+  contracts             Contract[]
   findings              Finding[]
   scanAttempts          ScanAttempt[]
-  governanceSnapshot    GovernanceSnapshot?
+  // Plan 03 §3.5 PR 1: was `GovernanceSnapshot?` in Plan 02 (1:1 via
+  // GovernanceSnapshot.scanId @unique). PR 1 drops the @unique on
+  // scanId so this side widens to an array. In practice every historical
+  // row still has at most one snapshot per scan (data invariant from
+  // Plan 02's now-removed constraint); going forward, snapshots key on
+  // contractId via the Contract.governanceSnapshot relation.
+  governanceSnapshot    GovernanceSnapshot[]
 
   // Dispatcher tracking (Plan 02 B.2 + C.4)
   dispatchedAt       DateTime?
@@ -226,6 +256,10 @@ model ModuleRun {
   id               String       @id @default(cuid())
   scanId           String
   scan             Scan         @relation(fields: [scanId], references: [id])
+  // Plan 03 §3.5 PR 1: nullable in PR 1; PR 2 tightens to NOT NULL and
+  // swaps the @@unique([scanId, module]) for @@unique([scanId, module, contractId]).
+  contractId       String?
+  contract         Contract?    @relation(fields: [contractId], references: [id])
   module           ModuleName
   status           ModuleStatus @default(QUEUED)
   grade            Grade?
@@ -262,6 +296,9 @@ model Finding {
   id                  String     @id @default(cuid())
   scanId              String
   scan                Scan       @relation(fields: [scanId], references: [id])
+  // Plan 03 §3.5 PR 1: nullable in PR 1; PR 2 tightens to NOT NULL.
+  contractId          String?
+  contract            Contract?  @relation(fields: [contractId], references: [id])
   moduleRunId         String
   moduleRun           ModuleRun  @relation(fields: [moduleRunId], references: [id])
   module              ModuleName
@@ -286,9 +323,18 @@ model Finding {
 }
 
 model GovernanceSnapshot {
-  id     String @id @default(cuid())
-  scanId String @unique
-  scan   Scan   @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  id     String  @id @default(cuid())
+  // Plan 03 §3.5 PR 1: relaxed to nullable + @unique dropped. PR 2 does NOT
+  // re-tighten this column — it stays nullable as a legacy backward-compat
+  // column for historical rows (spec §3.5 "Legacy columns kept"). The new
+  // unique constraint in PR 2 lands on contractId instead.
+  scanId String?
+  scan   Scan?   @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  // Plan 03 §3.5 PR 1: nullable in PR 1; PR 2 tightens to NOT NULL + @unique
+  // (1:1 with Contract). Phase A keeps Contract.governanceSnapshot as an
+  // array to satisfy Prisma's relation typing in the absence of @unique.
+  contractId String?
+  contract   Contract? @relation(fields: [contractId], references: [id])
 
   blockNumber BigInt
   capturedAt  DateTime @default(now())
@@ -329,6 +375,43 @@ model GovernanceSnapshot {
 
   rawState Json
 
+  @@index([scanId])
+}
+
+// Plan 03 §3.1: Contract model — one scannable address within a Scan.
+// PR 1 shape (Phase A): contractId on child tables is nullable; the 1:1
+// relation to GovernanceSnapshot is modelled as an array on this side
+// because GovernanceSnapshot.contractId is not yet @unique. PR 2 (Phase J)
+// tightens contractId NOT NULL on all child tables and adds the
+// unique constraint on GovernanceSnapshot.contractId, at which point
+// the relation here narrows to `GovernanceSnapshot?`.
+model Contract {
+  id              String        @id @default(cuid())
+  scanId          String
+  scan            Scan          @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  address         String
+  chain           Chain
+  role            ContractRole
+  label           String?
+  crossChainTwins Json          @default("[]")
+  isPrimary       Boolean       @default(false)
+  createdAt       DateTime      @default(now())
+
+  // Per-Contract composite — computed by markComplete (Plan 03 §4.5) using
+  // the Plan 02 spec §5.3 composite algorithm applied to this Contract's
+  // findings only. Null until the Contract's ModuleRuns finalise.
+  compositeScore  Int?
+  compositeGrade  Grade?
+  // Per-Contract isPartialGrade — Plan 02 I.1 FIX 3 semantic scoped per
+  // Contract. True when at least one of this Contract's COMPLETE ModuleRuns
+  // had `errorDetectorCount > 0`.
+  isPartialGrade  Boolean       @default(false)
+
+  governanceSnapshot GovernanceSnapshot[]
+  moduleRuns         ModuleRun[]
+  findings           Finding[]
+
+  @@unique([scanId, address])
   @@index([scanId])
 }
 

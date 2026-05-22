@@ -504,9 +504,12 @@ export async function submitScan(
           : null,
         ipHash,
         userAgent,
-        compositeScore: null,
+        // Plan 03 §3.5 PR 1: `compositeScore` renamed to `averageContractScore`.
+        averageContractScore: null,
+        worstContractScore: null,
         compositeGrade: null,
         isPartialGrade: false,
+        isPartialCoverage: false,
         expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
       },
       select: { id: true },

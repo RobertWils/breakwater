@@ -153,7 +153,13 @@ export async function markComplete(
     data: {
       status: finalStatus,
       completedAt,
-      compositeScore,
+      // Plan 03 §3.5 PR 1: column renamed from `compositeScore`. Phase F
+      // restructures markComplete to compute the worst-grade-wins protocol
+      // composite + populate `worstContractScore`; in PR 1 / Phase A this
+      // still writes the legacy single-contract score (now persisted as the
+      // average across a 1-Contract graph) so the Plan 02 behavior is
+      // preserved while the column rename lands.
+      averageContractScore: compositeScore,
       compositeGrade,
       isPartialGrade,
     },
