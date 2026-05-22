@@ -325,14 +325,26 @@ export interface ScanResponse {
   worstContractScore: number | null;     // NEW
   isPartialGrade: boolean;
   isPartialCoverage: boolean;            // NEW — see §14 implementation choice
-  // `modules` REMOVED from top level — modules now live under each contract.
+  // Phase A transitional: `modules` REMAINS at top level for Plan 02
+  // backward compat with existing UI consumers. Removal deferred to
+  // Phase G when the UI rewrite migrates consumers to
+  // `contracts[].modules`. The response builder writes both legacy
+  // `modules` AND new `contracts: []` (empty in Phase A) for the
+  // duration of Phases A through F.
+  modules: ModuleRunResponse[];
   contracts: ContractResponse[];
 }
 ```
 
 - [ ] **Step 3: Update existing response builder for backward compat**
 
-The Plan 02 response builder still produces single-contract scans. Adapt it to return an empty `contracts: []` and the new field names. This makes Phase A's type changes compile without breaking the Plan 02 read path.
+The Plan 02 response builder still produces single-contract scans. Adapt it to:
+
+- Keep returning the legacy `modules: ModuleRunResponse[]` at ScanResponse top level (unchanged from Plan 02).
+- ALSO populate the new fields with empty/null defaults: `contracts: []`, `worstContractScore: null`, `isPartialCoverage: false`.
+- Also expose `compositeScore` as a deprecated alias pointing at `averageContractScore` (single source of truth = the renamed column on Scan).
+
+This dual-write pattern (legacy field + new field) keeps Phase A tests green at 691 while letting Phases B–F populate `contracts[]` incrementally. Phase G is the cutover that REMOVES the legacy `modules` field from the response shape (see Task G.6).
 
 - [ ] **Step 4: Verify type-check + tests**
 
@@ -1344,13 +1356,23 @@ git add -A
 git commit -m "feat(ui): status endpoint + useScanPolling per-Contract shape"
 ```
 
-- [ ] **Step 5: Status marker**
+### Task G.6 — Remove Phase A backward-compat aliases (1 commit)
+
+Phase A kept `modules` at ScanResponse top level + `compositeScore` as an alias for `averageContractScore` to keep Plan 02 UI consumers compiling. Phase G is the cutover: the new UI reads exclusively from `contracts[].modules` and `averageContractScore` / `worstContractScore`. Remove the legacy aliases:
+
+- [ ] Delete `modules` from ScanResponse top level
+- [ ] Delete `compositeScore` alias from response builder
+- [ ] Update remaining Plan 02 consumer files to read from new locations (most of this work overlaps with G.1–G.4 UI rewrite)
+- [ ] Verify all tests green after removal
+- [ ] Commit: `refactor(ui): remove Phase A backward-compat aliases at UI cutover`
+
+- [ ] **Status marker**
 
 ```bash
 git commit --allow-empty -m "chore: Phase G status marker"
 ```
 
-**Deliverables (Phase G):** Multi-Contract UI working end-to-end on local dev.
+**Deliverables (Phase G):** Multi-Contract UI working end-to-end on local dev; legacy ScanResponse aliases removed.
 **Exit (Phase G):** All UI smoke tests green; visual regression checked against Plan 02 single-Contract demos; A11y ≥ 90. Test count = 691 + ~35 + ~8 UI unit/component.
 
 (No Codex review at this boundary — covered by holistic review #5 after Phase H.)
