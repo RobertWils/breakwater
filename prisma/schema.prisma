@@ -257,7 +257,11 @@ model ModuleRun {
   scanId           String
   scan             Scan         @relation(fields: [scanId], references: [id])
   // Plan 03 §3.5 PR 1: nullable in PR 1; PR 2 tightens to NOT NULL and
-  // swaps the @@unique([scanId, module]) for @@unique([scanId, module, contractId]).
+  // adds @@unique([scanId, module, contractId]). The legacy
+  // @@unique([scanId, module]) was dropped in PR 1's
+  // `plan_03_drop_modulerun_legacy_unique` migration so the multi-Contract
+  // execution model (§4.2's N×M ModuleRuns per scan) can write rows
+  // without colliding on the old constraint.
   // Explicit referential actions match the hand-written SQL (no
   // ON DELETE / ON UPDATE clause = Postgres default NO ACTION). Codex
   // Review #1 IMPORTANT 1 — keeps Prisma metadata in sync with the DB
@@ -294,7 +298,11 @@ model ModuleRun {
   // ModuleRuns (where the persist tx doesn't run) read cleanly.
   errorDetectorCount Int @default(0)
 
-  @@unique([scanId, module])
+  // Plan 03 §3.5 PR 1: legacy @@unique([scanId, module]) DROPPED so the
+  // multi-Contract execution model can write N×M rows per scan
+  // (one per (Contract, module) pair). The new composite unique
+  // @@unique([scanId, module, contractId]) lands in PR 2 once contractId
+  // is NOT NULL across all rows.
 }
 
 model Finding {

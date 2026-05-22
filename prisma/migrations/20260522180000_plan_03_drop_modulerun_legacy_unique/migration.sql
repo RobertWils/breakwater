@@ -1,0 +1,27 @@
+-- Drop the legacy @@unique([scanId, module]) on ModuleRun to permit
+-- Plan 03 multi-Contract execution model where one scan creates
+-- multiple ModuleRun rows sharing (scanId, module) but differing in
+-- contractId.
+--
+-- The new composite unique (scanId, module, contractId) lands in
+-- PR 2 (`plan_03_tighten_contract_id_constraints`) once all contractId
+-- values are backfilled and NOT NULL. During the PR 1 window, no
+-- @unique enforcement is needed because new scans always create the
+-- right rows and historical scans aren't re-written.
+--
+-- This migration is additive in the sense of Plan 02's append-only
+-- convention (a new migration file rather than amending the prior
+-- additive migration). The DROP CONSTRAINT statement itself relaxes
+-- the schema — no data is modified or lost.
+--
+-- Source of truth: spec §3.5 PR 1 (post the docs spec correction
+-- on commit 4e1dc24).
+--
+-- Symmetric DROP: Plan 02's init migration created this via
+-- `CREATE UNIQUE INDEX "ModuleRun_scanId_module_key"` (the Prisma idiom
+-- for `@@unique([...])` on a model — see prisma/migrations/20260420124707_init/
+-- migration.sql). In Postgres, a unique index created that way is an
+-- INDEX, not a CONSTRAINT — `DROP CONSTRAINT` would fail with "does not
+-- exist". The symmetric, working drop is `DROP INDEX`.
+
+DROP INDEX "ModuleRun_scanId_module_key";
