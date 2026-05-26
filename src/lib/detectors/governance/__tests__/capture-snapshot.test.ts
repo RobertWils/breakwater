@@ -112,8 +112,8 @@ describe("captureGovernanceSnapshot (Plan 02 D.3c)", () => {
     });
 
     const snapshot = await captureGovernanceSnapshot({
-      protocolAddress: PROTOCOL,
-      declaredMultisigAddresses: ["0xsafe"],
+      contractAddress: PROTOCOL, role: "PRIMARY" as const,
+      declaredMultisigCandidate: "0xsafe",
     });
 
     expect(snapshot.blockNumber).toBe(BigInt(20_000_000));
@@ -142,7 +142,7 @@ describe("captureGovernanceSnapshot (Plan 02 D.3c)", () => {
     });
 
     const snapshot = await captureGovernanceSnapshot({
-      protocolAddress: PROTOCOL,
+      contractAddress: PROTOCOL, role: "PRIMARY" as const,
     });
 
     expect(snapshot.hasGovernor).toBe(false);
@@ -168,7 +168,7 @@ describe("captureGovernanceSnapshot (Plan 02 D.3c)", () => {
     });
 
     const snapshot = await captureGovernanceSnapshot({
-      protocolAddress: PROTOCOL,
+      contractAddress: PROTOCOL, role: "PRIMARY" as const,
     });
 
     expect(detectSafeMock).not.toHaveBeenCalled();
@@ -194,8 +194,8 @@ describe("captureGovernanceSnapshot (Plan 02 D.3c)", () => {
     });
 
     const snapshot = await captureGovernanceSnapshot({
-      protocolAddress: PROTOCOL,
-      declaredMultisigAddresses: ["0xfake"],
+      contractAddress: PROTOCOL, role: "PRIMARY" as const,
+      declaredMultisigCandidate: "0xfake",
     });
 
     expect(snapshot.hasMultisig).toBe(false);
@@ -226,7 +226,7 @@ describe("captureGovernanceSnapshot (Plan 02 D.3c)", () => {
     });
 
     const snapshot = await captureGovernanceSnapshot({
-      protocolAddress: PROTOCOL,
+      contractAddress: PROTOCOL, role: "PRIMARY" as const,
     });
 
     expect(snapshot.rawState.governor).toMatchObject({ name: "TestGov" });
@@ -257,7 +257,7 @@ describe("captureGovernanceSnapshot (Plan 02 D.3c)", () => {
     });
 
     const snapshot = await captureGovernanceSnapshot({
-      protocolAddress: PROTOCOL,
+      contractAddress: PROTOCOL, role: "PRIMARY" as const,
     });
 
     expect(fetchContractAbiMock).toHaveBeenCalledWith(PROTOCOL);
@@ -278,7 +278,7 @@ describe("captureGovernanceSnapshot (Plan 02 D.3c)", () => {
     // beforeEach already sets the missing_api_key default; just call.
 
     const snapshot = await captureGovernanceSnapshot({
-      protocolAddress: PROTOCOL,
+      contractAddress: PROTOCOL, role: "PRIMARY" as const,
     });
 
     expect(snapshot.protocolAbi).toBeNull();
@@ -297,7 +297,7 @@ describe("captureGovernanceSnapshot (Plan 02 D.3c)", () => {
     });
 
     const snapshot = await captureGovernanceSnapshot({
-      protocolAddress: PROTOCOL,
+      contractAddress: PROTOCOL, role: "PRIMARY" as const,
     });
 
     expect(fetchContractAbiMock).not.toHaveBeenCalled();
@@ -318,7 +318,7 @@ describe("captureGovernanceSnapshot (Plan 02 D.3c)", () => {
       checkIsContractMock.mockResolvedValue(false);
 
       await expect(
-        captureGovernanceSnapshot({ protocolAddress: PROTOCOL }),
+        captureGovernanceSnapshot({ contractAddress: PROTOCOL, role: "PRIMARY" as const }),
       ).rejects.toThrow(/address_is_not_contract/);
     });
 
@@ -327,7 +327,7 @@ describe("captureGovernanceSnapshot (Plan 02 D.3c)", () => {
       checkIsContractMock.mockResolvedValue(false);
 
       await expect(
-        captureGovernanceSnapshot({ protocolAddress: PROTOCOL }),
+        captureGovernanceSnapshot({ contractAddress: PROTOCOL, role: "PRIMARY" as const }),
       ).rejects.toThrow(new RegExp(PROTOCOL));
     });
 
@@ -336,7 +336,7 @@ describe("captureGovernanceSnapshot (Plan 02 D.3c)", () => {
       checkIsContractMock.mockResolvedValue(false);
 
       await expect(
-        captureGovernanceSnapshot({ protocolAddress: PROTOCOL }),
+        captureGovernanceSnapshot({ contractAddress: PROTOCOL, role: "PRIMARY" as const }),
       ).rejects.toThrow();
 
       expect(detectGovernorMock).not.toHaveBeenCalled();
@@ -352,7 +352,7 @@ describe("captureGovernanceSnapshot (Plan 02 D.3c)", () => {
       checkIsContractMock.mockResolvedValue(false);
 
       await expect(
-        captureGovernanceSnapshot({ protocolAddress: PROTOCOL }),
+        captureGovernanceSnapshot({ contractAddress: PROTOCOL, role: "PRIMARY" as const }),
       ).rejects.toThrow();
 
       expect(checkIsContractMock).toHaveBeenCalledWith(PROTOCOL, pinned);
@@ -375,7 +375,7 @@ describe("captureGovernanceSnapshot (Plan 02 D.3c)", () => {
       });
 
       const snapshot = await captureGovernanceSnapshot({
-        protocolAddress: PROTOCOL,
+        contractAddress: PROTOCOL, role: "PRIMARY" as const,
       });
       // Reached the downstream code path = gate passed null through.
       expect(snapshot).toBeDefined();

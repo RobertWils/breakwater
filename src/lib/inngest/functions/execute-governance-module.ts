@@ -453,9 +453,17 @@ export const executeGovernanceModule = inngest.createFunction(
     // serialises step results to JSON for retry replay).
     const moduleResult = await step.run("capture-detect-persist", async () => {
       try {
+        // Plan 03 Phase C.1: `CaptureSnapshotContext` widened with the
+        // contract's role + sibling-candidate hints. Phase B created a
+        // PRIMARY Contract row for every scan; until Phase E refactors
+        // this function to per-Contract execution we still treat the
+        // scan target as the PRIMARY contract — the PRIMARY branch of
+        // the §5.1.1 role switch is a no-op refactor of Plan 02's
+        // default capture path.
         const snapshot = await captureGovernanceSnapshot({
-          protocolAddress: context.protocolAddress,
-          declaredMultisigAddresses: context.declaredMultisigAddresses,
+          contractAddress: context.protocolAddress,
+          role: "PRIMARY",
+          declaredMultisigCandidate: context.declaredMultisigAddresses[0],
         });
 
         const { findings, skippedDetectorIds, errorDetectorIds } =

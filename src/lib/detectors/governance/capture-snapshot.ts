@@ -1,3 +1,5 @@
+import type { ContractRole } from "@prisma/client";
+
 import { fetchContractAbi } from "@/lib/etherscan-client";
 import { publicClient } from "@/lib/rpc-client";
 
@@ -8,15 +10,36 @@ import { detectSafe } from "./detect-safe";
 import { detectTimelock } from "./detect-timelock";
 import type { GovernanceSnapshotData } from "./types";
 
+/**
+ * Plan 03 §5.1.1 — role-aware snapshot capture.
+ *
+ * `contractAddress` (renamed from Plan 02's `protocolAddress`) is the
+ * address being scanned. `role` selects which detector probes get
+ * invoked directly against the target vs. cascade-from-governor; see
+ * the §5.1.1 role table for the routing matrix.
+ *
+ * Sibling-candidate hints (`declaredMultisigCandidate`,
+ * `timelockCandidate`) replace Plan 02's `declaredMultisigAddresses`
+ * array. The Plan 02 single-element pattern collapses cleanly to a
+ * single optional string; in Plan 03 these hints come from sibling
+ * Contract rows in the same scan (e.g., when a PRIMARY Contract has a
+ * sibling DECLARED_MULTISIG Contract, the multisig hint comes from
+ * that sibling's address).
+ *
+ * `blockNumber` is an optional pin (spec §5.1.2 — graph-wide block
+ * coordination is a future Plan 04 concern; Phase C accepts the
+ * parameter but does not consume it).
+ *
+ * Phase C.1 (this file) widens the type but keeps Plan 02's default
+ * behavior unchanged — the role parameter is destructured but unused
+ * here. Phase C.2 implements the §5.1.1 switch table.
+ */
 export interface CaptureSnapshotContext {
-  protocolAddress: string;
-  /**
-   * Multisig addresses declared by the protocol metadata (from
-   * `Protocol.knownMultisigs` or scan-input). Plan 02 D.3c probes only
-   * the first entry; Phase E may iterate when GOV-003 needs broader
-   * coverage.
-   */
-  declaredMultisigAddresses?: string[];
+  contractAddress: string;
+  role: ContractRole;
+  blockNumber?: bigint;
+  declaredMultisigCandidate?: string;
+  timelockCandidate?: string;
 }
 
 /**
@@ -41,7 +64,12 @@ export interface CaptureSnapshotContext {
 export async function captureGovernanceSnapshot(
   context: CaptureSnapshotContext,
 ): Promise<GovernanceSnapshotData> {
-  const { protocolAddress, declaredMultisigAddresses } = context;
+  // Phase C.1: `role`, `timelockCandidate`, `blockNumber` are accepted
+  // but unused at this step (Plan 02 default behavior preserved). Phase
+  // C.2 wires `role` into the §5.1.1 switch table. The legacy
+  // `declaredMultisigAddresses[0]` collapses to the single
+  // `declaredMultisigCandidate` per spec §5.1.1.
+  const { contractAddress, declaredMultisigCandidate } = context;
 
   const blockNumber = await publicClient.getBlockNumber();
 
@@ -57,16 +85,16 @@ export async function captureGovernanceSnapshot(
   // through to the downstream calls (which have their own retries via
   // viem's fallback transport) rather than being misclassified here as
   // "not a contract."
-  const isContract = await checkIsContract(protocolAddress, blockNumber);
+  const isContract = await checkIsContract(contractAddress, blockNumber);
   if (isContract === false) {
     throw new Error(
-      `address_is_not_contract: ${protocolAddress} has no contract ` +
+      `address_is_not_contract: ${contractAddress} has no contract ` +
         `bytecode on this chain (EOA or undeployed contract)`,
     );
   }
 
   const governorResult = await detectGovernor({
-    protocolAddress,
+    protocolAddress: contractAddress,
     blockNumber,
   });
 
@@ -75,15 +103,14 @@ export async function captureGovernanceSnapshot(
     governorResult,
   });
 
-  const safeResult =
-    declaredMultisigAddresses && declaredMultisigAddresses.length > 0
-      ? await detectSafe({
-          candidateAddress: declaredMultisigAddresses[0]!,
-        })
-      : null;
+  const safeResult = declaredMultisigCandidate
+    ? await detectSafe({
+        candidateAddress: declaredMultisigCandidate,
+      })
+    : null;
 
   const proxyResult = await detectProxy({
-    protocolAddress,
+    protocolAddress: contractAddress,
     blockNumber,
   });
 
@@ -93,7 +120,7 @@ export async function captureGovernanceSnapshot(
   // detect-proxy; skip the redundant fetch.
   let protocolAbi: string | null = null;
   if (proxyResult.proxyType === "NONE") {
-    const abiResult = await fetchContractAbi(protocolAddress);
+    const abiResult = await fetchContractAbi(contractAddress);
     if (abiResult.ok) {
       protocolAbi = abiResult.data;
     }
