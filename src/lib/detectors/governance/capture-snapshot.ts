@@ -5,9 +5,14 @@ import { publicClient } from "@/lib/rpc-client";
 
 import { checkIsContract } from "./contract-utils";
 import { detectGovernor } from "./detect-governor";
-import { detectProxy } from "./detect-proxy";
-import { detectSafe } from "./detect-safe";
-import { detectTimelock } from "./detect-timelock";
+import { detectProxy, type ProxyDetectionResult } from "./detect-proxy";
+import {
+  detectSafe,
+  type NotSafeResult,
+  type SafeDetectionResult,
+} from "./detect-safe";
+import { detectTimelock, type TimelockDetectionResult } from "./detect-timelock";
+import type { GovernorDetectionResult } from "./types";
 import type { GovernanceSnapshotData } from "./types";
 
 /**
@@ -61,17 +66,139 @@ export interface CaptureSnapshotContext {
  * The returned object is the persistence-ready shape; D.4 writes it
  * to the GovernanceSnapshot table.
  */
+/**
+ * Plan 03 §5.1.1 — empty proxy detection result used by the
+ * DECLARED_MULTISIG branch (multisigs aren't proxies; we skip the
+ * EIP-1967 read entirely to save RPC). The downstream snapshot's
+ * `proxyType === "NONE"` triggers the same ABI-fetch fallback path
+ * Plan 02 already exercises for non-proxy contracts, so the existing
+ * detector logic remains uniform.
+ */
+const EMPTY_PROXY_RESULT: ProxyDetectionResult = {
+  proxyType: "NONE",
+  proxyAdminAddress: null,
+  proxyImplementation: null,
+  proxyAdminIsContract: null,
+  implementationAbi: null,
+};
+
+type ProbeResults = {
+  governorResult: GovernorDetectionResult;
+  timelockResult: TimelockDetectionResult | null;
+  safeResult: SafeDetectionResult | NotSafeResult | null;
+  proxyResult: ProxyDetectionResult;
+};
+
+/**
+ * Plan 03 §5.1.1 role-branched probe routing. The role determines which
+ * detector probes get invoked directly against the scan target vs.
+ * cascade-from-governor:
+ *
+ *   PRIMARY / PROXY_IMPLEMENTATION / RELATED
+ *     Plan 02 default — governor + timelock + proxy on contractAddress;
+ *     Safe only when a sibling-multisig candidate is supplied.
+ *
+ *   DECLARED_MULTISIG
+ *     Scan the target AS a Safe. Governor/timelock/proxy are not invoked
+ *     (multisigs aren't governors and don't sit behind proxies in the
+ *     typical Safe deployment model). GOV-003 will fire on the resulting
+ *     snapshot because `multisigAddress` is now populated from the
+ *     contractAddress itself rather than from a separate candidate hint.
+ *     This is the BLOCKER 2 load-bearing branch.
+ *
+ *   TIMELOCK
+ *     Direct timelock probe on the scan target (passes contractAddress
+ *     as `candidateAddress` to detectTimelock, which Plan 02 already
+ *     supports). Proxy probe still runs because timelocks can be
+ *     deployed behind proxies. Governor/Safe skipped.
+ *
+ *   TOKEN_CONTRACT / DECLARED_BRIDGE
+ *     Defensive throw — submission-layer role-applicability gating
+ *     (§4.2) should have SKIPPED the GOVERNANCE module for these
+ *     roles, so they never reach capture. This is defense-in-depth
+ *     against a future submission path that bypasses the gate.
+ */
+async function probeForRole(
+  contractAddress: string,
+  role: ContractRole,
+  blockNumber: bigint,
+  declaredMultisigCandidate: string | undefined,
+  timelockCandidate: string | undefined,
+): Promise<ProbeResults> {
+  switch (role) {
+    case "DECLARED_MULTISIG":
+      // BLOCKER 2 load-bearing branch.
+      return {
+        governorResult: null,
+        timelockResult: null,
+        safeResult: await detectSafe({ candidateAddress: contractAddress }),
+        proxyResult: EMPTY_PROXY_RESULT,
+      };
+
+    case "TIMELOCK":
+      return {
+        governorResult: null,
+        timelockResult: await detectTimelock({
+          blockNumber,
+          governorResult: null,
+          candidateAddress: contractAddress,
+        }),
+        safeResult: null,
+        proxyResult: await detectProxy({
+          protocolAddress: contractAddress,
+          blockNumber,
+        }),
+      };
+
+    case "TOKEN_CONTRACT":
+    case "DECLARED_BRIDGE":
+      throw new Error(
+        `[capture-snapshot] role ${role} should be SKIPPED at submission, not reach capture`,
+      );
+
+    case "PRIMARY":
+    case "PROXY_IMPLEMENTATION":
+    case "RELATED":
+    default: {
+      // Plan 02 default behavior preserved: direct governor + proxy
+      // probes, cascade-from-governor timelock (or explicit candidate
+      // when supplied), safe only when a sibling-multisig hint exists.
+      const governorResult = await detectGovernor({
+        protocolAddress: contractAddress,
+        blockNumber,
+      });
+      const timelockResult = await detectTimelock({
+        blockNumber,
+        governorResult,
+        candidateAddress: timelockCandidate,
+      });
+      const safeResult = declaredMultisigCandidate
+        ? await detectSafe({ candidateAddress: declaredMultisigCandidate })
+        : null;
+      const proxyResult = await detectProxy({
+        protocolAddress: contractAddress,
+        blockNumber,
+      });
+      return { governorResult, timelockResult, safeResult, proxyResult };
+    }
+  }
+}
+
 export async function captureGovernanceSnapshot(
   context: CaptureSnapshotContext,
 ): Promise<GovernanceSnapshotData> {
-  // Phase C.1: `role`, `timelockCandidate`, `blockNumber` are accepted
-  // but unused at this step (Plan 02 default behavior preserved). Phase
-  // C.2 wires `role` into the §5.1.1 switch table. The legacy
-  // `declaredMultisigAddresses[0]` collapses to the single
-  // `declaredMultisigCandidate` per spec §5.1.1.
-  const { contractAddress, declaredMultisigCandidate } = context;
+  const {
+    contractAddress,
+    role,
+    declaredMultisigCandidate,
+    timelockCandidate,
+  } = context;
 
-  const blockNumber = await publicClient.getBlockNumber();
+  // Spec §5.1.2: `blockNumber` is an optional pin for future graph-wide
+  // coordination. Plan 03 captures per-Contract independently, so when
+  // no pin is provided we fetch one ourselves (Plan 02 behavior).
+  const blockNumber =
+    context.blockNumber ?? (await publicClient.getBlockNumber());
 
   // H.8: fail-closed when the address has no deployed bytecode. Without
   // this gate, EOAs and undeployed contracts produce empty snapshots
@@ -93,31 +220,23 @@ export async function captureGovernanceSnapshot(
     );
   }
 
-  const governorResult = await detectGovernor({
-    protocolAddress: contractAddress,
-    blockNumber,
-  });
-
-  const timelockResult = await detectTimelock({
-    blockNumber,
-    governorResult,
-  });
-
-  const safeResult = declaredMultisigCandidate
-    ? await detectSafe({
-        candidateAddress: declaredMultisigCandidate,
-      })
-    : null;
-
-  const proxyResult = await detectProxy({
-    protocolAddress: contractAddress,
-    blockNumber,
-  });
+  const { governorResult, timelockResult, safeResult, proxyResult } =
+    await probeForRole(
+      contractAddress,
+      role,
+      blockNumber,
+      declaredMultisigCandidate,
+      timelockCandidate,
+    );
 
   // E.2: For non-proxy contracts, fetch the protocol's own ABI so
   // GOV-002 can scan it for emergency/bypass function patterns.
   // Proxy contracts already have implementationAbi populated by
   // detect-proxy; skip the redundant fetch.
+  //
+  // Plan 03 §5.1.1: the DECLARED_MULTISIG branch returns
+  // EMPTY_PROXY_RESULT (proxyType: "NONE") so the ABI fetch fires for
+  // multisigs too — uniform with Plan 02's non-proxy contract path.
   let protocolAbi: string | null = null;
   if (proxyResult.proxyType === "NONE") {
     const abiResult = await fetchContractAbi(contractAddress);
@@ -165,6 +284,11 @@ export async function captureGovernanceSnapshot(
     votingSnapshotType: governorResult?.votingSnapshotType ?? null,
 
     rawState: {
+      // Plan 03 §5.1.1: name the role branch this capture took, for
+      // post-hoc debugging / forensic readability. Detectors MUST NOT
+      // branch on this — the snapshot data itself carries everything a
+      // detector needs (detector signature stays pure per spec §5.1).
+      role,
       governor: governorResult?.raw ?? null,
       timelock: timelockResult?.raw ?? null,
       safe: safeResult ?? null,
