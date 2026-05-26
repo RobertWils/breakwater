@@ -382,3 +382,311 @@ describe("captureGovernanceSnapshot (Plan 02 D.3c)", () => {
     });
   });
 });
+
+// ────────────────────────────────────────────────────────────────────────────
+// Plan 03 §5.1.1 — role-aware probe routing
+// ────────────────────────────────────────────────────────────────────────────
+
+describe("captureGovernanceSnapshot — Plan 03 §5.1.1 role branches", () => {
+  beforeEach(() => {
+    getBlockNumberMock.mockReset();
+    checkIsContractMock.mockReset();
+    detectGovernorMock.mockReset();
+    detectTimelockMock.mockReset();
+    detectSafeMock.mockReset();
+    detectProxyMock.mockReset();
+    fetchContractAbiMock.mockReset();
+
+    // Defaults: contract is deployed; ABI fetch fails gracefully.
+    getBlockNumberMock.mockResolvedValue(BigInt(20_000_000));
+    checkIsContractMock.mockResolvedValue(true);
+    fetchContractAbiMock.mockResolvedValue({
+      ok: false,
+      reason: "missing_api_key",
+      message: "ETHERSCAN_API_KEY env var not set",
+    });
+  });
+
+  // ── DECLARED_MULTISIG: the BLOCKER 2 load-bearing case ────────────────
+
+  it("DECLARED_MULTISIG role: detectSafe fires on contractAddress, governor/timelock/proxy not invoked (spec §5.1.1 BLOCKER 2 fix)", async () => {
+    const MULTISIG = "0xaaaa000000000000000000000000000000000001";
+    detectSafeMock.mockResolvedValue({
+      address: MULTISIG,
+      threshold: 1,
+      ownerCount: 2,
+      owners: ["0xowner1", "0xowner2"],
+      isSafe: true,
+    });
+
+    const snapshot = await captureGovernanceSnapshot({
+      contractAddress: MULTISIG,
+      role: "DECLARED_MULTISIG",
+    });
+
+    // Load-bearing assertion: detectSafe invoked DIRECTLY on the scan
+    // target address (the contractAddress itself becomes the
+    // candidateAddress passed to detectSafe).
+    expect(detectSafeMock).toHaveBeenCalledWith({ candidateAddress: MULTISIG });
+
+    // Other probes not invoked — multisigs aren't governors / don't
+    // sit behind proxies in the typical Safe deployment model.
+    expect(detectGovernorMock).not.toHaveBeenCalled();
+    expect(detectTimelockMock).not.toHaveBeenCalled();
+    expect(detectProxyMock).not.toHaveBeenCalled();
+
+    // The resulting snapshot carries the multisig metadata GOV-003
+    // needs to fire on this target (multisigAddress + threshold +
+    // ownerCount populated — Plan 02's GOV-003 fires when threshold==1
+    // OR ownerCount < 3 against a hasMultisig:true snapshot).
+    expect(snapshot.hasMultisig).toBe(true);
+    expect(snapshot.multisigAddress).toBe(MULTISIG);
+    expect(snapshot.multisigThreshold).toBe(1);
+    expect(snapshot.multisigOwnerCount).toBe(2);
+    expect(snapshot.multisigOwners).toEqual(["0xowner1", "0xowner2"]);
+
+    // Skipped-probe outputs normalise to the same null/false shape Plan
+    // 02 already produces for absent detections (no conditional
+    // unwrapping needed downstream).
+    expect(snapshot.hasGovernor).toBe(false);
+    expect(snapshot.hasTimelock).toBe(false);
+    expect(snapshot.proxyType).toBe("NONE");
+
+    // rawState.role records the branch the capture took (spec §5.1.1
+    // forensic readability).
+    expect((snapshot.rawState as { role: string }).role).toBe(
+      "DECLARED_MULTISIG",
+    );
+  });
+
+  // ── TIMELOCK: direct timelock scan ────────────────────────────────────
+
+  it("TIMELOCK role: detectTimelock fires on contractAddress directly (governor cascade skipped)", async () => {
+    const TIMELOCK = "0xbbbb000000000000000000000000000000000002";
+    detectTimelockMock.mockResolvedValue({
+      address: TIMELOCK,
+      minDelay: 0, // GOV-001 would fire on insufficient delay
+      admin: "0xadmin",
+      adminIsContract: false,
+      raw: { getMinDelay: "0", delay: null, admin: "0xadmin" },
+    });
+    detectProxyMock.mockResolvedValue({
+      proxyType: "NONE",
+      proxyAdminAddress: null,
+      proxyImplementation: null,
+      proxyAdminIsContract: null,
+      implementationAbi: null,
+    });
+
+    const snapshot = await captureGovernanceSnapshot({
+      contractAddress: TIMELOCK,
+      role: "TIMELOCK",
+    });
+
+    // Load-bearing: detectTimelock invoked with candidateAddress ==
+    // contractAddress (not via governor cascade).
+    expect(detectTimelockMock).toHaveBeenCalledWith({
+      blockNumber: BigInt(20_000_000),
+      governorResult: null,
+      candidateAddress: TIMELOCK,
+    });
+    expect(detectGovernorMock).not.toHaveBeenCalled();
+    expect(detectSafeMock).not.toHaveBeenCalled();
+    // Proxy DOES run — timelocks can be deployed behind proxies.
+    expect(detectProxyMock).toHaveBeenCalled();
+
+    expect(snapshot.hasTimelock).toBe(true);
+    expect(snapshot.timelockAddress).toBe(TIMELOCK);
+    expect(snapshot.timelockMinDelay).toBe(0);
+    expect((snapshot.rawState as { role: string }).role).toBe("TIMELOCK");
+  });
+
+  // ── PROXY_IMPLEMENTATION: default cascade still runs ──────────────────
+
+  it("PROXY_IMPLEMENTATION role: default cascade (governor + timelock + proxy) runs on the implementation address", async () => {
+    detectGovernorMock.mockResolvedValue(null);
+    detectTimelockMock.mockResolvedValue(null);
+    detectProxyMock.mockResolvedValue({
+      proxyType: "NONE",
+      proxyAdminAddress: null,
+      proxyImplementation: null,
+      proxyAdminIsContract: null,
+      implementationAbi: null,
+    });
+
+    const snapshot = await captureGovernanceSnapshot({
+      contractAddress: PROTOCOL,
+      role: "PROXY_IMPLEMENTATION",
+    });
+
+    // Cascade matches PRIMARY default: governor + timelock + proxy
+    // probes invoked against the impl address. Implementations can
+    // themselves be governors or have their own admin surface, so
+    // skipping these would lose signal.
+    expect(detectGovernorMock).toHaveBeenCalledWith({
+      protocolAddress: PROTOCOL,
+      blockNumber: BigInt(20_000_000),
+    });
+    expect(detectTimelockMock).toHaveBeenCalled();
+    expect(detectProxyMock).toHaveBeenCalledWith({
+      protocolAddress: PROTOCOL,
+      blockNumber: BigInt(20_000_000),
+    });
+    // No multisig candidate supplied → detectSafe NOT invoked (matches
+    // Plan 02 default).
+    expect(detectSafeMock).not.toHaveBeenCalled();
+    expect((snapshot.rawState as { role: string }).role).toBe(
+      "PROXY_IMPLEMENTATION",
+    );
+  });
+
+  // ── PRIMARY with sibling multisig hint: existing Plan 02 behavior ─────
+
+  it("PRIMARY role with declaredMultisigCandidate: detectSafe invoked with the candidate, NOT with contractAddress (Plan 02 backward compat)", async () => {
+    const SIBLING_MULTISIG = "0xcccc000000000000000000000000000000000003";
+    detectGovernorMock.mockResolvedValue(null);
+    detectTimelockMock.mockResolvedValue(null);
+    detectSafeMock.mockResolvedValue({
+      address: SIBLING_MULTISIG,
+      threshold: 3,
+      ownerCount: 5,
+      owners: ["0x1", "0x2", "0x3", "0x4", "0x5"],
+      isSafe: true,
+    });
+    detectProxyMock.mockResolvedValue({
+      proxyType: "NONE",
+      proxyAdminAddress: null,
+      proxyImplementation: null,
+      proxyAdminIsContract: null,
+      implementationAbi: null,
+    });
+
+    const snapshot = await captureGovernanceSnapshot({
+      contractAddress: PROTOCOL,
+      role: "PRIMARY",
+      declaredMultisigCandidate: SIBLING_MULTISIG,
+    });
+
+    // detectSafe invoked with the SIBLING address, not with PROTOCOL.
+    // This is the Plan 02 surface: PRIMARY scans pass a separate
+    // multisig hint when one is supplied by a sibling Contract.
+    expect(detectSafeMock).toHaveBeenCalledWith({
+      candidateAddress: SIBLING_MULTISIG,
+    });
+    expect(detectSafeMock).not.toHaveBeenCalledWith({
+      candidateAddress: PROTOCOL,
+    });
+    expect(snapshot.hasMultisig).toBe(true);
+    expect(snapshot.multisigAddress).toBe(SIBLING_MULTISIG);
+  });
+
+  // ── PRIMARY with timelock candidate hint ──────────────────────────────
+
+  it("PRIMARY role with timelockCandidate: detectTimelock receives the candidate (sibling-hint pathway)", async () => {
+    const SIBLING_TIMELOCK = "0xdddd000000000000000000000000000000000004";
+    detectGovernorMock.mockResolvedValue(null);
+    detectTimelockMock.mockResolvedValue(null);
+    detectProxyMock.mockResolvedValue({
+      proxyType: "NONE",
+      proxyAdminAddress: null,
+      proxyImplementation: null,
+      proxyAdminIsContract: null,
+      implementationAbi: null,
+    });
+
+    await captureGovernanceSnapshot({
+      contractAddress: PROTOCOL,
+      role: "PRIMARY",
+      timelockCandidate: SIBLING_TIMELOCK,
+    });
+
+    expect(detectTimelockMock).toHaveBeenCalledWith({
+      blockNumber: BigInt(20_000_000),
+      governorResult: null,
+      candidateAddress: SIBLING_TIMELOCK,
+    });
+  });
+
+  // ── RELATED: identical to PRIMARY default ─────────────────────────────
+
+  it("RELATED role: default Plan 02 capture path (same as PRIMARY)", async () => {
+    detectGovernorMock.mockResolvedValue(null);
+    detectTimelockMock.mockResolvedValue(null);
+    detectProxyMock.mockResolvedValue({
+      proxyType: "NONE",
+      proxyAdminAddress: null,
+      proxyImplementation: null,
+      proxyAdminIsContract: null,
+      implementationAbi: null,
+    });
+
+    const snapshot = await captureGovernanceSnapshot({
+      contractAddress: PROTOCOL,
+      role: "RELATED",
+    });
+
+    expect(detectGovernorMock).toHaveBeenCalledWith({
+      protocolAddress: PROTOCOL,
+      blockNumber: BigInt(20_000_000),
+    });
+    expect(detectTimelockMock).toHaveBeenCalled();
+    expect(detectProxyMock).toHaveBeenCalled();
+    // No multisig candidate → detectSafe skipped (Plan 02 behavior).
+    expect(detectSafeMock).not.toHaveBeenCalled();
+    expect((snapshot.rawState as { role: string }).role).toBe("RELATED");
+  });
+
+  // ── TOKEN_CONTRACT + DECLARED_BRIDGE: defensive throws ────────────────
+
+  it("TOKEN_CONTRACT role throws — should be SKIPPED at submission, not reach capture", async () => {
+    await expect(
+      captureGovernanceSnapshot({
+        contractAddress: "0xeeee000000000000000000000000000000000005",
+        role: "TOKEN_CONTRACT",
+      }),
+    ).rejects.toThrow(/should be SKIPPED at submission/);
+    // No probes invoked — the throw fires before any RPC call.
+    expect(detectGovernorMock).not.toHaveBeenCalled();
+    expect(detectTimelockMock).not.toHaveBeenCalled();
+    expect(detectSafeMock).not.toHaveBeenCalled();
+    expect(detectProxyMock).not.toHaveBeenCalled();
+  });
+
+  it("DECLARED_BRIDGE role throws — should be SKIPPED at submission, not reach capture", async () => {
+    await expect(
+      captureGovernanceSnapshot({
+        contractAddress: "0xffff000000000000000000000000000000000006",
+        role: "DECLARED_BRIDGE",
+      }),
+    ).rejects.toThrow(/should be SKIPPED at submission/);
+    expect(detectGovernorMock).not.toHaveBeenCalled();
+    expect(detectTimelockMock).not.toHaveBeenCalled();
+    expect(detectSafeMock).not.toHaveBeenCalled();
+    expect(detectProxyMock).not.toHaveBeenCalled();
+  });
+
+  // ── blockNumber pin (spec §5.1.2) ─────────────────────────────────────
+
+  it("honors the optional blockNumber pin when provided (spec §5.1.2 — Plan 04 graph-wide coordination seam)", async () => {
+    const PINNED = BigInt(21_000_000);
+    detectGovernorMock.mockResolvedValue(null);
+    detectTimelockMock.mockResolvedValue(null);
+    detectProxyMock.mockResolvedValue({
+      proxyType: "NONE",
+      proxyAdminAddress: null,
+      proxyImplementation: null,
+      proxyAdminIsContract: null,
+      implementationAbi: null,
+    });
+
+    const snapshot = await captureGovernanceSnapshot({
+      contractAddress: PROTOCOL,
+      role: "PRIMARY",
+      blockNumber: PINNED,
+    });
+
+    expect(snapshot.blockNumber).toBe(PINNED);
+    // publicClient.getBlockNumber NOT consulted when a pin is provided.
+    expect(getBlockNumberMock).not.toHaveBeenCalled();
+  });
+});
