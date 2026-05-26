@@ -222,7 +222,7 @@ CREATE INDEX "Contract_scanId_idx" ON "Contract"("scanId");
 
 ```sql
 ALTER TABLE "ModuleRun" ADD COLUMN "contractId" TEXT REFERENCES "Contract"("id");
-ALTER TABLE "ModuleRun" DROP CONSTRAINT "ModuleRun_scanId_module_key";
+DROP INDEX "ModuleRun_scanId_module_key";
 -- contractId stays nullable in PR 1 (legacy Plan 02 ModuleRun rows
 -- have no Contract until backfill). The composite unique
 -- (scanId, module, contractId) lands in PR 2 once contractId is
@@ -235,6 +235,11 @@ ALTER TABLE "ModuleRun" DROP CONSTRAINT "ModuleRun_scanId_module_key";
 -- the foreign key relationships; no @unique enforcement is needed
 -- in the PR 1 window because new scans always create the right rows
 -- and historical scans aren't re-written by new code.
+--
+-- Note: Plan 02's init migration created the unique via CREATE
+-- UNIQUE INDEX (not ALTER TABLE ADD CONSTRAINT), so DROP INDEX
+-- is the correct statement here. DROP CONSTRAINT would fail with
+-- "constraint does not exist" in Postgres.
 ```
 
 **`GovernanceSnapshot` (additive column + relaxation):**
