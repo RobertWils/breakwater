@@ -209,17 +209,74 @@ export const executeScan = inngest.createFunction(
       } as const;
     }
 
-    // Step 2: Decide which modules to dispatch.
+    // Step 2: Decide whether the governance module dispatches at all.
+    // Plan 02's `willRunGovernance` flag carries over — the feature
+    // flag short-circuit still applies to the whole scan.
     const willRunGovernance =
       modulesEnabled.includes("GOVERNANCE") && isGovernanceModuleEnabled();
 
-    // Step 3: Fan out to governance + wait for completion echo.
-    if (willRunGovernance) {
-      await step.sendEvent("dispatch-governance", {
-        name: "scan.module.requested",
-        data: { scanId, module: "GOVERNANCE" },
-      });
+    // Step 3: Plan 03 §4.3 — load the QUEUED ModuleRun rows for this
+    // scan + fan out one scan.module.requested per (Contract, module)
+    // pair in a single batched step.sendEvent.
+    //
+    // Phase B's submitScan creates one ModuleRun per (Contract,
+    // ModuleName) pair (N×M rows per scan) with status QUEUED when
+    // implemented + role-applicable. Phase D dispatches each of those
+    // QUEUED rows as its own event so the per-Contract execution
+    // model can drive each independently. The legacy
+    // @@unique([scanId, module]) was dropped in PR 1's
+    // `plan_03_drop_modulerun_legacy_unique` migration to permit this.
+    //
+    // The willRunGovernance flag still applies: when governance is
+    // disabled by the feature flag, no GOVERNANCE events are
+    // dispatched even if QUEUED rows exist (the flag is the kill
+    // switch). Phase D ships M=1 (GOVERNANCE only) so this gate
+    // effectively governs the whole fan-out.
+    const queuedRuns = willRunGovernance
+      ? await step.run("load-queued-module-runs", async () => {
+          const rows = await prisma.moduleRun.findMany({
+            where: { scanId, status: "QUEUED", module: "GOVERNANCE" },
+            include: { contract: { select: { id: true, address: true } } },
+          });
+          return rows.map((r) => ({
+            id: r.id,
+            module: r.module,
+            contractId: r.contractId,
+            contractAddress: r.contract?.address ?? null,
+          }));
+        })
+      : [];
 
+    if (queuedRuns.length > 0) {
+      // Spec §4.3 step 2: a single batched step.sendEvent for all
+      // (Contract, module) pairs — one durable step, not N. Inngest
+      // accepts an array on the send call.
+      await step.sendEvent(
+        "dispatch-modules",
+        queuedRuns.map((mr) => ({
+          name: "scan.module.requested" as const,
+          data: {
+            scanId,
+            module: mr.module,
+            // Phase B always populates `contractId` on new rows; the
+            // load step above filters to status: "QUEUED" which only
+            // matches Plan-03-era rows (legacy historical rows are
+            // already in a terminal state). The non-null assertion is
+            // safe by construction.
+            contractId: mr.contractId!,
+            contractAddress: mr.contractAddress!,
+          },
+        })),
+      );
+
+      // Phase D.3 lands the parallel-wait Promise.all here. For now
+      // (D.2), the legacy single waitForEvent stays so single-Contract
+      // scans (Plan 02 backward-compat shape: 1 PRIMARY Contract →
+      // 1 QUEUED ModuleRun → 1 event dispatched → 1 completion event
+      // matched on data.scanId) continue to round-trip correctly.
+      // Multi-Contract scans would deadlock with this transitional
+      // wait shape (the second module's completion event has no
+      // waiter); D.3 fixes that.
       const completedEvent = await step.waitForEvent("wait-governance", {
         event: "scan.module.completed",
         match: "data.scanId",
