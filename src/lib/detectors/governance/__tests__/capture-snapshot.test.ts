@@ -638,27 +638,35 @@ describe("captureGovernanceSnapshot — Plan 03 §5.1.1 role branches", () => {
 
   // ── TOKEN_CONTRACT + DECLARED_BRIDGE: defensive throws ────────────────
 
-  it("TOKEN_CONTRACT role throws — should be SKIPPED at submission, not reach capture", async () => {
+  it("TOKEN_CONTRACT role throws BEFORE any RPC — short-circuits getBlockNumber + checkIsContract + all detector probes", async () => {
     await expect(
       captureGovernanceSnapshot({
         contractAddress: "0xeeee000000000000000000000000000000000005",
         role: "TOKEN_CONTRACT",
       }),
     ).rejects.toThrow(/should be SKIPPED at submission/);
-    // No probes invoked — the throw fires before any RPC call.
+    // Defensive throw fires before any RPC call. The submission
+    // filter (§4.2) should have already SKIPPED these roles at
+    // ModuleRun creation; this is defense-in-depth in case the
+    // filter is bypassed.
+    expect(getBlockNumberMock).not.toHaveBeenCalled();
+    expect(checkIsContractMock).not.toHaveBeenCalled();
     expect(detectGovernorMock).not.toHaveBeenCalled();
     expect(detectTimelockMock).not.toHaveBeenCalled();
     expect(detectSafeMock).not.toHaveBeenCalled();
     expect(detectProxyMock).not.toHaveBeenCalled();
   });
 
-  it("DECLARED_BRIDGE role throws — should be SKIPPED at submission, not reach capture", async () => {
+  it("DECLARED_BRIDGE role throws BEFORE any RPC — short-circuits getBlockNumber + checkIsContract + all detector probes", async () => {
     await expect(
       captureGovernanceSnapshot({
         contractAddress: "0xffff000000000000000000000000000000000006",
         role: "DECLARED_BRIDGE",
       }),
     ).rejects.toThrow(/should be SKIPPED at submission/);
+    // Same defense-in-depth contract as TOKEN_CONTRACT above.
+    expect(getBlockNumberMock).not.toHaveBeenCalled();
+    expect(checkIsContractMock).not.toHaveBeenCalled();
     expect(detectGovernorMock).not.toHaveBeenCalled();
     expect(detectTimelockMock).not.toHaveBeenCalled();
     expect(detectSafeMock).not.toHaveBeenCalled();

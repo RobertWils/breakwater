@@ -194,6 +194,22 @@ export async function captureGovernanceSnapshot(
     timelockCandidate,
   } = context;
 
+  // Plan 03 §5.1.1 defensive short-circuit. TOKEN_CONTRACT and
+  // DECLARED_BRIDGE roles must never reach capture — the submission
+  // filter (§4.2 role-applicability gating) SKIPs the GOVERNANCE
+  // ModuleRun for these roles at scan creation. This throw fires
+  // BEFORE any RPC call (no getBlockNumber, no checkIsContract, no
+  // detector probes) so a bypassed filter surfaces a clear
+  // role-not-supported error immediately instead of a potentially
+  // confusing RPC error or an empty-snapshot-graded-A misread.
+  // The duplicate guard inside `probeForRole` is defense-in-depth for
+  // any future caller that invokes probeForRole directly.
+  if (role === "TOKEN_CONTRACT" || role === "DECLARED_BRIDGE") {
+    throw new Error(
+      `[capture-snapshot] role ${role} should be SKIPPED at submission, not reach capture`,
+    );
+  }
+
   // Spec §5.1.2: `blockNumber` is an optional pin for future graph-wide
   // coordination. Plan 03 captures per-Contract independently, so when
   // no pin is provided we fetch one ourselves (Plan 02 behavior).
