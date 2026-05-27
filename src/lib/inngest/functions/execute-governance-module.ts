@@ -369,7 +369,15 @@ export const executeGovernanceModule = inngest.createFunction(
     if: 'event.data.module == "GOVERNANCE"',
   },
   async ({ event, step }) => {
-    const { scanId } = event.data;
+    // Plan 03 §4.3: every scan.module.requested event now carries
+    // contractId + contractAddress so executeScan's per-(module,
+    // contractId) waitForEvent can match the corresponding completion
+    // event. The fields are typed as optional during the D.1 → D.3
+    // window (see client.ts); a Plan-03-era event from Phase B/D's
+    // batched dispatch always populates them. The fallback to undefined
+    // is preserved so a legacy/stub event without the fields doesn't
+    // crash — it just won't match a Plan-03-era waiter.
+    const { scanId, contractId, contractAddress } = event.data;
     const startedAt = Date.now();
 
     // Step 1: feature-flag short-circuit.
@@ -401,6 +409,11 @@ export const executeGovernanceModule = inngest.createFunction(
         data: {
           scanId,
           module: "GOVERNANCE",
+          // Plan 03 §4.3: echo the trigger event's per-Contract
+          // fields so executeScan's per-(module, contractId) waiter
+          // matches this specific row.
+          contractId,
+          contractAddress,
           status: "SKIPPED",
           findingsCount: 0,
           grade: null,
@@ -550,12 +563,17 @@ export const executeGovernanceModule = inngest.createFunction(
       } as const;
     }
 
-    // Step 6: emit terminal event with the computed per-module grade
+    // Step 6: emit terminal event with the computed per-module grade.
+    // Plan 03 §4.3: contractId + contractAddress echoed so the
+    // per-(module, contractId) waiter in execute-scan can match this
+    // specific row.
     await step.sendEvent("emit-module-completed", {
       name: "scan.module.completed",
       data: {
         scanId,
         module: "GOVERNANCE",
+        contractId,
+        contractAddress,
         status: moduleResult.status,
         findingsCount: moduleResult.findingCount,
         grade: moduleResult.grade,

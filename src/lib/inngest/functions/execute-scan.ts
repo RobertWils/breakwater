@@ -269,37 +269,78 @@ export const executeScan = inngest.createFunction(
         })),
       );
 
-      // Phase D.3 lands the parallel-wait Promise.all here. For now
-      // (D.2), the legacy single waitForEvent stays so single-Contract
-      // scans (Plan 02 backward-compat shape: 1 PRIMARY Contract →
-      // 1 QUEUED ModuleRun → 1 event dispatched → 1 completion event
-      // matched on data.scanId) continue to round-trip correctly.
-      // Multi-Contract scans would deadlock with this transitional
-      // wait shape (the second module's completion event has no
-      // waiter); D.3 fixes that.
-      const completedEvent = await step.waitForEvent("wait-governance", {
-        event: "scan.module.completed",
-        match: "data.scanId",
-        timeout: "5m",
-      });
-
-      if (!completedEvent) {
-        // Timeout: mark non-terminal governance ModuleRun rows as FAILED.
-        // The mark-complete step below tolerates a late completion arriving
-        // after this update via its compare-and-set + deferred guards.
-        await step.run("mark-governance-timeout", () =>
-          prisma.moduleRun.updateMany({
-            where: {
-              scanId,
-              module: "GOVERNANCE",
-              status: { in: ["QUEUED", "RUNNING"] },
-            },
-            data: {
-              status: "FAILED",
-              errorMessage: "module_timeout",
-              completedAt: new Date(),
-            },
+      // Spec §4.3 step 3 — parallel wait via Promise.all over per-
+      // (module, contractId) waitForEvent calls. Inngest 3.x treats
+      // each step.waitForEvent as its own durable step; wrapping them
+      // in Promise.all is the idiomatic concurrent-wait pattern (same
+      // shape used for parallel step.run calls). Each wait has an
+      // independent 5-minute timeout that runs concurrently with the
+      // others, so the scan-level wall-time cap is ~5 minutes
+      // regardless of how many Contracts dispatched.
+      //
+      // BLOCKER 1 fix — `event` vs `async` binding distinction in
+      // Inngest's if-expression DSL (spec §4.3):
+      //   - `event` references the original `scan.queued` event that
+      //     triggered this function. It carries scanId but NOT module
+      //     or contractId.
+      //   - `async` references the incoming `scan.module.completed`
+      //     event being matched. It carries all three fields.
+      // The equality `event.data.scanId == async.data.scanId` scopes
+      // the waiter to this scan; the literal module + contractId
+      // comparisons against async.data narrow to the specific
+      // (Contract, module) row. Referencing `event.data.module` or
+      // `event.data.contractId` here would silently fail to ever
+      // match — those fields don't exist on the trigger event. This
+      // is the load-bearing factual claim about Inngest 3.x that
+      // Phase D.4's cross-scope isolation tests guard against
+      // regression.
+      //
+      // Each waitForEvent step is uniquely named per (module,
+      // contractId) so retries don't cross-resume across siblings.
+      const waitResults = await Promise.all(
+        queuedRuns.map((mr) =>
+          step.waitForEvent(`wait-${mr.module}-${mr.contractId}`, {
+            event: "scan.module.completed",
+            if: `event.data.scanId == async.data.scanId && async.data.module == '${mr.module}' && async.data.contractId == '${mr.contractId}'`,
+            timeout: "5m",
           }),
+        ),
+      );
+
+      // Spec §4.4 — for any wait that timed out (waitForEvent returns
+      // null on timeout), mark the corresponding ModuleRun as FAILED
+      // with errorMessage "module_timeout". The status filter
+      // (where: { status: { in: ["QUEUED", "RUNNING"] } }) is the
+      // race-safety mechanism per spec §4.3 orphan-event handling: if
+      // a delayed completion event already wrote the row to
+      // COMPLETE/FAILED between this Promise.all settling and the
+      // updateMany executing, the where-clause matches zero rows and
+      // the timeout step becomes a harmless no-op.
+      //
+      // The inner Promise.all parallelises the per-row updateManys but
+      // is itself wrapped in a single step.run — Inngest only
+      // serialises one step boundary here, not N, keeping the step
+      // count predictable.
+      const timedOut = queuedRuns.filter((_, i) => waitResults[i] === null);
+      if (timedOut.length > 0) {
+        await step.run("mark-module-timeout", () =>
+          Promise.all(
+            timedOut.map((mr) =>
+              prisma.moduleRun.updateMany({
+                where: {
+                  scanId,
+                  module: mr.module,
+                  contractId: mr.contractId,
+                  status: { in: ["QUEUED", "RUNNING"] },
+                },
+                data: {
+                  status: "FAILED",
+                  errorMessage: "module_timeout",
+                  completedAt: new Date(),
+                },
+              }),
+            ),
+          ),
         );
       }
     }
