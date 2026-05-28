@@ -130,31 +130,34 @@ const stubReturn = (overrides: Partial<GovernanceSnapshot> = {}) =>
     ...overrides,
   }) as GovernanceSnapshot;
 
-describe("persistGovernanceSnapshot (Plan 02 D.4, Plan 03 §3.5 PR 1)", () => {
+describe("persistGovernanceSnapshot (Plan 02 D.4, Plan 03 §3.5 PR 1, Plan 03 Phase E.2 — keyed on contractId)", () => {
   beforeEach(() => {
     findFirstMock.mockReset();
     createMock.mockReset();
     updateMock.mockReset();
   });
 
-  it("creates a fully populated snapshot when none exists for the scan", async () => {
+  it("creates a fully populated snapshot when none exists for the contract", async () => {
     findFirstMock.mockResolvedValueOnce(null);
     createMock.mockResolvedValueOnce(stubReturn({ scanId: "scan-1" }));
 
     await persistGovernanceSnapshot({
       scanId: "scan-1",
+      contractId: "contract-1",
       snapshot: fullSnapshot,
     });
 
     expect(findFirstMock).toHaveBeenCalledOnce();
+    // Plan 03 Phase E.2: findFirst now keys on contractId (was scanId).
     expect(findFirstMock).toHaveBeenCalledWith({
-      where: { scanId: "scan-1" },
+      where: { contractId: "contract-1" },
       select: { id: true },
     });
     expect(createMock).toHaveBeenCalledOnce();
     const args = createMock.mock.calls[0]![0];
     expect(args.data).toMatchObject({
       scanId: "scan-1",
+      contractId: "contract-1",
       blockNumber: BigInt(20_000_000),
       hasGovernor: true,
       governorType: "OZ_GOVERNOR",
@@ -170,12 +173,14 @@ describe("persistGovernanceSnapshot (Plan 02 D.4, Plan 03 §3.5 PR 1)", () => {
 
     await persistGovernanceSnapshot({
       scanId: "scan-2",
+      contractId: "contract-2",
       snapshot: minimalSnapshot,
     });
 
     const args = createMock.mock.calls[0]![0];
     expect(args.data).toMatchObject({
       scanId: "scan-2",
+      contractId: "contract-2",
       hasGovernor: false,
       hasTimelock: false,
       hasMultisig: false,
@@ -186,14 +191,12 @@ describe("persistGovernanceSnapshot (Plan 02 D.4, Plan 03 §3.5 PR 1)", () => {
 
   it("updates the existing row on re-snapshot, bumping capturedAt to now", async () => {
     const beforeCall = Date.now();
-    // vi.mocked(...) widens the mock's resolved-value type to the full
-    // Prisma delegate's return type; stubReturn supplies the full record
-    // even though the function only reads `.id` (select: { id: true }).
     findFirstMock.mockResolvedValueOnce(stubReturn({ id: "snap-existing" }));
     updateMock.mockResolvedValueOnce(stubReturn({ id: "snap-existing" }));
 
     await persistGovernanceSnapshot({
       scanId: "scan-3",
+      contractId: "contract-3",
       snapshot: fullSnapshot,
     });
 
@@ -207,17 +210,18 @@ describe("persistGovernanceSnapshot (Plan 02 D.4, Plan 03 §3.5 PR 1)", () => {
     expect(createMock).not.toHaveBeenCalled();
   });
 
-  it("locates the existing row by scanId on findFirst", async () => {
+  it("locates the existing row by contractId on findFirst (Plan 03 §5.3.1 idempotency invariant)", async () => {
     findFirstMock.mockResolvedValueOnce(null);
     createMock.mockResolvedValueOnce(stubReturn());
 
     await persistGovernanceSnapshot({
-      scanId: "unique-scan-id",
+      scanId: "scan-x",
+      contractId: "unique-contract-id",
       snapshot: minimalSnapshot,
     });
 
     expect(findFirstMock).toHaveBeenCalledWith({
-      where: { scanId: "unique-scan-id" },
+      where: { contractId: "unique-contract-id" },
       select: { id: true },
     });
   });
@@ -234,7 +238,11 @@ describe("persistGovernanceSnapshot (Plan 02 D.4, Plan 03 §3.5 PR 1)", () => {
       },
     };
 
-    await persistGovernanceSnapshot({ scanId: "scan-4", snapshot });
+    await persistGovernanceSnapshot({
+      scanId: "scan-4",
+      contractId: "contract-4",
+      snapshot,
+    });
 
     const args = createMock.mock.calls[0]![0];
     expect(args.data.rawState).toEqual({
@@ -261,7 +269,7 @@ describe("persistGovernanceSnapshot (Plan 02 D.4, Plan 03 §3.5 PR 1)", () => {
     };
 
     await persistGovernanceSnapshot(
-      { scanId: "scan-5", snapshot: minimalSnapshot },
+      { scanId: "scan-5", contractId: "contract-5", snapshot: minimalSnapshot },
       txClient,
     );
 
@@ -278,6 +286,7 @@ describe("persistGovernanceSnapshot (Plan 02 D.4, Plan 03 §3.5 PR 1)", () => {
 
     const result = await persistGovernanceSnapshot({
       scanId: "scan-6",
+      contractId: "contract-6",
       snapshot: fullSnapshot,
     });
 

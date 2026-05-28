@@ -152,9 +152,25 @@ async function seedProtocolAndScan() {
     },
   });
 
+  // Plan 03 Phase B: every scan has at least one Contract row (the
+  // PRIMARY). Phase E.1 made executeGovernanceModule per-Contract so
+  // the test fixture has to seed the Contract row that the ModuleRun
+  // references — without it `markModuleRunning(scanId, contractId, ...)`
+  // matches zero rows.
+  const contract = await prisma.contract.create({
+    data: {
+      scanId: scan.id,
+      address: address.toLowerCase(),
+      chain: "ETHEREUM",
+      role: "PRIMARY",
+      isPrimary: true,
+    },
+  });
+
   const moduleRun = await prisma.moduleRun.create({
     data: {
       scanId: scan.id,
+      contractId: contract.id,
       module: "GOVERNANCE",
       status: "QUEUED",
       detectorVersions: {},
@@ -163,7 +179,7 @@ async function seedProtocolAndScan() {
     },
   });
 
-  return { protocol, scan, moduleRun };
+  return { protocol, scan, contract, moduleRun };
 }
 
 async function seedFindings(
@@ -199,14 +215,14 @@ describe.skipIf(!hasDb)(
   "Phase F integration smoke (DB-backed: ModuleRun + Scan grade persistence)",
   () => {
     it("COMPLETE path: ModuleRun.grade + score AND Scan.compositeScore + compositeGrade persisted", async () => {
-      const { scan, moduleRun } = await seedProtocolAndScan();
+      const { scan, contract, moduleRun } = await seedProtocolAndScan();
 
       // Lifecycle step 1: executeScan.markRunning → Scan QUEUED → RUNNING.
       const runResult = await markRunning(prisma, scan.id);
       expect(runResult.skipped).toBe(false);
 
       // Lifecycle step 2: module-side markModuleRunning → ModuleRun QUEUED → RUNNING.
-      const modRun = await markModuleRunning(prisma, scan.id, "evt-smoke-1");
+      const modRun = await markModuleRunning(prisma, scan.id, contract.id, "evt-smoke-1");
       expect(modRun.skipped).toBe(false);
 
       // Seed findings the way persistSnapshotAndFindings would —
@@ -229,6 +245,7 @@ describe.skipIf(!hasDb)(
       const modCompleted = await markModuleComplete(
         prisma,
         scan.id,
+        contract.id,
         "COMPLETE",
         null,
         computed.grade,
@@ -277,10 +294,10 @@ describe.skipIf(!hasDb)(
     });
 
     it("FAILED path: ModuleRun.grade + score null AND Scan.compositeScore + compositeGrade null", async () => {
-      const { scan, moduleRun } = await seedProtocolAndScan();
+      const { scan, contract, moduleRun } = await seedProtocolAndScan();
 
       await markRunning(prisma, scan.id);
-      await markModuleRunning(prisma, scan.id, "evt-smoke-2");
+      await markModuleRunning(prisma, scan.id, contract.id, "evt-smoke-2");
 
       // Even though findings exist, FAILED skips grade computation
       // (F.4.2 Option 1: partial findings on a failed module run don't
@@ -290,6 +307,7 @@ describe.skipIf(!hasDb)(
       const modCompleted = await markModuleComplete(
         prisma,
         scan.id,
+        contract.id,
         "FAILED",
         "smoke_test_failure",
         null,
@@ -331,9 +349,9 @@ describe.skipIf(!hasDb)(
       // Closes the F.5 review IMPORTANT that the smoke test was
       // bypassing the actual code that runs in the Inngest function
       // body's capture-detect-persist step.
-      const { scan, moduleRun } = await seedProtocolAndScan();
+      const { scan, contract, moduleRun } = await seedProtocolAndScan();
       await markRunning(prisma, scan.id);
-      await markModuleRunning(prisma, scan.id, "evt-smoke-i2");
+      await markModuleRunning(prisma, scan.id, contract.id, "evt-smoke-i2");
 
       const snapshot = baseSnapshot({
         blockNumber: BigInt(20_000_001),
@@ -370,7 +388,7 @@ describe.skipIf(!hasDb)(
       ];
 
       const result = await prisma.$transaction((tx) =>
-        persistSnapshotAndFindings(tx, scan.id, snapshot, findings),
+        persistSnapshotAndFindings(tx, scan.id, contract.id, snapshot, findings),
       );
       expect(result.findingCount).toBe(2);
       expect(result.snapshot.scanId).toBe(scan.id);
@@ -411,9 +429,9 @@ describe.skipIf(!hasDb)(
       // The Inngest step.run replay contract requires this. Without
       // delete-then-insert in persistSnapshotAndFindings, a retry
       // after a partial commit doubles the Finding row count.
-      const { scan, moduleRun } = await seedProtocolAndScan();
+      const { scan, contract, moduleRun } = await seedProtocolAndScan();
       await markRunning(prisma, scan.id);
-      await markModuleRunning(prisma, scan.id, "evt-smoke-idem");
+      await markModuleRunning(prisma, scan.id, contract.id, "evt-smoke-idem");
 
       const snapshot = baseSnapshot({ blockNumber: BigInt(20_000_002) });
       const findings: GovernanceFindingInput[] = [
@@ -435,15 +453,15 @@ describe.skipIf(!hasDb)(
 
       // First call: 1 row.
       await prisma.$transaction((tx) =>
-        persistSnapshotAndFindings(tx, scan.id, snapshot, findings),
+        persistSnapshotAndFindings(tx, scan.id, contract.id, snapshot, findings),
       );
       // Second call (simulates Inngest replay): must still be 1 row.
       await prisma.$transaction((tx) =>
-        persistSnapshotAndFindings(tx, scan.id, snapshot, findings),
+        persistSnapshotAndFindings(tx, scan.id, contract.id, snapshot, findings),
       );
       // Third call for safety: still 1 row.
       await prisma.$transaction((tx) =>
-        persistSnapshotAndFindings(tx, scan.id, snapshot, findings),
+        persistSnapshotAndFindings(tx, scan.id, contract.id, snapshot, findings),
       );
 
       const rows = await prisma.finding.findMany({
@@ -466,9 +484,9 @@ describe.skipIf(!hasDb)(
       // 3. Mark the module COMPLETE
       // 4. Run scan-level markComplete → reads ModuleRun.errorDetectorCount
       //    and flips Scan.isPartialGrade
-      const { scan, moduleRun } = await seedProtocolAndScan();
+      const { scan, contract, moduleRun } = await seedProtocolAndScan();
       await markRunning(prisma, scan.id);
-      await markModuleRunning(prisma, scan.id, "evt-i1-fix3");
+      await markModuleRunning(prisma, scan.id, contract.id, "evt-i1-fix3");
 
       const snapshot = baseSnapshot({ blockNumber: BigInt(20_000_003) });
       const findings: GovernanceFindingInput[] = [
@@ -489,7 +507,7 @@ describe.skipIf(!hasDb)(
       ];
 
       await prisma.$transaction((tx) =>
-        persistSnapshotAndFindings(tx, scan.id, snapshot, findings, 2),
+        persistSnapshotAndFindings(tx, scan.id, contract.id, snapshot, findings, 2),
       );
 
       // ModuleRun.errorDetectorCount is now 2 on disk.
@@ -500,7 +518,7 @@ describe.skipIf(!hasDb)(
 
       // Flip module COMPLETE so scan-level markComplete sees a terminal
       // module to read errorDetectorCount from.
-      await markModuleComplete(prisma, scan.id, "COMPLETE", null, "C", 70);
+      await markModuleComplete(prisma, scan.id, contract.id, "COMPLETE", null, "C", 70);
 
       const scanResult = await markComplete(prisma, scan.id);
       if (scanResult.finalStatus === null) {
