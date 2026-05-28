@@ -1,5 +1,9 @@
 import type { Grade, Prisma, ScanStatus } from "@prisma/client";
 
+import {
+  formatInngestDuration,
+  getTimeoutPerModuleRunMs,
+} from "@/lib/config";
 import { isGovernanceModuleEnabled } from "@/lib/feature-flags";
 import { inngest } from "@/lib/inngest/client";
 import { prisma } from "@/lib/prisma";
@@ -297,12 +301,17 @@ export const executeScan = inngest.createFunction(
       //
       // Each waitForEvent step is uniquely named per (module,
       // contractId) so retries don't cross-resume across siblings.
+      // Plan 03 §4.4 default is 5 minutes; the TIMEOUT_PER_MODULE_RUN_MS
+      // env var lets integration tests override to a short value (e.g.,
+      // 10s) so per-Contract timeout isolation can be runtime-verified
+      // within a vitest wall-time budget.
+      const waitTimeout = formatInngestDuration(getTimeoutPerModuleRunMs());
       const waitResults = await Promise.all(
         queuedRuns.map((mr) =>
           step.waitForEvent(`wait-${mr.module}-${mr.contractId}`, {
             event: "scan.module.completed",
             if: `event.data.scanId == async.data.scanId && async.data.module == '${mr.module}' && async.data.contractId == '${mr.contractId}'`,
-            timeout: "5m",
+            timeout: waitTimeout,
           }),
         ),
       );

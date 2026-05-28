@@ -254,8 +254,13 @@ describe("executeScan waitForEvent — BLOCKER 1 if-expression shape (source-lev
     expect(source).toMatch(/`wait-\$\{mr\.module\}-\$\{mr\.contractId\}`/);
   });
 
-  it("the wait carries a 5m timeout (matching spec §4.3 per-Contract budget)", () => {
-    expect(source).toMatch(/timeout:\s*"5m"/);
+  it("the wait carries a timeout sourced from getTimeoutPerModuleRunMs (default 5m per spec §4.4; integration tests override via TIMEOUT_PER_MODULE_RUN_MS)", () => {
+    // The timeout is computed via formatInngestDuration(getTimeoutPerModuleRunMs())
+    // so D.5 integration tests can swap in a short override. The Plan 02
+    // hardcoded literal "5m" no longer appears here — the default value
+    // lives in config.ts.
+    expect(source).toMatch(/timeout:\s*waitTimeout/);
+    expect(source).toMatch(/getTimeoutPerModuleRunMs\(\)/);
   });
 });
 
