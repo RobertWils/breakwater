@@ -19,19 +19,19 @@ export type ScanModuleRequestedEventData = {
   module: ModuleName;
   /**
    * Plan 03 §4.3: identifies the Contract row this module run targets.
-   * Optional during the D.1 → D.3 transition so the Plan 02 emitter in
-   * execute-scan continues to compile; D.3 tightens both the emitter
-   * and the waiter, at which point this field becomes effectively
-   * required (every Plan 03-era event carries it).
+   * REQUIRED — an emitter that forgets to set this would compile but
+   * produce events that never match executeScan's per-(module,
+   * contractId) compound wait expression (silent routing failure).
+   * Codex Review #3 IMPORTANT 3.
    */
-  contractId?: string;
+  contractId: string;
   /**
    * Plan 03 §4.3: denormalised Contract.address for log readability +
    * to avoid an extra DB round-trip when execute-governance-module
-   * loads the Contract context. Same optionality lifecycle as
+   * loads the Contract context. REQUIRED for the same reason as
    * contractId above.
    */
-  contractAddress?: string;
+  contractAddress: string;
 };
 
 export type ScanModuleCompletedEventData = {
@@ -39,13 +39,13 @@ export type ScanModuleCompletedEventData = {
   module: ModuleName;
   /**
    * Plan 03 §4.3: identifies the Contract row this completion event
-   * belongs to. Required for the compound `if`-expression match in
+   * belongs to. REQUIRED for the compound `if`-expression match in
    * execute-scan's per-(module, contractId) waiter to scope correctly.
-   * Optional during the D.1 → D.3 transition; D.3 tightens.
+   * Codex Review #3 IMPORTANT 3.
    */
-  contractId?: string;
-  /** Plan 03 §4.3 — denormalised Contract.address. */
-  contractAddress?: string;
+  contractId: string;
+  /** Plan 03 §4.3 — denormalised Contract.address. REQUIRED. */
+  contractAddress: string;
   status: ModuleStatus;
   findingsCount: number;
   grade: string | null;
