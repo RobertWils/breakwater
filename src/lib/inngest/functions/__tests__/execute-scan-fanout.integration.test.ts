@@ -1,10 +1,23 @@
 // @vitest-environment node
 /**
- * Plan 03 Phase D.5 — live-infrastructure runtime test for BLOCKER 1
- * routing semantics. This complements the source-level regex tests in
- * execute-scan-fanout.test.ts by EXECUTING the real Inngest dev server
- * against the real Prisma persistence layer, observing actual cross-
- * scope event routing + per-Contract timeout isolation.
+ * Plan 03 Phase D.5 (strengthened in Phase E.4) — live-infrastructure
+ * runtime test for BLOCKER 1 routing semantics. Complements the
+ * source-level regex tests in execute-scan-fanout.test.ts by EXECUTING
+ * the real Inngest dev server against the real Prisma persistence
+ * layer, observing actual cross-scope event routing + per-Contract
+ * timeout isolation.
+ *
+ * Phase E.2 made `executeGovernanceModule` per-Contract — its
+ * markRunning, persist, and markComplete steps all scope by
+ * (scanId, module, contractId). That removed the scan-wide updateMany
+ * that previously masked per-Contract routing failures (Plan 02
+ * carryover): every invocation now transitions ONLY its own ModuleRun
+ * row, every invocation emits ONLY its own scan.module.completed event,
+ * and the load-bearing claims below are genuinely verified end-to-end.
+ *
+ * Verified by deliberate regression (see Phase E.4 commit body): an
+ * `event.data.contractId` revert in the wait expression makes Test 1
+ * + Test 3 fail with rows stuck at module_timeout.
  *
  * Infrastructure spun up per file (beforeAll/afterAll):
  *   - Docker Postgres on localhost:5433 (db: breakwater_test)
@@ -54,21 +67,17 @@ vi.hoisted(() => {
 });
 
 // Mock the snapshot capture so the test doesn't make real RPC calls.
-// The two slow-path tests (test 3) override this further to selectively
-// hang for a specific Contract — see hangFor() below.
+// Test 3 overrides this per-address via hangFor() to make ONE Contract
+// hang past its per-wait timeout while siblings complete normally.
 vi.mock("@/lib/detectors/governance/capture-snapshot", () => ({
   captureGovernanceSnapshot: vi
     .fn()
     .mockImplementation(async ({ contractAddress }: { contractAddress: string }) => {
-      // Honour any per-address hang override (test 3 sets these).
-      // Note: in Plan 03 PR 1 / Phase D, the legacy Plan 02
-      // executeGovernanceModule still operates at scan level — its
-      // markRunning + markComplete steps use scan-wide updateManys, so
-      // only the FIRST invocation per scan actually reaches this mock.
-      // Subsequent invocations for sibling Contracts short-circuit on
-      // already_terminal. Phase E refactors execGovernanceModule to
-      // per-Contract semantics; once that lands, every invocation will
-      // reach this mock and per-Contract hangs become observable.
+      // Phase E.2 made executeGovernanceModule per-Contract, so every
+      // invocation reaches this mock (one per Contract per scan).
+      // Per-Contract hangs are therefore observable: test 3 hangs the
+      // slow Contract for 15s, the others complete within ms — only
+      // the slow row hits module_timeout.
       const hangMs = HANG_OVERRIDES.get(contractAddress.toLowerCase());
       if (hangMs && hangMs > 0) {
         await new Promise((resolve) => setTimeout(resolve, hangMs));
@@ -242,7 +251,27 @@ describe.skipIf(!SHOULD_RUN)(
           expect(row.status).toBe("COMPLETE");
           expect(row.errorMessage).toBeNull();
           expect(row.contractId).toBe(row.contract!.id);
+          // Phase E.4 strengthening: each row was finalized by its OWN
+          // executeGovernanceModule invocation, so completedAt /
+          // findingsCount must be set per-row (no scan-wide updateMany
+          // batched these — that would have left findingsCount null
+          // for siblings under Plan 02's carryover).
+          expect(row.completedAt).not.toBeNull();
+          expect(row.findingsCount).not.toBeNull();
+          expect(row.startedAt).not.toBeNull();
         }
+
+        // Phase E.4 strengthening: prove the rows were updated by
+        // separate executions (not one scan-wide updateMany). Under
+        // Plan 02's scan-wide markComplete, all 3 rows shared a single
+        // updateMany call — completedAt would be identical to the ms
+        // for all three. Per-Contract execution means three distinct
+        // invocations write three distinct timestamps; the set of
+        // distinct completedAt millis is > 1.
+        const completedAtMs = new Set(
+          govRows.map((r) => r.completedAt!.getTime()),
+        );
+        expect(completedAtMs.size).toBeGreaterThan(1);
 
         // Spot-check ORACLE/SIGNER/FRONTEND landed SKIPPED at
         // submission time as expected — sanity that the count of 12
@@ -336,6 +365,14 @@ describe.skipIf(!SHOULD_RUN)(
         for (const row of [...govA, ...govB]) {
           expect(row.status).toBe("COMPLETE");
           expect(row.errorMessage).toBeNull();
+          // Phase E.4 strengthening: each row was finalized by its own
+          // executeGovernanceModule invocation. Under Plan 02's
+          // scan-wide markComplete, sibling rows shared one updateMany
+          // call — findingsCount was set ONLY on the first invocation
+          // and remained null on siblings. Per-Contract execution
+          // means every row has its own findingsCount + completedAt.
+          expect(row.completedAt).not.toBeNull();
+          expect(row.findingsCount).not.toBeNull();
         }
 
         // Stronger: every GOVERNANCE ModuleRun belongs to its OWN scan's
@@ -352,39 +389,29 @@ describe.skipIf(!SHOULD_RUN)(
     );
 
     it(
-      "test 3 — per-wait timeout fires independently per Contract (mark-module-timeout step runs, status-filter no-op safety verified)",
+      "test 3 — per-wait timeout fires independently per Contract (slow Contract → FAILED/module_timeout, fast Contract → COMPLETE, parallel-wait wall-time bound)",
       async () => {
-        // What this test verifies at the Phase D layer:
-        //   - The executeScan per-(module, contractId) wait timeout
-        //     mechanism actually fires when a wait doesn't resolve
-        //     before TIMEOUT_PER_MODULE_RUN_MS (set to 5s for this run).
-        //   - mark-module-timeout's status filter
-        //     (`where: { status: { in: ["QUEUED", "RUNNING"] } }`) is a
-        //     correct no-op when the row was already written to a
-        //     terminal state by a concurrent path (per spec §4.3
-        //     orphan-event handling) — the test doesn't crash even
-        //     though Plan 02's scan-level markModuleComplete already
-        //     wrote the row to COMPLETE.
-        //
-        // What this test does NOT yet verify (deferred to Phase E):
-        //   - The slow Contract's GOVERNANCE row reaching FAILED via
-        //     the mark-module-timeout write. In Plan 02 / Phase D,
-        //     executeGovernanceModule's markRunning + markComplete
-        //     steps are SCAN-WIDE updateManys — the first invocation
-        //     of execGovernanceModule transitions ALL the scan's
-        //     ModuleRuns from QUEUED → RUNNING → COMPLETE in one shot,
-        //     so the slow Contract's row reaches COMPLETE through that
-        //     scan-wide path before its per-wait timeout fires. Phase E
-        //     refactors execGovernanceModule to per-Contract semantics;
-        //     after that, the slow Contract's row will remain RUNNING
-        //     until the timeout fires + writes module_timeout.
+        // Phase E.4 strengthening: with executeGovernanceModule
+        // per-Contract (Phase E.2), the slow Contract's row stays
+        // RUNNING until its OWN per-wait timeout fires + writes
+        // module_timeout. The scan-wide markComplete shortcut that
+        // previously masked this is gone, so we can assert STRICTLY:
+        //   - fast Contract → COMPLETE, errorMessage null
+        //   - slow Contract → FAILED, errorMessage "module_timeout"
+        //   - scan wall-time bounded by max(per-wait) + setup, NOT
+        //     N × per-wait (proves parallel-wait pattern actually runs
+        //     N waits concurrently per spec §4.3).
         clearHangs();
         const ipHash = uniqueIpHash();
         const fastAddr = uniqueAddress(0xf01); // PRIMARY — completes normally
-        const slowAddr = uniqueAddress(0xf02); // RELATED — would hang in a per-Contract execGovernance world
+        const slowAddr = uniqueAddress(0xf02); // RELATED — hangs past per-wait timeout
 
+        // Hang 15s; per-wait timeout is 5s. The hang must exceed the
+        // timeout by enough that any clock skew doesn't accidentally
+        // let the row sneak to COMPLETE.
         hangFor(slowAddr, 15_000);
 
+        const startMs = Date.now();
         const result = await submitScan({
           input: {
             chain: "ETHEREUM",
@@ -405,6 +432,7 @@ describe.skipIf(!SHOULD_RUN)(
         expect(result.statusCode).toBe(202);
 
         await waitForModuleRunsTerminal(result.scanId, 8, 30_000);
+        const elapsedMs = Date.now() - startMs;
 
         const govRows = await prisma.moduleRun.findMany({
           where: { scanId: result.scanId, module: "GOVERNANCE" },
@@ -421,32 +449,31 @@ describe.skipIf(!SHOULD_RUN)(
         expect(fastRow).toBeDefined();
         expect(slowRow).toBeDefined();
 
-        // What we CAN assert at the Phase D layer:
-
-        // 1. The fast Contract completes normally. Its wait resolved on
-        //    the scan.module.completed event emitted by execGovernance.
+        // 1. Fast Contract completes normally. Its wait resolved on the
+        //    scan.module.completed event emitted by ITS OWN
+        //    executeGovernanceModule invocation.
         expect(fastRow!.status).toBe("COMPLETE");
         expect(fastRow!.errorMessage).toBeNull();
 
-        // 2. The slow Contract reaches A terminal state. Whether via the
-        //    scan-wide markModuleComplete (Plan 02 carryover) or the
-        //    mark-module-timeout step (Phase E target), both proves the
-        //    function ran to completion without hanging. The scan
-        //    itself terminates (markComplete runs) only AFTER both waits
-        //    settle — i.e., AFTER mark-module-timeout fires for the
-        //    slow Contract. If the per-wait timeout didn't fire
-        //    independently, this test would time out at the
-        //    waitForModuleRunsTerminal poll above.
-        expect(["FAILED", "COMPLETE"]).toContain(slowRow!.status);
+        // 2. Slow Contract reaches FAILED via mark-module-timeout. The
+        //    per-Contract markComplete never fired for this row because
+        //    its execution is still inside the 15s hang when its
+        //    per-wait timer expires at ~5s; mark-module-timeout's
+        //    updateMany (status RUNNING → FAILED, errorMessage
+        //    "module_timeout") wins the compare-and-set.
+        expect(slowRow!.status).toBe("FAILED");
+        expect(slowRow!.errorMessage).toBe("module_timeout");
 
-        // 3. The scan's outer wall-time stays within the per-wait
-        //    timeout budget (5s + setup) — the parallel-wait Promise.all
-        //    pattern in spec §4.3 means N waits running concurrently
-        //    cap at ~max(individual wait), not sum(waits). With
-        //    TIMEOUT_PER_MODULE_RUN_MS=5000 the slow Contract's wait
-        //    times out at ~5s, NOT at N×5s. The whole test file
-        //    completes in well under 30s, which is the assertion: the
-        //    parallel-wait pattern works.
+        // 3. Parallel-wait pattern verified: the entire scan settles
+        //    bounded by max(individual wait), NOT sum(waits). With
+        //    TIMEOUT_PER_MODULE_RUN_MS=5000 and 2 Contracts, a SERIAL
+        //    wait pattern would take ≥10s for the slow tier alone
+        //    (5s timeout × 2 Contracts); the parallel-wait pattern
+        //    settles at ~5s + dispatch/teardown overhead. We allow a
+        //    generous 12s ceiling to account for Inngest dispatch
+        //    latency + finalize step time without flaking on CI clock
+        //    noise — a serial regression would blow past this.
+        expect(elapsedMs).toBeLessThan(12_000);
       },
       120_000,
     );
