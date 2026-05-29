@@ -19,6 +19,22 @@
  * `event.data.contractId` revert in the wait expression makes Test 1
  * + Test 3 fail with rows stuck at module_timeout.
  *
+ * Two layers of assertion (Codex Review #4 IMPORTANT 2):
+ *   - ModuleRun.status / completedAt / findingsCount: the EXECUTOR
+ *     proof. Each row was finalized by its OWN executeGovernanceModule
+ *     invocation (Phase E.2 per-Contract scoping).
+ *   - Scan.status === "COMPLETE": the SCAN-LEVEL FINALIZATION proof.
+ *     executeScan only reaches mark-complete after every waitForEvent
+ *     settles AND every ModuleRun is terminal — a `stuck-wait`
+ *     regression (predicate that never matches) leaves
+ *     `step.waitForEvent` waiting until its per-wait timeout fires;
+ *     a `racing-wait` regression where mark-complete fires before
+ *     executors finish would return `deferred` and leave Scan.status
+ *     at RUNNING. Test 3's strict slow-row assertion catches the
+ *     complementary `eager-wait` regressions (predicates that match
+ *     the wrong event) — the two assertions together waterproof the
+ *     routing claim end-to-end.
+ *
  * Infrastructure spun up per file (beforeAll/afterAll):
  *   - Docker Postgres on localhost:5433 (db: breakwater_test)
  *   - Inngest dev server (`npx inngest-cli@latest dev`) on localhost:8288
@@ -179,6 +195,38 @@ async function waitForModuleRunsTerminal(
   );
 }
 
+// Codex Review #4 IMPORTANT 2 — Scan-level completion is the
+// wait-expression routing proof. executeScan only reaches mark-complete
+// after every waitForEvent settles; a stuck wait keeps Scan.status at
+// RUNNING (markRunning's write) because mark-complete returns
+// `deferred` when not all ModuleRuns are terminal. Use a generous
+// window (15s) — under correct routing, scan transitions to COMPLETE
+// within ~1s of the last ModuleRun reaching terminal; under broken
+// routing the scan never transitions, and we want a clean error
+// message instead of vitest's own per-test timeout.
+async function waitForScanStatus(
+  scanId: string,
+  expected: "COMPLETE" | "FAILED",
+  timeoutMs = 15_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const scan = await prisma.scan.findUnique({
+      where: { id: scanId },
+      select: { status: true },
+    });
+    if (scan?.status === expected) return;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  const finalScan = await prisma.scan.findUnique({
+    where: { id: scanId },
+    select: { status: true },
+  });
+  throw new Error(
+    `[d5] Timed out waiting for Scan ${scanId} to reach ${expected}, current status: ${finalScan?.status ?? "missing"}`,
+  );
+}
+
 // ── Setup ────────────────────────────────────────────────────────────────
 
 beforeAll(async () => {
@@ -278,6 +326,14 @@ describe.skipIf(!SHOULD_RUN)(
         // wasn't lying.
         const skippedRows = rows.filter((r) => r.status === "SKIPPED");
         expect(skippedRows.length).toBeGreaterThanOrEqual(9);
+
+        // Codex Review #4 IMPORTANT 2 — wait-expression routing proof.
+        // executeScan only reaches mark-complete after every
+        // waitForEvent settles. A regression to the wait predicate
+        // that left a wait stuck would keep Scan.status at RUNNING
+        // (markRunning's write) because mark-complete returns
+        // `deferred` when ModuleRuns are not all terminal.
+        await waitForScanStatus(result.scanId, "COMPLETE");
       },
       120_000,
     );
@@ -384,6 +440,20 @@ describe.skipIf(!SHOULD_RUN)(
           bContractIds.has(id),
         );
         expect(intersection).toEqual([]);
+
+        // Codex Review #4 IMPORTANT 2 — wait-expression routing proof
+        // for BOTH scans. A cross-scope regression (e.g., dropping
+        // `event.data.scanId == async.data.scanId`) would let scan A's
+        // waits consume scan B's events and vice versa — one scan's
+        // mark-complete fires early on the other's events while its
+        // OWN ModuleRuns are still RUNNING → mark-complete returns
+        // `deferred` → Scan.status stays RUNNING. Asserting both
+        // scans reach COMPLETE within the same poll window rules out
+        // that failure mode.
+        await Promise.all([
+          waitForScanStatus(resA.scanId, "COMPLETE"),
+          waitForScanStatus(resB.scanId, "COMPLETE"),
+        ]);
       },
       120_000,
     );
