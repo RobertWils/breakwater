@@ -161,6 +161,7 @@ model Protocol {
   ownershipStatus        OwnershipStatus
   organizationId         String?
   organization           Organization?   @relation(fields: [organizationId], references: [id])
+  /// @deprecated Plan 02 legacy shape. Prefer submitting multisigs as structured `relatedContracts[]` entries with role `DECLARED_MULTISIG` (Plan 03 §4.2). Phase E retains a PRIMARY-only fallback that reads `knownMultisigs[0]` only when no sibling `DECLARED_MULTISIG` Contract row exists for the scan — see `loadContractContext` in `execute-governance-module.ts`. Remove field when all clients migrate.
   knownMultisigs         Json            @default("[]")
   expectedRiskProfile    Grade? // internal calibration target — never publish as observed grade
   latestDemoScanId       String?

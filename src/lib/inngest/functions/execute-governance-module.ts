@@ -135,8 +135,14 @@ export interface ContractContext {
    * DECLARED_MULTISIG, when one exists in the same scan. Spec §5.1.1
    * row 1 — Plan 02's `declaredMultisigAddresses` array (sourced from
    * `Protocol.knownMultisigs`) is replaced by per-scan sibling
-   * lookups in Plan 03. Undefined for non-PRIMARY roles and for
-   * PRIMARY scans with no sibling multisig.
+   * lookups in Plan 03. Codex Review #4 IMPORTANT 1 — PRIMARY-only
+   * fallback: when no sibling row exists, this falls back to
+   * `Protocol.knownMultisigs[0]` so Plan 02 clients that submit
+   * multisigs via `input.multisigs[]` (persisted to
+   * `Protocol.knownMultisigs`, never converted to Contract rows)
+   * still see GOV-003 fire. Sibling row wins over legacy fallback.
+   * Undefined for non-PRIMARY roles and for PRIMARY scans with
+   * neither sibling nor legacy multisig.
    */
   declaredMultisigCandidate: string | undefined;
   /**
@@ -202,6 +208,29 @@ export async function loadContractContext(
     timelockCandidate = siblings.find(
       (c) => c.role === ContractRole.TIMELOCK,
     )?.address;
+
+    // Plan 02 legacy shim (Codex Review #4 IMPORTANT 1): PRIMARY-only
+    // fallback to `Protocol.knownMultisigs[0]` when no sibling
+    // DECLARED_MULTISIG Contract row exists. Plan 02 clients submit
+    // multisigs via `input.multisigs[]`, which submitScan persists to
+    // `Protocol.knownMultisigs` (never converted to Contract rows).
+    // Without this fallback, those single-Contract scans lost
+    // GOV-003 detection in Plan 03. Sibling row already won above
+    // — this only fires when the sibling lookup returned no
+    // DECLARED_MULTISIG. Matches Plan 02 behavior which used the
+    // first string-typed entry of `knownMultisigs` as the candidate.
+    // Remove when all clients migrate to structured relatedContracts.
+    if (declaredMultisigCandidate === undefined) {
+      const scan = await client.scan.findUnique({
+        where: { id: scanId },
+        select: { protocol: { select: { knownMultisigs: true } } },
+      });
+      const raw = scan?.protocol?.knownMultisigs as unknown;
+      if (Array.isArray(raw)) {
+        const first = raw.find((v): v is string => typeof v === "string");
+        if (first) declaredMultisigCandidate = first;
+      }
+    }
   }
 
   return {

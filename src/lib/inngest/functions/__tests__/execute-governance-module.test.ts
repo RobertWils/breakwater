@@ -170,10 +170,20 @@ describe("loadContractContext (Plan 03 E.1 — per-Contract row + sibling hints)
       scanId: string;
     } | null;
     siblings?: Array<{ address: string; role: string }>;
+    // Codex Review #4 IMPORTANT 1 — Plan 02 legacy fallback fixture.
+    // `undefined` means the scan.findUnique mock returns null (no
+    // Protocol row joined), matching the realistic case where the
+    // fallback simply has nothing to read.
+    knownMultisigs?: unknown;
   }) {
+    const scanFindUnique = vi.fn(async () =>
+      opts.knownMultisigs !== undefined
+        ? { protocol: { knownMultisigs: opts.knownMultisigs } }
+        : null,
+    ) as AnyFn;
     return {
       moduleRun: { updateMany: vi.fn(), findFirst: vi.fn() },
-      scan: { findUnique: vi.fn(), updateMany: vi.fn() },
+      scan: { findUnique: scanFindUnique, updateMany: vi.fn() },
       contract: {
         findUnique: vi.fn(async () =>
           opts.contract
@@ -236,6 +246,58 @@ describe("loadContractContext (Plan 03 E.1 — per-Contract row + sibling hints)
     await expect(
       loadContractContext(client, "scan-1", "contract-1"),
     ).rejects.toThrow(/belongs to scan OTHER, not scan-1/);
+  });
+
+  // Codex Review #4 IMPORTANT 1 — Plan 02 legacy multisig backward-
+  // compat. Clients submitting via input.multisigs[] persist into
+  // Protocol.knownMultisigs (never converted to Contract rows); the
+  // PRIMARY-only fallback restores GOV-003 firing for those scans.
+
+  it("Plan 02 legacy fallback: PRIMARY with no sibling DECLARED_MULTISIG reads Protocol.knownMultisigs[0]", async () => {
+    const client = fakeContractClient({
+      contract: { address: "0xprimary", role: "PRIMARY", scanId: "scan-1" },
+      siblings: [],
+      knownMultisigs: ["0xABC"],
+    });
+    const result = await loadContractContext(client, "scan-1", "contract-1");
+    expect(result.declaredMultisigCandidate).toBe("0xABC");
+  });
+
+  it("Plan 02 legacy fallback: PRIMARY with empty knownMultisigs returns undefined candidate", async () => {
+    const client = fakeContractClient({
+      contract: { address: "0xprimary", role: "PRIMARY", scanId: "scan-1" },
+      siblings: [],
+      knownMultisigs: [],
+    });
+    const result = await loadContractContext(client, "scan-1", "contract-1");
+    expect(result.declaredMultisigCandidate).toBeUndefined();
+  });
+
+  it("Plan 02 legacy fallback: sibling DECLARED_MULTISIG wins over Protocol.knownMultisigs", async () => {
+    const client = fakeContractClient({
+      contract: { address: "0xprimary", role: "PRIMARY", scanId: "scan-1" },
+      siblings: [{ address: "0xDEF", role: "DECLARED_MULTISIG" }],
+      knownMultisigs: ["0xABC"],
+    });
+    const result = await loadContractContext(client, "scan-1", "contract-1");
+    expect(result.declaredMultisigCandidate).toBe("0xDEF");
+    // Fallback path NOT taken — scan.findUnique should not have been
+    // queried at all when the sibling already supplied a candidate.
+    expect(client.scan.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("Plan 02 legacy fallback: TIMELOCK role does NOT consult Protocol.knownMultisigs (PRIMARY-only fallback)", async () => {
+    const client = fakeContractClient({
+      contract: { address: "0xtimelock", role: "TIMELOCK", scanId: "scan-1" },
+      siblings: [],
+      knownMultisigs: ["0xABC"],
+    });
+    const result = await loadContractContext(client, "scan-1", "contract-1");
+    expect(result.declaredMultisigCandidate).toBeUndefined();
+    // Neither sibling lookup nor scan.findUnique fires for
+    // non-PRIMARY roles.
+    expect(client.contract.findMany).not.toHaveBeenCalled();
+    expect(client.scan.findUnique).not.toHaveBeenCalled();
   });
 });
 
