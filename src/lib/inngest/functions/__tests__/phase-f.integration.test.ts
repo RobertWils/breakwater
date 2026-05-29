@@ -184,12 +184,17 @@ async function seedProtocolAndScan() {
 
 async function seedFindings(
   scanId: string,
+  contractId: string,
   moduleRunId: string,
   severities: Array<"CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO">,
 ) {
   await prisma.finding.createMany({
     data: severities.map((severity, idx) => ({
       scanId,
+      // Phase F.2: markComplete reads findings via `Contract.findings`,
+      // so the test fixture must mirror what persistSnapshotAndFindings
+      // writes in real execution — contractId set.
+      contractId,
       moduleRunId,
       module: "GOVERNANCE" as const,
       severity,
@@ -227,7 +232,7 @@ describe.skipIf(!hasDb)(
 
       // Seed findings the way persistSnapshotAndFindings would —
       // 1 HIGH + 2 MEDIUM = -40 penalty → score 60, grade C (spec §5.3).
-      await seedFindings(scan.id, moduleRun.id, [
+      await seedFindings(scan.id, contract.id, moduleRun.id, [
         "HIGH",
         "MEDIUM",
         "MEDIUM",
@@ -302,7 +307,7 @@ describe.skipIf(!hasDb)(
       // Even though findings exist, FAILED skips grade computation
       // (F.4.2 Option 1: partial findings on a failed module run don't
       // represent a meaningful assessment).
-      await seedFindings(scan.id, moduleRun.id, ["CRITICAL"]);
+      await seedFindings(scan.id, contract.id, moduleRun.id, ["CRITICAL"]);
 
       const modCompleted = await markModuleComplete(
         prisma,
@@ -533,6 +538,159 @@ describe.skipIf(!hasDb)(
         where: { id: scan.id },
       });
       expect(persistedScan.isPartialGrade).toBe(true);
+    });
+
+    // Phase F.2 — multi-Contract rollup end-to-end. Exercises the
+    // §6.2 worst-grade-wins + tie-break + isPartialCoverage logic
+    // against the real DB + the per-Contract grading inside
+    // markComplete. Complements the pure-function unit tests in
+    // src/lib/scoring/__tests__/protocol-rollup.test.ts (covering
+    // cases A-J) by verifying the wire-up writes Scan + Contract
+    // rows with the expected values.
+    it("multi-Contract rollup: 3 Contracts (A clean / C with findings / FAILED) → Scan composite C + isPartialCoverage TRUE + per-Contract grades persisted", async () => {
+      const protocol = await prisma.protocol.create({
+        data: {
+          slug: uniqueSlug(),
+          displayName: "Phase F multi-Contract Rollup",
+          chain: "ETHEREUM",
+          primaryContractAddress: uniqueEthAddress().toLowerCase(),
+          ownershipStatus: "UNCLAIMED",
+        },
+      });
+      createdProtocolIds.push(protocol.id);
+
+      const scan = await prisma.scan.create({
+        data: {
+          protocolId: protocol.id,
+          status: "RUNNING",
+          executionStartedAt: new Date(),
+          ipHash: uniqueIpHash(),
+          userAgent: "phase-f-rollup/1.0",
+          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        },
+      });
+
+      // Three Contracts on the scan:
+      //   - cA: PRIMARY, grades A (clean, 0 findings)
+      //   - cB: PROXY_IMPLEMENTATION, grades C (1 HIGH + 2 MEDIUM → score 60)
+      //   - cC: TIMELOCK, FAILED (module crashed, no grade)
+      const cA = await prisma.contract.create({
+        data: {
+          scanId: scan.id,
+          address: uniqueEthAddress().toLowerCase(),
+          chain: "ETHEREUM",
+          role: "PRIMARY",
+          isPrimary: true,
+        },
+      });
+      const cB = await prisma.contract.create({
+        data: {
+          scanId: scan.id,
+          address: uniqueEthAddress().toLowerCase(),
+          chain: "ETHEREUM",
+          role: "PROXY_IMPLEMENTATION",
+          isPrimary: false,
+        },
+      });
+      const cC = await prisma.contract.create({
+        data: {
+          scanId: scan.id,
+          address: uniqueEthAddress().toLowerCase(),
+          chain: "ETHEREUM",
+          role: "TIMELOCK",
+          isPrimary: false,
+        },
+      });
+
+      // Per-Contract ModuleRun + completion via the real
+      // markModuleComplete helper, so the test exercises the actual
+      // status-write path.
+      for (const [contract, status, grade, score] of [
+        [cA, "COMPLETE", "A", 100],
+        [cB, "COMPLETE", "C", 60],
+        [cC, "FAILED", null, null],
+      ] as const) {
+        const mr = await prisma.moduleRun.create({
+          data: {
+            scanId: scan.id,
+            contractId: contract.id,
+            module: "GOVERNANCE",
+            status: "RUNNING",
+            startedAt: new Date(),
+            detectorVersions: {},
+            inputSnapshot: {},
+            idempotencyKey: `pf-roll-${scan.id}-${contract.id}`,
+          },
+        });
+        if (status === "COMPLETE" && contract.id === cB.id) {
+          await seedFindings(scan.id, cB.id, mr.id, [
+            "HIGH",
+            "MEDIUM",
+            "MEDIUM",
+          ]);
+        }
+        await markModuleComplete(
+          prisma,
+          scan.id,
+          contract.id,
+          status,
+          status === "FAILED" ? "module_timeout" : null,
+          grade,
+          score,
+        );
+      }
+
+      const scanResult = await markComplete(prisma, scan.id);
+      if (scanResult.finalStatus === null) {
+        throw new Error(
+          `expected finalised result, got ${JSON.stringify(scanResult)}`,
+        );
+      }
+
+      // Scan-level rollup assertions — §6.2 worst-grade-wins with
+      // averageContractScore over the 2 graded contributors.
+      expect(scanResult.finalStatus).toBe("COMPLETE");
+      expect(scanResult.compositeGrade).toBe("C"); // worst grade of {A, C}
+      // averageContractScore: round((100 + 60) / 2) = 80
+      expect(scanResult.compositeScore).toBe(80);
+      expect(scanResult.findingsCount).toBe(3); // only cB's findings
+      // No COMPLETE ModuleRun had errorDetectorCount > 0.
+      expect(scanResult.isPartialGrade).toBe(false);
+
+      // Persisted Scan fields — confirms the wire-up writes the new
+      // columns added in Phase A's additive migration.
+      const persistedScan = await prisma.scan.findUniqueOrThrow({
+        where: { id: scan.id },
+      });
+      expect(persistedScan.status).toBe("COMPLETE");
+      expect(persistedScan.compositeGrade).toBe("C");
+      expect(persistedScan.averageContractScore).toBe(80);
+      expect(persistedScan.worstContractScore).toBe(60); // C-grader's score
+      expect(persistedScan.isPartialGrade).toBe(false);
+      expect(persistedScan.isPartialCoverage).toBe(true); // FAILED sibling
+
+      // Per-Contract grades persisted on Contract rows — Phase F.2
+      // writes these inside markComplete via client.contract.update.
+      const persistedA = await prisma.contract.findUniqueOrThrow({
+        where: { id: cA.id },
+      });
+      expect(persistedA.compositeGrade).toBe("A");
+      expect(persistedA.compositeScore).toBe(100);
+      expect(persistedA.isPartialGrade).toBe(false);
+
+      const persistedB = await prisma.contract.findUniqueOrThrow({
+        where: { id: cB.id },
+      });
+      expect(persistedB.compositeGrade).toBe("C");
+      expect(persistedB.compositeScore).toBe(60);
+      expect(persistedB.isPartialGrade).toBe(false);
+
+      const persistedC = await prisma.contract.findUniqueOrThrow({
+        where: { id: cC.id },
+      });
+      expect(persistedC.compositeGrade).toBeNull();
+      expect(persistedC.compositeScore).toBeNull();
+      expect(persistedC.isPartialGrade).toBe(false);
     });
   },
 );
