@@ -55,11 +55,20 @@ export interface PersistSnapshotContext {
  * N-Contract-per-scan model would conflict across siblings. Each
  * Contract gets its own GovernanceSnapshot row.
  *
- * Within a tx, the find-then-create-or-update sequence is atomic
- * against concurrent persistence ops on this contractId; cross-
- * contract concurrency is fine because each tx targets a different
- * contractId. Phase J's PR 2 tightening adds @unique on contractId
- * which would let us collapse this back to an atomic upsert.
+ * Plan 03 §3.5 PR 1 transition: scanId lost its @unique, so the
+ * Plan 02 atomic `upsert({ where: { scanId } })` is replaced with
+ * `findFirst → create / update` keyed on contractId. This is NOT
+ * atomic against concurrent writes for the same contractId, but the
+ * production safety holds because (Codex Review #4 NICE_TO_HAVE):
+ *   - `markModuleRunning`'s compare-and-set on RUNNING prevents
+ *     concurrent same-Contract execution within a scan.
+ *   - Inngest sequential replay semantics prevent concurrent steps
+ *     within a single function execution.
+ *   - Different Contract rows target different snapshot rows
+ *     (Phase E.2's per-Contract scoping ensures each invocation
+ *     persists only its own contractId).
+ * PR 2 adds `@unique(contractId)` to GovernanceSnapshot; this
+ * function can return to atomic upsert at that point.
  */
 export async function persistGovernanceSnapshot(
   context: PersistSnapshotContext,
