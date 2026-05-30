@@ -88,7 +88,7 @@ export function ContractCard({ contract }: ContractCardProps) {
           <span className="font-mono">
             {truncateAddress(contract.proxyImplementationWarning.detectedAddress)}
           </span>
-          {" "}— included in this contract's snapshot but not graded as a separate
+          {" "}— included in this contract&apos;s snapshot but not graded as a separate
           Contract. Resubmit with the implementation as a{" "}
           <code className="font-mono">PROXY_IMPLEMENTATION</code> related
           contract to get a separate grade.
