@@ -239,14 +239,15 @@ describe.skipIf(!hasDb)("scan-get integration", () => {
     };
     expect(f.publicTitle).toBe("Gov finding rank 1");
 
-    // G.4: teaser has ONLY the 4 keys (tier discriminator + 3 original).
+    // Plan 03 §7.2: teaser has 5 keys — tier + contractId + the 3
+    // publicly-visible content fields.
     expect(Object.keys(result!.findings[0]).sort()).toEqual(
-      ["publicTitle", "remediationHint", "severity", "tier"].sort(),
+      ["contractId", "publicTitle", "remediationHint", "severity", "tier"].sort(),
     );
     expect(f.tier).toBe("UNAUTH");
 
     // Module has hiddenFindingsCount = 2
-    const govModule = result!.modules.find((m) => m.module === "GOVERNANCE");
+    const govModule = result!.contracts[0]!.modules.find((m) => m.module === "GOVERNANCE");
     expect(govModule).toBeDefined();
     expect(govModule!.hiddenFindingsCount).toBe(2);
   });
@@ -275,7 +276,7 @@ describe.skipIf(!hasDb)("scan-get integration", () => {
     }
 
     // No hiddenFindingsCount on modules
-    for (const m of result!.modules) {
+    for (const m of result!.contracts[0]!.modules) {
       expect("hiddenFindingsCount" in m).toBe(false);
     }
   });
@@ -301,7 +302,7 @@ describe.skipIf(!hasDb)("scan-get integration", () => {
 
     expect(result).not.toBeNull();
     expect(result!.findings).toHaveLength(0);
-    for (const m of result!.modules) {
+    for (const m of result!.contracts[0]!.modules) {
       expect("hiddenFindingsCount" in m).toBe(false);
     }
   });
@@ -343,20 +344,20 @@ describe.skipIf(!hasDb)("scan-get integration", () => {
     const result = await getScan({ scanId: scan.id, tier: "unauth" });
 
     expect(result).not.toBeNull();
-    expect(result!.modules).toHaveLength(4);
+    expect(result!.contracts[0]!.modules).toHaveLength(4);
 
-    const statuses = result!.modules.map((m) => m.status).sort();
+    const statuses = result!.contracts[0]!.modules.map((m) => m.status).sort();
     expect(statuses).toEqual(
       ["COMPLETE", "FAILED", "QUEUED", "SKIPPED"].sort(),
     );
 
     // All errorStacks null for unauth
-    for (const m of result!.modules) {
+    for (const m of result!.contracts[0]!.modules) {
       expect(m.errorStack).toBeNull();
     }
 
     // Failed module has errorMessage
-    const failedModule = result!.modules.find((m) => m.status === "FAILED");
+    const failedModule = result!.contracts[0]!.modules.find((m) => m.status === "FAILED");
     expect(failedModule!.errorMessage).toBe("RPC timeout");
   });
 });

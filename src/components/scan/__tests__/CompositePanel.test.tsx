@@ -27,7 +27,6 @@ function makeScan(overrides: Partial<ScanResponse> = {}): ScanResponse {
   return {
     id: "scan-1",
     status: "QUEUED",
-    compositeScore: null,
     averageContractScore: null,
     worstContractScore: null,
     isPartialCoverage: false,
@@ -44,7 +43,6 @@ function makeScan(overrides: Partial<ScanResponse> = {}): ScanResponse {
       domain: null,
       ownershipStatus: "UNCLAIMED",
     },
-    modules: [],
     findings: [],
     ...overrides,
   }
@@ -91,7 +89,6 @@ describe("CompositePanel — Plan 03 §7.4 protocol grade display", () => {
         scan={makeScan({
           status: "COMPLETE",
           compositeGrade: "A",
-          compositeScore: 92,
           averageContractScore: 92,
           worstContractScore: 92,
           contracts: [makeContract({ compositeGrade: "A", compositeScore: 92 })],

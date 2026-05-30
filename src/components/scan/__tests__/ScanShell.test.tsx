@@ -83,7 +83,6 @@ function makeScan(overrides: Partial<ScanResponse> = {}): ScanResponse {
   return {
     id: "scan-1",
     status: "QUEUED",
-    compositeScore: null,
     averageContractScore: null,
     worstContractScore: null,
     isPartialCoverage: false,
@@ -100,7 +99,6 @@ function makeScan(overrides: Partial<ScanResponse> = {}): ScanResponse {
       domain: null,
       ownershipStatus: "UNCLAIMED",
     },
-    modules: [],
     findings: [],
     ...overrides,
   }
@@ -240,7 +238,6 @@ describe("ScanShell — composition + polling integration (Plan 02 G.3, Phase G.
         scan={makeScan({
           status: "COMPLETE",
           compositeGrade: "B",
-          compositeScore: 80,
           averageContractScore: 80,
           worstContractScore: 80,
         })}

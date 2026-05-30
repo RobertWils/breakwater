@@ -15,13 +15,6 @@ export type VisibilityTier = "unauth" | "email" | "paid";
 export interface ScanResponse {
   id: string;
   status: ScanStatus;
-  /**
-   * Plan 03 §3.5 PR 1: response keeps `compositeScore` as a backward-
-   * compat alias of `averageContractScore` for the Phase A window.
-   * Phase G removes this field once UI consumers migrate to read
-   * `averageContractScore` + `worstContractScore` separately.
-   */
-  compositeScore: number | null;
   /** Plan 03 §6.2 — arithmetic mean of per-Contract scores across graded Contracts. */
   averageContractScore: number | null;
   /**
@@ -49,19 +42,12 @@ export interface ScanResponse {
     ownershipStatus: string;
   };
   /**
-   * Plan 02 single-contract module list. Plan 03 keeps this at the top
-   * level during PR 1 for backward compat (UI consumers haven't migrated
-   * yet); Phase G migrates UI to read `contracts[i].modules` and Phase G
-   * or J removes this field.
-   */
-  modules: ModuleRunResponse[];
-  /**
-   * Plan 03 §7.2 — per-Contract response shape. Phase G.1 populates this
-   * from real `Scan.contracts` rows; legacy scans with zero Contract rows
-   * fall through to the graceful-degradation adapter which synthesises a
-   * single ContractResponse from `Protocol.primaryContractAddress` + the
-   * legacy scan-wide ModuleRuns. The adapter is PR 1-window only;
-   * PR 2 drops the synthetic path once the backfill is complete.
+   * Plan 03 §7.2 — per-Contract response shape. The Plan 02 top-level
+   * `modules` array was REMOVED in Phase G.6 (spec §13 breaking change);
+   * modules now live under each ContractResponse. The graceful
+   * adapter (`buildLegacySingleContract`) synthesises a single
+   * ContractResponse for legacy scans with zero Contract rows so
+   * Plan 02-shaped scans still render in the new UI.
    */
   contracts: ContractResponse[];
   findings: FindingResponse[];
@@ -221,27 +207,9 @@ export async function getScan(params: {
     tier: params.tier,
   });
 
-  // Plan 02 backward-compat shim: the flat top-level `modules` array
-  // mirrors the legacy single-Contract Plan 02 wire shape. Phase G UI
-  // reads from `contracts[i].modules` instead; G.6 removes this field.
-  // Legacy path (no Contract rows) → `scan.modules` is the same array
-  // we just shaped into the synthetic Contract's modules.
-  const { hiddenByModule } = filterFindings({
-    findings: scan.findings,
-    tier: params.tier,
-  });
-  const legacyModules: ModuleRunResponse[] = scan.modules.map((m) =>
-    shapeModuleRun(m, params.tier, hiddenByModule.get(m.module) ?? 0),
-  );
-
   return {
     id: scan.id,
     status: scan.status,
-    // Plan 03 §3.5 PR 1: Prisma column renamed to `averageContractScore`.
-    // The response surfaces it under BOTH `compositeScore` (Plan 02
-    // backward-compat alias) and `averageContractScore` (Plan 03 name).
-    // Phase G.6 removes the alias once UI consumers migrate.
-    compositeScore: scan.averageContractScore,
     averageContractScore: scan.averageContractScore,
     worstContractScore: scan.worstContractScore,
     compositeGrade: scan.compositeGrade,
@@ -257,7 +225,6 @@ export async function getScan(params: {
       domain: scan.protocol.domain,
       ownershipStatus: scan.protocol.ownershipStatus,
     },
-    modules: legacyModules,
     contracts,
     findings,
   };

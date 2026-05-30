@@ -360,18 +360,23 @@ describe("getScan", () => {
     expect(result).not.toBeNull();
     expect(result!.id).toBe("scan-abc");
     expect(result!.status).toBe("COMPLETE");
-    expect(result!.compositeScore).toBe(80);
+    // Phase G.6: legacy `compositeScore` alias removed from
+    // ScanResponse; surface via `averageContractScore` instead.
+    expect(result!.averageContractScore).toBe(80);
     expect(result!.compositeGrade).toBe("B");
     expect(result!.isPartialGrade).toBe(false);
     expect(result!.createdAt).toBe("2026-01-01T00:00:00.000Z");
     expect(result!.completedAt).toBe("2026-01-01T01:10:00.000Z");
     expect(result!.expiresAt).toBe("2026-04-01T00:00:00.000Z");
     expect(result!.protocol.slug).toBe("aave");
-    expect(result!.modules).toHaveLength(1);
+    // Graceful adapter: legacy scan with no Contract rows synthesises
+    // one PRIMARY ContractResponse carrying the scan-wide module list.
+    expect(result!.contracts).toHaveLength(1);
+    expect(result!.contracts[0].modules).toHaveLength(1);
     expect(result!.findings).toHaveLength(1);
   });
 
-  it("unauth tier: findings shaped as teaser, hiddenFindingsCount on module", async () => {
+  it("unauth tier: findings shaped as teaser, hiddenFindingsCount on per-Contract module (Phase G.6 — nested under contracts[i].modules)", async () => {
     const scanRow = makeScanRow({
       modules: [makeModuleRun({ module: "GOVERNANCE", findingsCount: 3 })],
       findings: [
@@ -392,13 +397,14 @@ describe("getScan", () => {
     expect(Object.keys(result!.findings[0]).sort()).toEqual(
       ["contractId", "publicTitle", "remediationHint", "severity", "tier"].sort(),
     );
-    // Module has hiddenFindingsCount = 2
-    expect(result!.modules[0].hiddenFindingsCount).toBe(2);
-    // errorStack is null
-    expect(result!.modules[0].errorStack).toBeNull();
+    // The graceful adapter synthesises one PRIMARY contract; its
+    // single module carries hiddenFindingsCount = 2.
+    expect(result!.contracts).toHaveLength(1);
+    expect(result!.contracts[0].modules[0].hiddenFindingsCount).toBe(2);
+    expect(result!.contracts[0].modules[0].errorStack).toBeNull();
   });
 
-  it("paid tier: findings include remediationDetailed, errorStack exposed", async () => {
+  it("paid tier: findings include remediationDetailed, errorStack exposed (Phase G.6 — nested under contracts[i].modules)", async () => {
     const scanRow = makeScanRow({
       modules: [
         makeModuleRun({ errorStack: "Error: real stack trace" }),
@@ -412,10 +418,12 @@ describe("getScan", () => {
     expect(result).not.toBeNull();
     const finding = result!.findings[0] as { remediationDetailed: string };
     expect(finding.remediationDetailed).toBe("Detailed steps here");
-    expect(result!.modules[0].errorStack).toBe("Error: real stack trace");
+    expect(result!.contracts[0].modules[0].errorStack).toBe(
+      "Error: real stack trace",
+    );
   });
 
-  it("scan with no findings: empty arrays, no hiddenFindingsCount on any module", async () => {
+  it("scan with no findings: empty arrays, no hiddenFindingsCount on any per-Contract module", async () => {
     const scanRow = makeScanRow({
       modules: [makeModuleRun()],
       findings: [],
@@ -426,7 +434,7 @@ describe("getScan", () => {
 
     expect(result).not.toBeNull();
     expect(result!.findings).toHaveLength(0);
-    expect("hiddenFindingsCount" in result!.modules[0]).toBe(false);
+    expect("hiddenFindingsCount" in result!.contracts[0].modules[0]).toBe(false);
   });
 });
 
