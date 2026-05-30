@@ -3,11 +3,12 @@ import type { ScanResponse } from "@/lib/scan-response"
 interface CompositePanelProps {
   scan: ScanResponse
   /**
-   * Optional client-side status override (G.3). Used by `ScanShell`
-   * to feed the latest polling result so the status-copy lookup
-   * reflects the current state without waiting for the server-side
-   * snapshot refresh. Grade rendering still keys off `scan.compositeGrade`
-   * (server data); the override only affects the status-text fallback.
+   * Optional client-side status override (Plan 02 G.3, carried over).
+   * Used by `ScanShell` to feed the latest polling result so the
+   * status-copy lookup reflects the current state without waiting for
+   * the server-side snapshot refresh. Grade rendering still keys off
+   * `scan.compositeGrade` (server data); the override only affects
+   * the status-text fallback shown when no grade is present yet.
    */
   currentStatus?: string
 }
@@ -45,10 +46,33 @@ const STATUS_COPY: Record<string, { label: string; description: string; color: s
   },
 }
 
+/**
+ * Plan 03 §7.4 — protocol-level composite display. Renders three
+ * lines per spec:
+ *   1. Protocol grade letter (worst-grade-wins across ELIGIBLE
+ *      Contracts; Phase F.1 §6.2).
+ *   2. Worst contract score: X/100 (matches the grade letter; from
+ *      Scan.worstContractScore with tie-break to lowest within the
+ *      worst-grade tier).
+ *   3. Average contract score: Y/100 across N contracts
+ *      (informational; from Scan.averageContractScore + the
+ *      contracts.length count).
+ *
+ * Both score lines surface separately to defuse the F/50 UX
+ * disconnect (spec §6.2 rationale).
+ *
+ * Partial affordance: appended when isPartialGrade OR
+ * isPartialCoverage is true (spec §6.3 two-clause partial semantics).
+ * Reason text in the title attribute differentiates the two clauses
+ * for a curious user.
+ */
 export function CompositePanel({ scan, currentStatus }: CompositePanelProps) {
   const effectiveStatus = currentStatus ?? scan.status
   const statusInfo = STATUS_COPY[effectiveStatus] ?? STATUS_COPY.QUEUED
   const hasGrade = scan.compositeGrade !== null
+  const contractCount = scan.contracts.length
+
+  const partialReason = derivePartialReason(scan)
 
   return (
     <section
@@ -56,25 +80,53 @@ export function CompositePanel({ scan, currentStatus }: CompositePanelProps) {
       className="glass-card p-8 md:p-12 text-center"
     >
       <h2 id="composite-heading" className="sr-only">
-        Composite scan result
+        Protocol composite scan result
       </h2>
 
       {hasGrade ? (
         <div>
+          <p className="font-mono text-xs uppercase tracking-wider text-muted mb-3">
+            Protocol grade
+          </p>
           <p
             className="text-8xl md:text-9xl font-semibold [letter-spacing:-0.04em]"
             style={{ color: `var(--grade-${scan.compositeGrade!.toLowerCase()})` }}
           >
             {scan.compositeGrade}
           </p>
-          {scan.compositeScore !== null && (
-            <p className="font-mono text-sm text-muted mt-2">
-              Score: {scan.compositeScore}/100
-            </p>
-          )}
-          {scan.isPartialGrade && (
-            <p className="text-xs text-sev-medium mt-2">
-              Partial grade — some modules skipped
+          <dl className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-md mx-auto text-left">
+            {scan.worstContractScore !== null && (
+              <div>
+                <dt className="font-mono text-xs uppercase tracking-wider text-muted">
+                  Worst contract score
+                </dt>
+                <dd className="font-mono text-sm text-primary">
+                  {scan.worstContractScore}/100
+                </dd>
+              </div>
+            )}
+            {scan.averageContractScore !== null && (
+              <div>
+                <dt className="font-mono text-xs uppercase tracking-wider text-muted">
+                  Average contract score
+                </dt>
+                <dd className="font-mono text-sm text-primary">
+                  {scan.averageContractScore}/100
+                  {contractCount > 0 && (
+                    <span className="text-muted">
+                      {" "}across {contractCount} contract{contractCount !== 1 ? "s" : ""}
+                    </span>
+                  )}
+                </dd>
+              </div>
+            )}
+          </dl>
+          {partialReason && (
+            <p
+              className="text-xs text-sev-medium mt-4"
+              title={partialReason.tooltip}
+            >
+              {partialReason.label}
             </p>
           )}
         </div>
@@ -93,4 +145,37 @@ export function CompositePanel({ scan, currentStatus }: CompositePanelProps) {
       )}
     </section>
   )
+}
+
+/**
+ * Spec §6.3 two-clause partial semantics surface together: the UI
+ * shows one badge with both reasons in the tooltip. If both flags
+ * are true, the badge calls out coverage gap first (more impactful
+ * to scan-grade interpretation) and the tooltip mentions both.
+ */
+function derivePartialReason(
+  scan: ScanResponse,
+): { label: string; tooltip: string } | null {
+  if (scan.isPartialCoverage && scan.isPartialGrade) {
+    return {
+      label: "Partial — coverage gap + detector errors",
+      tooltip:
+        "Some Contracts failed and were excluded from the protocol grade; some modules also had detector errors.",
+    }
+  }
+  if (scan.isPartialCoverage) {
+    return {
+      label: "Partial coverage — some contracts failed",
+      tooltip:
+        "One or more Contracts failed and were excluded from the protocol grade. The grade is honest about the contracts that did finish.",
+    }
+  }
+  if (scan.isPartialGrade) {
+    return {
+      label: "Partial grade — detector errors",
+      tooltip:
+        "At least one module had detector errors. The grade is real but coverage is incomplete.",
+    }
+  }
+  return null
 }
