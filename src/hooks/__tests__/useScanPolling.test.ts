@@ -44,7 +44,9 @@ function mockStatusOnce(status: string) {
   (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
     ok: true,
     status: 200,
-    json: async () => ({ id: "scan-1", status, modules: [] }),
+    // Plan 03 §7.3 per-Contract polling shape — contracts[] of
+    // { id, address, label, role, isPrimary, modules: [...] }.
+    json: async () => ({ id: "scan-1", status, contracts: [] }),
   } as Response);
 }
 
@@ -127,21 +129,30 @@ describe("useScanPolling — normal polling flow", () => {
     expect(result.current.currentStatus).toBe("RUNNING");
   });
 
-  it("polledModules is null before the first poll succeeds (G.5 I1)", () => {
+  it("polledContracts is null before the first poll succeeds (Plan 03 §7.3)", () => {
     const { result } = renderHook(() => useScanPolling("scan-1", "QUEUED"));
-    expect(result.current.polledModules).toBeNull();
+    expect(result.current.polledContracts).toBeNull();
   });
 
-  it("captures the modules array on the first successful poll (G.5 I1)", async () => {
+  it("captures the contracts[] array on the first successful poll (Plan 03 §7.3 per-Contract shape)", async () => {
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: true,
       status: 200,
       json: async () => ({
         id: "scan-1",
         status: "RUNNING",
-        modules: [
-          { module: "GOVERNANCE", status: "RUNNING", grade: null },
-          { module: "ORACLE", status: "QUEUED", grade: null },
+        contracts: [
+          {
+            id: "c-primary",
+            address: "0xaaa",
+            label: null,
+            role: "PRIMARY",
+            isPrimary: true,
+            modules: [
+              { module: "GOVERNANCE", status: "RUNNING", grade: null },
+              { module: "ORACLE", status: "QUEUED", grade: null },
+            ],
+          },
         ],
       }),
     } as Response);
@@ -149,9 +160,18 @@ describe("useScanPolling — normal polling flow", () => {
     const { result } = renderHook(() => useScanPolling("scan-1", "QUEUED"));
     await advance(3_000);
 
-    expect(result.current.polledModules).toEqual([
-      { module: "GOVERNANCE", status: "RUNNING", grade: null },
-      { module: "ORACLE", status: "QUEUED", grade: null },
+    expect(result.current.polledContracts).toEqual([
+      {
+        id: "c-primary",
+        address: "0xaaa",
+        label: null,
+        role: "PRIMARY",
+        isPrimary: true,
+        modules: [
+          { module: "GOVERNANCE", status: "RUNNING", grade: null },
+          { module: "ORACLE", status: "QUEUED", grade: null },
+        ],
+      },
     ]);
   });
 
