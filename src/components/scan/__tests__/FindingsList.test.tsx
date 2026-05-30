@@ -12,6 +12,9 @@ function makeUnauthFinding(
 ): FindingResponseUnauth {
   return {
     tier: "UNAUTH",
+    // Plan 03 §7.2: all FindingResponse variants carry contractId so the
+    // UI can group by Contract without joining tables.
+    contractId: "contract-1",
     severity: "HIGH",
     publicTitle: "Potential governance hijack",
     remediationHint: "Review proposal thresholds",
@@ -24,6 +27,7 @@ function makeEmailFinding(
 ): FindingResponseEmail {
   return {
     tier: "EMAIL",
+    contractId: "contract-1",
     id: "f-1",
     moduleRunId: "mr-1",
     module: "GOVERNANCE",

@@ -1,8 +1,10 @@
 // @vitest-environment node
 import { prisma } from "@/lib/prisma";
 import type {
+  Contract,
   ContractRole,
   Finding,
+  GovernanceSnapshot,
   ModuleRun,
   ModuleStatus,
   ScanStatus,
@@ -24,18 +26,16 @@ export interface ScanResponse {
   averageContractScore: number | null;
   /**
    * Plan 03 §6.2 — lowest `Contract.compositeScore` among Contracts whose
-   * grade matches `compositeGrade` (ties broken by lowest score). Stubbed
-   * to null in Phase A; populated by Phase F's protocol-rollup.
+   * grade matches `compositeGrade` (ties broken by lowest score).
    */
   worstContractScore: number | null;
-  /** Plan 03 §6.2 — widens to "worst contributing contract's grade" once graphs land. */
+  /** Plan 03 §6.2 — "worst contributing contract's grade." */
   compositeGrade: string | null;
   /** Plan 02 I.1 FIX 3 detector-error clause (spec §6.3). */
   isPartialGrade: boolean;
   /**
-   * Plan 03 §6.3 graph-coverage clause — see Plan 03 plan §20 for the
-   * two-boolean implementation choice. Stubbed to false in Phase A;
-   * populated by Phase F.
+   * Plan 03 §6.3 graph-coverage clause — true when ≥1 ELIGIBLE Contract
+   * coexists with ≥1 FAILED Contract.
    */
   isPartialCoverage: boolean;
   createdAt: string;
@@ -56,8 +56,12 @@ export interface ScanResponse {
    */
   modules: ModuleRunResponse[];
   /**
-   * Plan 03 §7.2 — per-Contract response shape. Stubbed to `[]` in Phase A
-   * (no business logic populates contracts yet); Phases B/G populate.
+   * Plan 03 §7.2 — per-Contract response shape. Phase G.1 populates this
+   * from real `Scan.contracts` rows; legacy scans with zero Contract rows
+   * fall through to the graceful-degradation adapter which synthesises a
+   * single ContractResponse from `Protocol.primaryContractAddress` + the
+   * legacy scan-wide ModuleRuns. The adapter is PR 1-window only;
+   * PR 2 drops the synthetic path once the backfill is complete.
    */
   contracts: ContractResponse[];
   findings: FindingResponse[];
@@ -67,8 +71,7 @@ export interface ScanResponse {
 
 /**
  * Plan 03 §7.2 — per-Contract response shape. One entry per Contract row
- * within the scan. Phase A ships the type stub only; the response builder
- * returns `contracts: []` until Phase G wires up the populated shape.
+ * within the scan.
  */
 export interface ContractResponse {
   id: string;
@@ -113,17 +116,10 @@ export interface ModuleRunResponse {
 /**
  * Tier-discriminated finding union (Plan 02 G.4 — resolves Plan 01 backlog).
  *
- * Before G.4, narrowing relied on structural checks (`"id" in f`). With
- * the `tier` discriminator, TypeScript narrows exhaustively and downstream
- * renderers can branch on a stable field. The discriminator is also
- * useful at the wire boundary — clients that see `tier` know which fields
- * to expect without sniffing for presence.
- *
- * Plan 02 only ever resolves to UNAUTH or EMAIL at the route boundary
- * (session?.user?.id ? "email" : "unauth"). The PAID variant ships as a
- * type-level provision for Plan 07+ Subscription lookup; no consumer
- * currently selects it. See NOTES.md "Paid tier route-level subscription
- * lookup (Plan 07+)" for the wiring plan.
+ * Plan 03 §7.2 — every variant now carries `contractId` so the UI can
+ * group findings by Contract without joining tables. The field is
+ * nullable for the historical pre-Phase-E rows where contractId was
+ * null on the schema; new findings (Phase E.2 onward) always set it.
  */
 export type FindingResponse =
   | FindingResponseUnauth
@@ -132,6 +128,7 @@ export type FindingResponse =
 
 export interface FindingResponseUnauth {
   tier: "UNAUTH";
+  contractId: string | null;
   severity: string;
   publicTitle: string;
   remediationHint: string;
@@ -139,6 +136,7 @@ export interface FindingResponseUnauth {
 
 export interface FindingResponseEmail {
   tier: "EMAIL";
+  contractId: string | null;
   id: string;
   moduleRunId: string;
   module: string;
@@ -159,8 +157,7 @@ export interface FindingResponseEmail {
 /**
  * Paid variant shares the email payload but adds `remediationDetailed`.
  * `Omit` drops the EMAIL discriminator so we can stamp PAID without
- * structural conflict — `extends FindingResponseEmail` would lock the
- * discriminator to "EMAIL".
+ * structural conflict.
  */
 export interface FindingResponsePaid
   extends Omit<FindingResponseEmail, "tier"> {
@@ -169,6 +166,16 @@ export interface FindingResponsePaid
 }
 
 // ── Core query ──────────────────────────────────────────────────────────────
+
+/**
+ * Internal shape returned by the Prisma include — keeps the helper
+ * signatures readable while reflecting what's actually loaded.
+ */
+type ContractWithRelations = Contract & {
+  moduleRuns: ModuleRun[];
+  findings: Finding[];
+  governanceSnapshot: GovernanceSnapshot[];
+};
 
 export async function getScan(params: {
   scanId: string;
@@ -184,6 +191,7 @@ export async function getScan(params: {
           chain: true,
           domain: true,
           ownershipStatus: true,
+          primaryContractAddress: true,
         },
       },
       modules: {
@@ -192,15 +200,39 @@ export async function getScan(params: {
       findings: {
         orderBy: [{ module: "asc" }, { publicRank: "asc" }],
       },
+      contracts: {
+        include: {
+          moduleRuns: { orderBy: { module: "asc" } },
+          findings: { orderBy: [{ module: "asc" }, { publicRank: "asc" }] },
+          governanceSnapshot: true,
+        },
+      },
     },
   });
 
   if (!scan) return null;
 
-  const { findings, hiddenByModule } = filterFindings({
+  const { contracts, findings } = buildContractsAndFindings({
+    scanId: scan.id,
+    scanContracts: (scan.contracts ?? []) as ContractWithRelations[],
+    scanModules: scan.modules,
+    scanFindings: scan.findings,
+    primaryContractAddress: scan.protocol.primaryContractAddress,
+    tier: params.tier,
+  });
+
+  // Plan 02 backward-compat shim: the flat top-level `modules` array
+  // mirrors the legacy single-Contract Plan 02 wire shape. Phase G UI
+  // reads from `contracts[i].modules` instead; G.6 removes this field.
+  // Legacy path (no Contract rows) → `scan.modules` is the same array
+  // we just shaped into the synthetic Contract's modules.
+  const { hiddenByModule } = filterFindings({
     findings: scan.findings,
     tier: params.tier,
   });
+  const legacyModules: ModuleRunResponse[] = scan.modules.map((m) =>
+    shapeModuleRun(m, params.tier, hiddenByModule.get(m.module) ?? 0),
+  );
 
   return {
     id: scan.id,
@@ -208,11 +240,9 @@ export async function getScan(params: {
     // Plan 03 §3.5 PR 1: Prisma column renamed to `averageContractScore`.
     // The response surfaces it under BOTH `compositeScore` (Plan 02
     // backward-compat alias) and `averageContractScore` (Plan 03 name).
-    // Phase G removes the alias once UI consumers migrate.
+    // Phase G.6 removes the alias once UI consumers migrate.
     compositeScore: scan.averageContractScore,
     averageContractScore: scan.averageContractScore,
-    // Stubbed in Phase A — populated by Phase F's protocol-rollup once
-    // multi-Contract scans land.
     worstContractScore: scan.worstContractScore,
     compositeGrade: scan.compositeGrade,
     isPartialGrade: scan.isPartialGrade,
@@ -227,15 +257,278 @@ export async function getScan(params: {
       domain: scan.protocol.domain,
       ownershipStatus: scan.protocol.ownershipStatus,
     },
-    modules: scan.modules.map((m) =>
-      shapeModuleRun(m, params.tier, hiddenByModule.get(m.module) ?? 0),
-    ),
-    // Plan 03 §7.2 stub. Phase A's response builder doesn't read or
-    // populate Contract rows yet; Phases B/G will. Returning `[]` here
-    // keeps the response shape stable for legacy single-contract scans.
-    contracts: [],
+    modules: legacyModules,
+    contracts,
     findings,
   };
+}
+
+// ── Multi-Contract projection ───────────────────────────────────────────────
+
+/**
+ * Plan 03 §6.2 role-priority for contract ordering (Phase G.2 spec).
+ * PRIMARY is handled separately via `isPrimary` sort; this order
+ * applies among non-PRIMARY contracts.
+ */
+const ROLE_PRIORITY: Record<ContractRole, number> = {
+  PRIMARY: 0,
+  TIMELOCK: 1,
+  DECLARED_MULTISIG: 2,
+  PROXY_IMPLEMENTATION: 3,
+  TOKEN_CONTRACT: 4,
+  DECLARED_BRIDGE: 5,
+  RELATED: 6,
+};
+
+function compareContracts(
+  a: { isPrimary: boolean; role: ContractRole; address: string },
+  b: { isPrimary: boolean; role: ContractRole; address: string },
+): number {
+  if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
+  const pa = ROLE_PRIORITY[a.role] ?? 99;
+  const pb = ROLE_PRIORITY[b.role] ?? 99;
+  if (pa !== pb) return pa - pb;
+  return a.address.toLowerCase().localeCompare(b.address.toLowerCase());
+}
+
+/**
+ * Plan 03 §5.3 detect-and-warn. Set when this Contract's snapshot
+ * detected a proxy implementation address that the user did not also
+ * submit as a separate Contract with role PROXY_IMPLEMENTATION. UI
+ * renders an inline note on this Contract's card.
+ */
+function deriveProxyImplementationWarning(
+  contract: ContractWithRelations,
+  allContracts: ReadonlyArray<{ address: string; role: ContractRole }>,
+): { detectedAddress: string } | null {
+  const snapshot = contract.governanceSnapshot[0] ?? null;
+  const impl = snapshot?.proxyImplementation;
+  if (!impl) return null;
+  const implLower = impl.toLowerCase();
+  const inGraph = allContracts.some(
+    (c) =>
+      c.address.toLowerCase() === implLower &&
+      c.role === "PROXY_IMPLEMENTATION",
+  );
+  return inGraph ? null : { detectedAddress: impl };
+}
+
+/**
+ * Plan 03 §7.2 unauth-tier teaser semantic — keyed per
+ * `(contractId, module)`. One teaser per (Contract, module) where
+ * publicRank === 1; remaining findings count as hidden under the
+ * same key. Spec §7.4 accepts that a 10-Contract unauth scan sees
+ * up to 10 teasers; this is the per-key aggregation that yields it.
+ */
+function teaserKey(contractId: string | null, module: string): string {
+  return `${contractId ?? "__null__"}:${module}`;
+}
+
+function filterUnauthGrouped(findings: Finding[]): {
+  shapedByContractId: Map<string | null, FindingResponseUnauth[]>;
+  hiddenByContractIdModule: Map<string, number>;
+} {
+  const teaser = new Map<string, Finding>();
+  const total = new Map<string, number>();
+
+  for (const f of findings) {
+    const key = teaserKey(f.contractId, f.module);
+    total.set(key, (total.get(key) ?? 0) + 1);
+    if (f.publicRank === 1 && !teaser.has(key)) {
+      teaser.set(key, f);
+    }
+  }
+
+  const shapedByContractId = new Map<string | null, FindingResponseUnauth[]>();
+  for (const f of Array.from(teaser.values())) {
+    const shaped = shapeFindingUnauth(f);
+    const bucket = shapedByContractId.get(f.contractId) ?? [];
+    bucket.push(shaped);
+    shapedByContractId.set(f.contractId, bucket);
+  }
+
+  const hiddenByContractIdModule = new Map<string, number>();
+  for (const [key, count] of Array.from(total.entries())) {
+    const shown = teaser.has(key) ? 1 : 0;
+    hiddenByContractIdModule.set(key, count - shown);
+  }
+
+  return { shapedByContractId, hiddenByContractIdModule };
+}
+
+function buildContractsAndFindings(params: {
+  scanId: string;
+  scanContracts: ContractWithRelations[];
+  scanModules: ModuleRun[];
+  scanFindings: Finding[];
+  primaryContractAddress: string;
+  tier: VisibilityTier;
+}): { contracts: ContractResponse[]; findings: FindingResponse[] } {
+  const { scanContracts, scanModules, scanFindings, primaryContractAddress, tier } = params;
+
+  // PR 1 graceful degradation — removed in PR 2: legacy single-Contract
+  // scans (pre-backfill) have no Contract rows. Synthesise one
+  // ContractResponse from Protocol.primaryContractAddress + the
+  // scan-wide ModuleRuns + scan-wide findings so the Phase G UI can
+  // render these scans unchanged.
+  if (scanContracts.length === 0) {
+    return buildLegacySingleContract({
+      scanModules,
+      scanFindings,
+      primaryContractAddress,
+      tier,
+    });
+  }
+
+  // Multi-Contract path.
+  const allContracts = scanContracts.map((c) => ({
+    address: c.address,
+    role: c.role,
+  }));
+
+  // Per-tier finding filtering.
+  if (tier === "unauth") {
+    const { shapedByContractId, hiddenByContractIdModule } =
+      filterUnauthGrouped(scanFindings);
+
+    const contracts = scanContracts
+      .slice()
+      .sort(compareContracts)
+      .map((c) =>
+        shapeContract({
+          contract: c,
+          allContracts,
+          tier,
+          findingsCount: c.findings.length,
+          hiddenLookup: (module) =>
+            hiddenByContractIdModule.get(teaserKey(c.id, module)) ?? 0,
+        }),
+      );
+
+    // Top-level findings flattened from per-Contract teasers in the
+    // same sort order, so the wire shape mirrors the ContractList
+    // ordering above.
+    const findings = contracts.flatMap(
+      (c) => shapedByContractId.get(c.id) ?? [],
+    );
+    return { contracts, findings };
+  }
+
+  // email / paid: every finding is shaped + carries contractId.
+  const shapedFindings: FindingResponse[] = scanFindings.map((f) =>
+    tier === "email" ? shapeFindingEmail(f) : shapeFindingPaid(f),
+  );
+
+  const contracts = scanContracts
+    .slice()
+    .sort(compareContracts)
+    .map((c) =>
+      shapeContract({
+        contract: c,
+        allContracts,
+        tier,
+        findingsCount: c.findings.length,
+        hiddenLookup: () => 0,
+      }),
+    );
+
+  return { contracts, findings: shapedFindings };
+}
+
+function shapeContract(args: {
+  contract: ContractWithRelations;
+  allContracts: ReadonlyArray<{ address: string; role: ContractRole }>;
+  tier: VisibilityTier;
+  findingsCount: number;
+  hiddenLookup: (module: string) => number;
+}): ContractResponse {
+  const { contract, allContracts, tier, findingsCount, hiddenLookup } = args;
+  return {
+    id: contract.id,
+    address: contract.address,
+    role: contract.role,
+    label: contract.label,
+    isPrimary: contract.isPrimary,
+    compositeScore: contract.compositeScore,
+    compositeGrade: contract.compositeGrade,
+    isPartialGrade: contract.isPartialGrade,
+    crossChainTwins: normaliseCrossChainTwins(contract.crossChainTwins),
+    modules: contract.moduleRuns.map((m) =>
+      shapeModuleRun(m, tier, hiddenLookup(m.module)),
+    ),
+    findingsCount,
+    proxyImplementationWarning: deriveProxyImplementationWarning(
+      contract,
+      allContracts,
+    ),
+  };
+}
+
+function normaliseCrossChainTwins(
+  raw: unknown,
+): { chain: string; address: string }[] {
+  if (!Array.isArray(raw)) return [];
+  const out: { chain: string; address: string }[] = [];
+  for (const entry of raw) {
+    if (
+      entry &&
+      typeof entry === "object" &&
+      "chain" in entry &&
+      "address" in entry
+    ) {
+      const e = entry as { chain: unknown; address: unknown };
+      if (typeof e.chain === "string" && typeof e.address === "string") {
+        out.push({ chain: e.chain, address: e.address });
+      }
+    }
+  }
+  return out;
+}
+
+function buildLegacySingleContract(params: {
+  scanModules: ModuleRun[];
+  scanFindings: Finding[];
+  primaryContractAddress: string;
+  tier: VisibilityTier;
+}): { contracts: ContractResponse[]; findings: FindingResponse[] } {
+  const { scanModules, scanFindings, primaryContractAddress, tier } = params;
+
+  const { findings, hiddenByModule } = filterFindings({
+    findings: scanFindings,
+    tier,
+  });
+
+  const synthetic: ContractResponse = {
+    // PR 1 graceful degradation — removed in PR 2.
+    id: "legacy-synthetic-primary",
+    address: primaryContractAddress,
+    role: "PRIMARY",
+    label: null,
+    isPrimary: true,
+    // Legacy single-Contract grading: the scan-wide grade IS this
+    // synthetic contract's grade — Phase F's rollup over one
+    // ELIGIBLE contract returns the same answer.
+    compositeScore: null,
+    compositeGrade: null,
+    isPartialGrade: false,
+    crossChainTwins: [],
+    modules: scanModules.map((m) =>
+      shapeModuleRun(m, tier, hiddenByModule.get(m.module) ?? 0),
+    ),
+    findingsCount: scanFindings.length,
+    proxyImplementationWarning: null,
+  };
+
+  // For unauth tier, stamp the synthetic contractId onto each teaser so
+  // the UI can still group by contractId in the multi-Contract render
+  // path; for email/paid the findings already carry their original
+  // (real) contractId from Phase E.2 onward, OR null if pre-Phase-E.
+  const findingsWithContract = findings.map((f) => ({
+    ...f,
+    contractId: f.contractId ?? synthetic.id,
+  })) as FindingResponse[];
+
+  return { contracts: [synthetic], findings: findingsWithContract };
 }
 
 // ── Finding filtering ────────────────────────────────────────────────────────
@@ -284,6 +577,7 @@ export function filterFindings(params: {
 export function shapeFindingUnauth(f: Finding): FindingResponseUnauth {
   return {
     tier: "UNAUTH",
+    contractId: f.contractId,
     severity: f.severity,
     publicTitle: f.publicTitle,
     remediationHint: f.remediationHint,
@@ -293,6 +587,7 @@ export function shapeFindingUnauth(f: Finding): FindingResponseUnauth {
 export function shapeFindingEmail(f: Finding): FindingResponseEmail {
   return {
     tier: "EMAIL",
+    contractId: f.contractId,
     id: f.id,
     moduleRunId: f.moduleRunId,
     module: f.module,
