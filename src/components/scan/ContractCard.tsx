@@ -100,11 +100,19 @@ export function ContractCard({ contract }: ContractCardProps) {
         Contract card. A 4-Contract scan renders 4 ContractCards, each
         with its own module grid; status pulses fire per ModuleRun (not
         per scan-wide module name) per spec §7.5.
+
+        The region label includes the contract's label (when present) or
+        truncated address (when not), so a scan with two same-role
+        contracts produces distinct screen-reader region labels rather
+        than two identical "Multisig modules" announcements (Phase G
+        remediation #3 / Codex Review #5 NTH 3).
       */}
       {contract.modules.length > 0 && (
         <div
           role="region"
-          aria-label={`${roleLabel} modules`}
+          aria-label={`${roleLabel} modules — ${
+            contract.label ?? truncateAddress(contract.address)
+          }`}
           className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3 border-t border-subtle"
         >
           {contract.modules.map((m) => (

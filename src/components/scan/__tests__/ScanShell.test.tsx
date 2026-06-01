@@ -251,11 +251,15 @@ describe("ScanShell — composition + polling integration (Plan 02 G.3, Phase G.
 
   describe("polled per-(Contract, module) merge (Plan 03 §7.3)", () => {
     // ContractCard nests ModuleCards in a <div role="region"
-    // aria-label="<Role> modules">. Scope queries to the region so we
+    // aria-label="<Role> modules — <label|address>">. Scope queries to the region so we
     // don't match "Queued" / "Running" against the composite panel.
     function modulesScope(scope: ReturnType<typeof render>["container"]) {
       const regions = scope.querySelectorAll(
-        '[role="region"][aria-label$=" modules"]',
+        // Phase G remediation #3: region label is now
+        // "<Role> modules — <label|address>" so the suffix is
+        // dynamic; match on the " modules " bridge instead of the
+        // old suffix-of-string.
+        '[role="region"][aria-label*=" modules "]',
       )
       // For multi-Contract tests we may need to filter per region; the
       // helper here returns the first region's `within` scope.
@@ -422,7 +426,11 @@ describe("ScanShell — composition + polling integration (Plan 02 G.3, Phase G.
         />,
       )
       const regions = container.querySelectorAll(
-        '[role="region"][aria-label$=" modules"]',
+        // Phase G remediation #3: region label is now
+        // "<Role> modules — <label|address>" so the suffix is
+        // dynamic; match on the " modules " bridge instead of the
+        // old suffix-of-string.
+        '[role="region"][aria-label*=" modules "]',
       )
       expect(regions).toHaveLength(2)
       // c-1 (PRIMARY) merged → RUNNING. c-2 (TIMELOCK) untouched → QUEUED.

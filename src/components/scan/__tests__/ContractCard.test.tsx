@@ -147,4 +147,147 @@ describe("ContractCard (Plan 03 §7.4)", () => {
     // No 'Primary modules' region should be present.
     expect(screen.queryByRole("region", { name: /modules/i })).toBeNull()
   })
+
+  // Phase G remediation #3 (Codex Review #5 NTH 3): the modules region
+  // aria-label was just "<Role> modules". A scan with two same-role
+  // contracts (e.g., two DECLARED_MULTISIG) produced identical region
+  // labels for screen readers. The label now includes a disambiguator
+  // — contract.label if set, else the truncated address.
+
+  it("modules region aria-label uses contract.label when present (Codex Review #5 NTH 3)", () => {
+    const { container } = render(
+      <ContractCard
+        contract={makeContract({
+          role: "DECLARED_MULTISIG",
+          label: "Aave Guardian",
+          modules: [
+            {
+              id: "mr-gov",
+              module: "GOVERNANCE",
+              status: "COMPLETE",
+              grade: "B",
+              score: 80,
+              findingsCount: 0,
+              startedAt: null,
+              completedAt: null,
+              attemptCount: 0,
+              errorMessage: null,
+              errorStack: null,
+              detectorVersions: {},
+              rpcCallsUsed: 0,
+            },
+          ],
+        })}
+      />,
+    )
+    const region = container.querySelector('[role="region"]')
+    expect(region).not.toBeNull()
+    expect(region!.getAttribute("aria-label")).toBe(
+      "Multisig modules — Aave Guardian",
+    )
+  })
+
+  it("modules region aria-label falls back to truncated address when contract.label is null", () => {
+    const { container } = render(
+      <ContractCard
+        contract={makeContract({
+          role: "DECLARED_MULTISIG",
+          label: null,
+          address: "0x1234567890abcdef1234567890abcdef12345678",
+          modules: [
+            {
+              id: "mr-gov",
+              module: "GOVERNANCE",
+              status: "COMPLETE",
+              grade: "B",
+              score: 80,
+              findingsCount: 0,
+              startedAt: null,
+              completedAt: null,
+              attemptCount: 0,
+              errorMessage: null,
+              errorStack: null,
+              detectorVersions: {},
+              rpcCallsUsed: 0,
+            },
+          ],
+        })}
+      />,
+    )
+    const region = container.querySelector('[role="region"]')
+    expect(region).not.toBeNull()
+    // Uses first-8 + Unicode ellipsis + last-4 (matches the
+    // ContractCard.truncateAddress helper).
+    expect(region!.getAttribute("aria-label")).toMatch(
+      /^Multisig modules — 0x123456.*5678$/,
+    )
+  })
+
+  it("two same-role contracts produce distinct module-region aria-labels (the original NTH 3 motivation)", () => {
+    // Render two ContractCards into the same container so we can
+    // compare both regions' aria-labels.
+    const { container } = render(
+      <>
+        <ContractCard
+          contract={makeContract({
+            id: "c-a",
+            role: "DECLARED_MULTISIG",
+            label: null,
+            address: "0xa".repeat(40),
+            modules: [
+              {
+                id: "mr-a",
+                module: "GOVERNANCE",
+                status: "QUEUED",
+                grade: null,
+                score: null,
+                findingsCount: null,
+                startedAt: null,
+                completedAt: null,
+                attemptCount: 0,
+                errorMessage: null,
+                errorStack: null,
+                detectorVersions: {},
+                rpcCallsUsed: 0,
+              },
+            ],
+          })}
+        />
+        <ContractCard
+          contract={makeContract({
+            id: "c-b",
+            role: "DECLARED_MULTISIG",
+            label: null,
+            address: "0xb".repeat(40),
+            modules: [
+              {
+                id: "mr-b",
+                module: "GOVERNANCE",
+                status: "QUEUED",
+                grade: null,
+                score: null,
+                findingsCount: null,
+                startedAt: null,
+                completedAt: null,
+                attemptCount: 0,
+                errorMessage: null,
+                errorStack: null,
+                detectorVersions: {},
+                rpcCallsUsed: 0,
+              },
+            ],
+          })}
+        />
+      </>,
+    )
+    const labels = Array.from(
+      container.querySelectorAll('[role="region"]'),
+    ).map((el) => el.getAttribute("aria-label"))
+    expect(labels).toHaveLength(2)
+    expect(labels[0]).not.toEqual(labels[1])
+    // Both still start with "Multisig modules — " (same role, just
+    // disambiguated by address).
+    expect(labels[0]).toMatch(/^Multisig modules — 0x/)
+    expect(labels[1]).toMatch(/^Multisig modules — 0x/)
+  })
 })
