@@ -684,4 +684,64 @@ describe("getScan — Phase G.1 multi-Contract path", () => {
     expect(synthetic.findingsCount).toBe(1);
     expect(synthetic.proxyImplementationWarning).toBeNull();
   });
+
+  // Phase G remediation #1 (Codex Review #5 IMPORTANT) — the
+  // graceful-degradation adapter previously dropped the scan-level
+  // grade, leaving the synthetic contract with null grade/score.
+  // Historical Plan 02 scans now render a grade chip on their single
+  // ContractCard.
+
+  it("legacy adapter propagates scan-level compositeGrade + averageContractScore into the synthetic contract", async () => {
+    const scanRow = makeScanRow({
+      contracts: [],
+      modules: [makeModuleRun({ id: "mr-legacy", scanId: "scan-abc" })],
+      findings: [],
+      compositeGrade: "C",
+      averageContractScore: 60,
+      isPartialGrade: false,
+    });
+    mockFindUnique.mockResolvedValueOnce(scanRow);
+
+    const result = await getScan({ scanId: "scan-abc", tier: "email" });
+    const synthetic = result!.contracts[0];
+    expect(synthetic.compositeGrade).toBe("C");
+    // Synthetic contract's compositeScore is sourced from Scan's
+    // averageContractScore (Phase A column rename); per spec §7.2
+    // the per-Contract field name stays `compositeScore`.
+    expect(synthetic.compositeScore).toBe(60);
+    expect(synthetic.isPartialGrade).toBe(false);
+  });
+
+  it("legacy adapter propagates isPartialGrade from the scan row", async () => {
+    const scanRow = makeScanRow({
+      contracts: [],
+      modules: [makeModuleRun()],
+      findings: [],
+      compositeGrade: "B",
+      averageContractScore: 80,
+      isPartialGrade: true,
+    });
+    mockFindUnique.mockResolvedValueOnce(scanRow);
+
+    const result = await getScan({ scanId: "scan-abc", tier: "email" });
+    expect(result!.contracts[0].isPartialGrade).toBe(true);
+  });
+
+  it("legacy adapter still surfaces null grade/score when the scan itself has none (e.g. mid-scan or FAILED before grading)", async () => {
+    const scanRow = makeScanRow({
+      contracts: [],
+      modules: [],
+      findings: [],
+      compositeGrade: null,
+      averageContractScore: null,
+      isPartialGrade: false,
+    });
+    mockFindUnique.mockResolvedValueOnce(scanRow);
+
+    const result = await getScan({ scanId: "scan-abc", tier: "email" });
+    const synthetic = result!.contracts[0];
+    expect(synthetic.compositeGrade).toBeNull();
+    expect(synthetic.compositeScore).toBeNull();
+    expect(synthetic.isPartialGrade).toBe(false);
+  });
 });
