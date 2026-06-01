@@ -20,6 +20,7 @@
     "db:migrate": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy",
     "db:seed": "prisma db seed",
+    "db:backfill-plan-03-contracts": "tsx scripts/backfill-plan-03-contracts.ts",
     "generate-favicons": "node scripts/generate-favicons.mjs",
     "generate-og": "node scripts/generate-og-image.mjs"
   },
