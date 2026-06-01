@@ -296,7 +296,7 @@ describe("FindingsList", () => {
       expect(screen.queryByRole("heading", { name: "Related", level: 3 })).toBeNull()
     })
 
-    it("buckets findings whose contractId doesn't match any contract into an 'Unassociated findings' section", () => {
+    it("buckets findings whose contractId doesn't match any contract into a single 'Other findings' section (Phase G remediation #2)", () => {
       render(
         <FindingsList
           findings={[
@@ -309,8 +309,55 @@ describe("FindingsList", () => {
         />,
       )
       expect(
-        screen.getByRole("heading", { name: "Unassociated findings", level: 3 }),
+        screen.getByRole("heading", { name: "Other findings", level: 3 }),
       ).toBeInTheDocument()
+    })
+
+    it("collapses multiple orphan contractId buckets into ONE 'Other findings' section — no duplicate heading ids (Codex Review #5 NTH 2)", () => {
+      const { container } = render(
+        <FindingsList
+          findings={[
+            makeEmailFinding({
+              id: "ghost-a",
+              contractId: "no-such-contract-a",
+              publicTitle: "Ghost A",
+            }),
+            makeEmailFinding({
+              id: "ghost-b",
+              contractId: "no-such-contract-b",
+              publicTitle: "Ghost B",
+            }),
+            makeEmailFinding({
+              id: "ghost-c",
+              contractId: null,
+              publicTitle: "Ghost C",
+            }),
+          ]}
+          contracts={defaultContracts}
+          tier="email"
+          status="COMPLETE"
+          hasAnyHiddenFindings={false}
+        />,
+      )
+
+      // Exactly one "Other findings" heading — orphans from THREE
+      // distinct unmatched bucket keys collapse into a single section.
+      const orphanHeadings = screen.getAllByRole("heading", {
+        name: "Other findings",
+        level: 3,
+      })
+      expect(orphanHeadings).toHaveLength(1)
+
+      // And exactly one DOM element carries the stable orphan id.
+      const orphanIds = container.querySelectorAll(
+        '[id="findings-other-heading"]',
+      )
+      expect(orphanIds).toHaveLength(1)
+
+      // All three orphan findings render inside that single section.
+      expect(screen.getByText("Ghost A")).toBeInTheDocument()
+      expect(screen.getByText("Ghost B")).toBeInTheDocument()
+      expect(screen.getByText("Ghost C")).toBeInTheDocument()
     })
   })
 })

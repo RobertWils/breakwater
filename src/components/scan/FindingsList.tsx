@@ -112,8 +112,11 @@ export function FindingsList({
   // priority → address); preserve that order for the rendered sections.
   // Findings whose contractId doesn't match any contract (defensive —
   // can occur for legacy pre-Phase-E rows where contractId is null and
-  // the graceful adapter assigns the synthetic id) bucket into a
-  // separate "unassociated" section at the end.
+  // the graceful adapter assigns the synthetic id) collapse into ONE
+  // "Other findings" section at the end (Phase G remediation #2 /
+  // Codex Review #5 NTH 2 — multiple orphan buckets previously
+  // produced duplicate `id="findings-unassoc-heading"` ARIA labels,
+  // weakening the nested-region structure).
   const findingsByContractId = new Map<string | null, FindingResponse[]>()
   for (const f of findings) {
     const key = f.contractId ?? null
@@ -130,9 +133,15 @@ export function FindingsList({
       findingsByContractId.delete(c.id)
     }
   }
-  // Any leftover buckets (contractId not matching a contract row).
+  // Collapse all remaining buckets (orphan contractIds) into a single
+  // "Other findings" section so the DOM never carries duplicate
+  // headings, regardless of how many distinct orphan ids appear.
+  const orphans: FindingResponse[] = []
   for (const [, items] of Array.from(findingsByContractId.entries())) {
-    if (items.length > 0) sections.push({ contract: null, items })
+    if (items.length > 0) orphans.push(...items)
+  }
+  if (orphans.length > 0) {
+    sections.push({ contract: null, items: orphans })
   }
 
   return (
@@ -152,9 +161,12 @@ export function FindingsList({
       </div>
 
       <div className="space-y-6">
-        {sections.map((section, sectionIdx) => (
+        {sections.map((section) => (
           <FindingSection
-            key={section.contract?.id ?? `unassoc-${sectionIdx}`}
+            // Single orphan bucket → stable "orphan" key; no need for
+            // an index because we never produce more than one orphan
+            // section per render.
+            key={section.contract?.id ?? "orphan"}
             contract={section.contract}
             findings={section.items}
           />
@@ -173,7 +185,7 @@ function FindingSection({
 }) {
   const headingId = contract
     ? `findings-${contract.id}-heading`
-    : `findings-unassoc-heading`
+    : "findings-other-heading"
   const roleLabel = contract
     ? ROLE_LABELS[contract.role] ?? contract.role
     : null
@@ -188,7 +200,7 @@ function FindingSection({
           id={headingId}
           className="text-sm font-semibold text-primary"
         >
-          {contract?.label ?? roleLabel ?? "Unassociated findings"}
+          {contract?.label ?? roleLabel ?? "Other findings"}
         </h3>
         {contract && (
           <p className="text-xs font-mono text-muted/70 mt-1">
