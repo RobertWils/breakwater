@@ -1394,6 +1394,16 @@ git commit --allow-empty -m "chore: Phase G status marker"
 
 (No Codex review at this boundary — covered by holistic review #5 after Phase H.)
 
+### Deferred from Phase G — ContractCard click-to-scroll (Codex Review #5 NTH 1)
+
+Spec §7.4 specifies that contract cards should support clicking to scroll to / filter their findings. Phase G implemented contract cards as passive `<article>` elements (the structural data presence is complete — every Contract's findings render in its own `<FindingSection>` below the ContractList, so a user can navigate visually). The click-to-scroll interaction is deferred to Phase I (or a dedicated UI-polish pass) because it's interaction behavior best validated against a running browser, not blind-implemented:
+
+- [ ] Wire `ContractCard` → findings-section anchor (scroll-to on click) OR filter state (show only that contract's findings).
+- [ ] Verify keyboard accessibility — the card becomes interactive, so it needs the right semantics (`<button>` wrapping the heading + address chunk, or `<a href="#findings-{contractId}-heading">` for anchor-scroll), focus handling, and Enter/Space activation.
+- [ ] Validate in the Phase I preview URL smoke alongside the existing 4-Contract Aave V3 check.
+
+This is a §7.4 structural-behavior gap, tracked here so it isn't silently dropped. Cross-referenced in Phase I's preview-smoke checklist (§14 Task I.1 Step 2).
+
 ---
 
 ## §13 Phase H — Backfill script + curated demo seed (3 commits)
@@ -1591,6 +1601,11 @@ LIVE_RPC=1 pnpm test  # optional but recommended — exercises real Aave V3 mult
 ```
 
 Preview URL smoke: submit a 4-Contract Aave V3 scan against the preview deploy. Verify Inngest dashboard shows the parallel fan-out (4 `scan.module.requested` events; 4 parallel waiters; 4 completion events; one final `scan.completed`).
+
+Phase G deferred §7.4 work — ContractCard click-to-scroll/filter (Codex Review #5 NTH 1; see Phase G "Deferred from Phase G" note above) lands here. Add to the preview smoke:
+
+- [ ] Click each of the 4 ContractCards on the rendered preview page; verify the click scrolls to (or filters) that Contract's `<FindingSection>`.
+- [ ] Tab through the cards with keyboard only; verify focus order, visible focus ring, Enter/Space activation, and that screen readers announce the cards as interactive elements (button/link semantics).
 
 - [ ] **Step 3: Open PR 1**
 
