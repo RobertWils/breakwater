@@ -1659,6 +1659,24 @@ User reviews + merges manually. Do not auto-merge.
 git commit --allow-empty -m "chore: Phase I status marker"
 ```
 
+### Phase I pre-seed — resolve Uniswap V3 slug collision (Phase H drift flag)
+
+**Files:** none (one-time production DB operation, run before the Task I.2 curated-demo seed).
+
+The Plan 03 curated-demo seed reassigns the `uniswap-v3-ethereum` Protocol's PRIMARY from Factory (`0x1F98431c8aD98523631AE4a59f267346ea31F984`) to SwapRouter (`0xe592427a0aece92de3edee1f18e0157c05861564`), keeping the same slug. `Protocol.slug` is `@unique` and the seed upserts on `(chain, primaryContractAddress)`, so against the existing Plan 02 production DB the seed hits a slug collision and fails.
+
+Fresh DBs + dev/preview environments are unaffected (no pre-existing Factory row). This step is REQUIRED only for the production DB.
+
+Before running the Plan 03 curated-demo seed in production (Task I.2):
+
+- [ ] Dry-run the seed against a production DB snapshot (or staging clone) to confirm the collision reproduces
+- [ ] Choose the remediation: EITHER delete the old Factory-keyed `uniswap-v3-ethereum` Protocol row, OR re-key its slug to a distinct value (e.g. `uniswap-v3-factory-ethereum`) so the new SwapRouter-primary Protocol can take the canonical slug
+- [ ] Apply the chosen remediation as a documented one-time production step (script or manual SQL with a recorded rollback)
+- [ ] Run the Plan 03 seed; confirm the `uniswap-v3-ethereum` slug now resolves to the SwapRouter primary
+- [ ] Verify no orphaned Scan/Contract rows reference the deleted/re-keyed Protocol (if delete was chosen)
+
+Tracked from the Phase H H.2 commit body (curated-demos drift flag) so the deploy doesn't hit this cold.
+
 ### Task I.2 — Production deploy + backfill + smoke
 
 **Files:** none.
