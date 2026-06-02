@@ -1669,11 +1669,30 @@ Fresh DBs + dev/preview environments are unaffected (no pre-existing Factory row
 
 Before running the Plan 03 curated-demo seed in production (Task I.2):
 
-- [ ] Dry-run the seed against a production DB snapshot (or staging clone) to confirm the collision reproduces
-- [ ] Choose the remediation: EITHER delete the old Factory-keyed `uniswap-v3-ethereum` Protocol row, OR re-key its slug to a distinct value (e.g. `uniswap-v3-factory-ethereum`) so the new SwapRouter-primary Protocol can take the canonical slug
-- [ ] Apply the chosen remediation as a documented one-time production step (script or manual SQL with a recorded rollback)
-- [ ] Run the Plan 03 seed; confirm the `uniswap-v3-ethereum` slug now resolves to the SwapRouter primary
-- [ ] Verify no orphaned Scan/Contract rows reference the deleted/re-keyed Protocol (if delete was chosen)
+- [ ] Dry-run the seed against a production DB snapshot (or staging clone) to confirm the collision reproduces.
+- [ ] **PREFER re-key over delete.** `Scan.protocolId` has no `ON DELETE CASCADE`, so a `DELETE FROM "Protocol" WHERE id = ...` either fails on the FK constraint or tempts destructive cleanup of historical scans that reference it. Re-keying changes `Protocol.slug` while preserving `Protocol.id`, so every Scan / Contract / Finding row that points at the old Protocol stays intact and FK-valid.
+- [ ] Apply the re-key as a documented one-time production step (script or manual SQL with a recorded rollback). Example:
+
+  ```sql
+  -- One-time pre-seed production fix. Old Plan 02 row keyed on the
+  -- Factory address takes a distinct slug; the Plan 03 seed then
+  -- creates a fresh SwapRouter-primary row under the canonical slug.
+  UPDATE "Protocol"
+  SET    "slug" = 'uniswap-v3-factory-ethereum'
+  WHERE  "chain" = 'ETHEREUM'
+    AND  "primaryContractAddress" = '0x1f98431c8ad98523631ae4a59f267346ea31f984'
+    AND  "slug" = 'uniswap-v3-ethereum';
+  ```
+
+- [ ] **Handle the re-keyed row's demo-redirect behavior** so it doesn't produce a broken 409 for users hitting the old curated path. Plan 01's curated-rejection redirect goes to `/demo/${slug}` when `latestDemoScanId` is null, but `src/app/demo/[slug]/page.tsx` only accepts the three canonical slugs (`aave-v3-ethereum`, `uniswap-v3-ethereum`, `drift-solana`) — a re-keyed slug like `uniswap-v3-factory-ethereum` would 409 the user onto an unsupported demo route. Pick ONE of:
+  - **Recommended**: demote the re-keyed Protocol out of `ownershipStatus: CURATED` (e.g. to `UNCLAIMED`) so it's not treated as a curated demo and the curated-rejection path no longer fires for it.
+  - **Or** set its `latestDemoScanId` to its existing demo scan id (if it has one) so the redirect resolves directly to a real scan page rather than going through `/demo/${slug}`.
+  - **Or** add the re-keyed slug to the accepted set in `src/app/demo/[slug]/page.tsx` so the redirect lands on a working demo page. (Code change — bundle it into the same PR as the migration.)
+
+  The deploy operator picks based on whether the old Factory Protocol should remain demo-visible at all. Default: demote — the Plan 02 demo is being superseded by the Plan 03 Aave/Uniswap/Drift demo set.
+
+- [ ] Run the Plan 03 seed; confirm the `uniswap-v3-ethereum` slug now resolves to the SwapRouter primary (the new row), and the re-keyed `uniswap-v3-factory-ethereum` row still exists with all its historical Scan/Contract rows intact.
+- [ ] Smoke the curated rejection path: submit a scan for the SwapRouter address as an unauth user → confirm the 412 curated-cooldown response redirects to the new SwapRouter-primary demo, not the re-keyed Factory route.
 
 Tracked from the Phase H H.2 commit body (curated-demos drift flag) so the deploy doesn't hit this cold.
 
@@ -1711,6 +1730,18 @@ The soak window is open-ended — Robert decides when to proceed to PR 2 based o
 **Exit (Phase I):** Production multi-Contract scan green; soak window begins.
 
 (No Codex review at I — review #5 was at H. Review #6 is at J after PR 2 is opened.)
+
+### Phase I hardening — from holistic A-H review (NICE_TO_HAVEs)
+
+- [ ] **Backfill skip-vs-error reporting.** `scripts/backfill-plan-03-contracts.ts` (around L130) has a contradiction between its header comment and its implementation for the `missing_primary_address` case: the comment says it increments the error count, but the code returns `skipped: true, reason: "missing_primary_address"` so it lands in the `skipped` bucket. The dry-run summary therefore reports `errors: 0` for a scan with a data-corruption issue worth surfacing. Decide before the production backfill run, picking ONE of:
+  - Treat `missing_primary_address` as a hard error (throw inside `backfillScan` instead of returning `skipped`); the summary's `errors` count then catches it and the script exits 1.
+  - Keep it as a skip but add per-reason skip counts to `BackfillSummary` (e.g. `skippedAlreadyHasPrimary: number`, `skippedMissingAddress: number`) so the dry-run output is auditable without combing the per-scan log lines.
+
+  The recommendation is the per-reason-counts option: it preserves the "skip don't abort" robustness during a batch run while making the dry-run report usable for production sanity-checking. Either way, fix before the first production write-mode run.
+
+- [ ] **End-to-end seam test (cross-phase coverage gap).** D.5 covers fan-out + execution, Phase F covers rollup + per-Contract grade persistence, Phase G covers response shaping — but no single test composes all three: submit a multi-Contract scan via the real `submitScan`, let execution + rollup finish (mocked detector outputs so the test stays deterministic), then call `getScan` and assert the rendered response shape (`contracts[].modules` + per-Contract grades + protocol composite + grouped findings) on the same DB rows. The seam is composed implicitly in production but isn't directly tested.
+
+  Add one DB-backed seam test that exercises the full chain in a single test file. Use the existing integration harness (`scripts/__tests__/`-style or alongside `phase-f.integration.test.ts`) + the existing detector-output mocking convention from D.5. The assertion target is the response shape end-to-end, not any one phase's intermediate state — that's what the per-phase suites already cover. Land in Phase I (alongside the pre-prod gates) or Phase K (with the holistic test pass) — Robert picks based on Phase I scheduling pressure.
 
 ---
 
@@ -1759,8 +1790,12 @@ cd /Users/robertwils/breakwater-plan-03-pr2
 
 ```sql
 -- ModuleRun
+-- The legacy `ModuleRun_scanId_module_key` was already dropped by PR 1
+-- in prisma/migrations/20260522180000_plan_03_drop_modulerun_legacy_unique
+-- /migration.sql. PR 2 only tightens contractId to NOT NULL and adds the
+-- new composite unique, matching spec §3.5 PR 2 verbatim. Re-issuing the
+-- DROP would fail because the object no longer exists.
 ALTER TABLE "ModuleRun" ALTER COLUMN "contractId" SET NOT NULL;
-ALTER TABLE "ModuleRun" DROP CONSTRAINT "ModuleRun_scanId_module_key";
 ALTER TABLE "ModuleRun" ADD CONSTRAINT "ModuleRun_scanId_module_contractId_key"
   UNIQUE ("scanId", "module", "contractId");
 
