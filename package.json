@@ -20,6 +20,7 @@
     "db:migrate": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy",
     "db:seed": "prisma db seed",
+    "db:backfill-plan-03-contracts": "tsx scripts/backfill-plan-03-contracts.ts",
     "generate-favicons": "node scripts/generate-favicons.mjs",
     "generate-og": "node scripts/generate-og-image.mjs"
   },
@@ -45,6 +46,7 @@
     "zod": "4.3.6"
   },
   "devDependencies": {
+    "@inngest/test": "0.1.9",
     "@testing-library/jest-dom": "6.9.1",
     "@testing-library/react": "16.3.2",
     "@types/node": "^20",

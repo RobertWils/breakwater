@@ -11,13 +11,24 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { ModuleName } from "@prisma/client";
+import { ContractRole, ModuleName } from "@prisma/client";
 
 import {
   IMPLEMENTED_MODULES,
   computeSkipReason,
 } from "@/lib/scan-submission";
 import { ScanSubmissionSchema } from "@/lib/schemas/scan";
+
+// Plan 03 §4.2 — `computeSkipReason` gained two required params (module
+// + role) to enable the new `role_not_applicable_to_module` priority
+// level. The H.9 N2 priority-order tests below want to exercise the
+// non-role gates (disabled / not-implemented / domain), so they pass
+// GOVERNANCE + PRIMARY — a combination where role applicability passes,
+// letting the other gates determine the outcome.
+const APPLICABLE_PAIR = {
+  module: ModuleName.GOVERNANCE,
+  role: ContractRole.PRIMARY,
+};
 
 /**
  * Modules that are intentionally NOT yet implemented in this build.
@@ -58,6 +69,7 @@ describe("computeSkipReason priority order (H.9 N2)", () => {
   it("returns null when every gate condition passes (will QUEUE)", () => {
     expect(
       computeSkipReason({
+        ...APPLICABLE_PAIR,
         enabled: true,
         implemented: true,
         requiresDomain: false,
@@ -71,6 +83,7 @@ describe("computeSkipReason priority order (H.9 N2)", () => {
     // signal preference (explicit user intent > system limitation).
     expect(
       computeSkipReason({
+        ...APPLICABLE_PAIR,
         enabled: false,
         implemented: false,
         requiresDomain: false,
@@ -82,6 +95,7 @@ describe("computeSkipReason priority order (H.9 N2)", () => {
   it("module_disabled_by_user beats domain_required", () => {
     expect(
       computeSkipReason({
+        ...APPLICABLE_PAIR,
         enabled: false,
         implemented: true,
         requiresDomain: true,
@@ -98,6 +112,7 @@ describe("computeSkipReason priority order (H.9 N2)", () => {
     // priority without the integration ceremony.
     expect(
       computeSkipReason({
+        ...APPLICABLE_PAIR,
         enabled: true,
         implemented: false,
         requiresDomain: true,
@@ -112,6 +127,7 @@ describe("computeSkipReason priority order (H.9 N2)", () => {
     // path is locked in for when it lands.
     expect(
       computeSkipReason({
+        ...APPLICABLE_PAIR,
         enabled: true,
         implemented: true,
         requiresDomain: true,
@@ -123,12 +139,105 @@ describe("computeSkipReason priority order (H.9 N2)", () => {
   it("hasDomain=true bypasses domain_required even when requiresDomain", () => {
     expect(
       computeSkipReason({
+        ...APPLICABLE_PAIR,
         enabled: true,
         implemented: true,
         requiresDomain: true,
         hasDomain: true,
       }),
     ).toBeNull();
+  });
+
+  // ── Plan 03 §4.2 role_not_applicable_to_module additions ──
+
+  it("role_not_applicable_to_module: GOVERNANCE on TOKEN_CONTRACT", () => {
+    expect(
+      computeSkipReason({
+        module: ModuleName.GOVERNANCE,
+        role: ContractRole.TOKEN_CONTRACT,
+        enabled: true,
+        implemented: true,
+        requiresDomain: false,
+        hasDomain: false,
+      }),
+    ).toBe("role_not_applicable_to_module");
+  });
+
+  it("role_not_applicable_to_module: GOVERNANCE on DECLARED_BRIDGE", () => {
+    expect(
+      computeSkipReason({
+        module: ModuleName.GOVERNANCE,
+        role: ContractRole.DECLARED_BRIDGE,
+        enabled: true,
+        implemented: true,
+        requiresDomain: false,
+        hasDomain: false,
+      }),
+    ).toBe("role_not_applicable_to_module");
+  });
+
+  it("GOVERNANCE applies to PRIMARY/PROXY_IMPLEMENTATION/DECLARED_MULTISIG/TIMELOCK/RELATED", () => {
+    for (const role of [
+      ContractRole.PRIMARY,
+      ContractRole.PROXY_IMPLEMENTATION,
+      ContractRole.DECLARED_MULTISIG,
+      ContractRole.TIMELOCK,
+      ContractRole.RELATED,
+    ]) {
+      expect(
+        computeSkipReason({
+          module: ModuleName.GOVERNANCE,
+          role,
+          enabled: true,
+          implemented: true,
+          requiresDomain: false,
+          hasDomain: false,
+        }),
+        `role ${role} should not skip GOVERNANCE`,
+      ).toBeNull();
+    }
+  });
+
+  it("module_disabled_by_user beats role_not_applicable_to_module", () => {
+    // Priority 1 wins over priority 3.
+    expect(
+      computeSkipReason({
+        module: ModuleName.GOVERNANCE,
+        role: ContractRole.TOKEN_CONTRACT,
+        enabled: false,
+        implemented: true,
+        requiresDomain: false,
+        hasDomain: false,
+      }),
+    ).toBe("module_disabled_by_user");
+  });
+
+  it("module_not_implemented beats role_not_applicable_to_module", () => {
+    // Priority 2 wins over priority 3.
+    expect(
+      computeSkipReason({
+        module: ModuleName.GOVERNANCE,
+        role: ContractRole.TOKEN_CONTRACT,
+        enabled: true,
+        implemented: false,
+        requiresDomain: false,
+        hasDomain: false,
+      }),
+    ).toBe("module_not_implemented");
+  });
+
+  it("role_not_applicable_to_module beats domain_required", () => {
+    // Priority 3 wins over priority 4.
+    expect(
+      computeSkipReason({
+        module: ModuleName.GOVERNANCE,
+        role: ContractRole.TOKEN_CONTRACT,
+        enabled: true,
+        implemented: true,
+        requiresDomain: true,
+        hasDomain: false,
+      }),
+    ).toBe("role_not_applicable_to_module");
   });
 });
 

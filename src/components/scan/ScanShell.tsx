@@ -2,13 +2,21 @@
 
 import { useMemo } from "react"
 
-import type { ModuleRunResponse, ScanResponse, VisibilityTier } from "@/lib/scan-response"
-import { useScanPolling } from "@/hooks/useScanPolling"
+import type {
+  ContractResponse,
+  ModuleRunResponse,
+  ScanResponse,
+  VisibilityTier,
+} from "@/lib/scan-response"
+import {
+  useScanPolling,
+  type PolledContractState,
+} from "@/hooks/useScanPolling"
 
 import { ScanHero } from "./ScanHero"
 import { ProtocolGraphDisclaimer } from "./ProtocolGraphDisclaimer"
 import { CompositePanel } from "./CompositePanel"
-import { ModuleCard } from "./ModuleCard"
+import { ContractList } from "./ContractList"
 import { FindingsList } from "./FindingsList"
 import { UnlockCTA } from "./UnlockCTA"
 
@@ -18,68 +26,68 @@ interface ScanShellProps {
 }
 
 /**
- * Phase G.3: client wrapper around the scan results layout. Drives
- * live status updates via `useScanPolling`, which calls
- * `router.refresh()` on terminal transitions so the server-rendered
- * snapshot (findings, grade) refreshes once detection completes.
+ * Phase G client wrapper around the scan results layout. Drives live
+ * status updates via `useScanPolling`, which calls `router.refresh()`
+ * on terminal transitions so the server-rendered snapshot (findings,
+ * grade) refreshes once detection completes.
  *
- * Composite + module status copy keys off `currentStatus` (polled
- * value) for the brief window between "polling sees COMPLETE" and
- * "server refresh delivers the grade." Grade letters and findings
- * still come from the server snapshot — never invented client-side.
+ * Phase G.4: `ContractList` replaced Plan 02's flat module grid; per-
+ * (Contract, module) `ModuleCard`s nest inside each `ContractCard`.
+ * `useScanPolling` now returns a per-Contract polled-state map keyed
+ * by `(contractId, module)`; ScanShell merges it over the server
+ * snapshot's `contracts[i].modules` array.
  */
 export function ScanShell({ scan, tier }: ScanShellProps) {
-  const { currentStatus, errorCount, polledModules } = useScanPolling(
+  const { currentStatus, errorCount, polledContracts } = useScanPolling(
     scan.id,
     scan.status,
   )
 
-  // G.5 I1: merge polled per-module state over the server snapshot.
-  // Only `status` and `grade` are polled — every other field (score,
-  // findingsCount, startedAt/completedAt, errorMessage, etc.) stays
-  // from the server. `grade` only overrides when polling has a non-null
-  // value (terminal modules); otherwise we keep the server value so a
-  // late `router.refresh()` arriving after a stale poll doesn't blank
-  // out the rendered grade.
-  const mergedModules: ModuleRunResponse[] = useMemo(() => {
-    if (!polledModules) return scan.modules
-    const byName = new Map(polledModules.map((m) => [m.module, m]))
-    return scan.modules.map((server) => {
-      const polled = byName.get(server.module)
+  // Phase G.5: merge polled per-(Contract, module) state over the
+  // server snapshot. Only `status` and `grade` are polled; every
+  // other field stays from the server. `grade` only overrides when
+  // polling has a non-null value (terminal modules); otherwise we
+  // keep the server value so a late `router.refresh()` arriving after
+  // a stale poll doesn't blank the rendered grade.
+  const mergedContracts: ContractResponse[] = useMemo(() => {
+    if (!polledContracts) return scan.contracts
+    const byContractId = new Map<string, PolledContractState>(
+      polledContracts.map((c) => [c.id, c]),
+    )
+    return scan.contracts.map((server) => {
+      const polled = byContractId.get(server.id)
       if (!polled) return server
-      return {
-        ...server,
-        status: polled.status as ModuleRunResponse["status"],
-        grade: polled.grade ?? server.grade,
-      }
+      const moduleByName = new Map(polled.modules.map((m) => [m.module, m]))
+      const mergedModules: ModuleRunResponse[] = server.modules.map((m) => {
+        const p = moduleByName.get(m.module)
+        if (!p) return m
+        return {
+          ...m,
+          status: p.status as ModuleRunResponse["status"],
+          grade: p.grade ?? m.grade,
+        }
+      })
+      return { ...server, modules: mergedModules }
     })
-  }, [scan.modules, polledModules])
+  }, [scan.contracts, polledContracts])
 
   return (
     <div className="space-y-6">
       <ScanHero scan={scan} />
 
-      <ProtocolGraphDisclaimer />
+      <ProtocolGraphDisclaimer contractCount={mergedContracts.length} />
 
       <CompositePanel scan={scan} currentStatus={currentStatus} />
 
-      <section aria-labelledby="modules-heading">
-        <h2 id="modules-heading" className="sr-only">
-          Scan modules
-        </h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {mergedModules.map((module) => (
-            <ModuleCard key={module.id} module={module} />
-          ))}
-        </div>
-      </section>
+      <ContractList contracts={mergedContracts} />
 
       <FindingsList
         findings={scan.findings}
+        contracts={mergedContracts}
         tier={tier}
         status={currentStatus}
-        hasAnyHiddenFindings={scan.modules.some(
-          (m) => (m.hiddenFindingsCount ?? 0) > 0,
+        hasAnyHiddenFindings={mergedContracts.some((c) =>
+          c.modules.some((m) => (m.hiddenFindingsCount ?? 0) > 0),
         )}
       />
 

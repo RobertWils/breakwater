@@ -1,4 +1,49 @@
 /**
+ * Plan 03 §4.1: cap on `relatedContracts` per scan submission.
+ *
+ * Implemented as a named constant (not a runtime env var) per the spec —
+ * product policy, not deployment policy. A single canonical value across
+ * environments avoids per-deployment drift. Referenced from:
+ *   - the zod schema's `.max()` validator on `relatedContracts`
+ *   - any UI affordance that wants to surface the limit
+ *
+ * Plan 04+ can revisit when auto-discovery surfaces graphs that genuinely
+ * exceed 20.
+ */
+export const MAX_RELATED_CONTRACTS = 20;
+
+/**
+ * Plan 03 §4.4: per-Contract waitForEvent timeout. Production default is
+ * 5 minutes per spec §4.4 ("Each `(module, contractId)` wait has its own
+ * 5 min timeout that runs concurrently with siblings"). The
+ * TIMEOUT_PER_MODULE_RUN_MS env var lets integration tests override the
+ * timeout to a short value (e.g., 10s) so the per-Contract timeout
+ * isolation test can actually observe a timeout fire within a reasonable
+ * vitest wall-time budget. The override accepts a value in ms and is
+ * formatted into Inngest's duration-string syntax at call time.
+ */
+const DEFAULT_TIMEOUT_PER_MODULE_RUN_MS = 5 * 60 * 1000; // 5 minutes
+
+export function getTimeoutPerModuleRunMs(): number {
+  const raw = process.env.TIMEOUT_PER_MODULE_RUN_MS;
+  if (!raw) return DEFAULT_TIMEOUT_PER_MODULE_RUN_MS;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_TIMEOUT_PER_MODULE_RUN_MS;
+  }
+  return parsed;
+}
+
+/**
+ * Convert a millisecond duration to Inngest's duration-string format
+ * (`"5m"`, `"30s"`, `"500ms"`). Inngest accepts ms-precision strings; we
+ * emit `"<n>ms"` to preserve resolution regardless of the source value.
+ */
+export function formatInngestDuration(ms: number): string {
+  return `${ms}ms`;
+}
+
+/**
  * Production environment assertions.
  * Called once at module load of route handlers that depend on hash salts.
  */

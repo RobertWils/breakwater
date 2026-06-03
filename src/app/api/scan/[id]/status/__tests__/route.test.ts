@@ -62,6 +62,7 @@ async function cleanup() {
   if (scanIds.length) {
     await prisma.finding.deleteMany({ where: { scanId: { in: scanIds } } });
     await prisma.moduleRun.deleteMany({ where: { scanId: { in: scanIds } } });
+    await prisma.contract.deleteMany({ where: { scanId: { in: scanIds } } });
     await prisma.scan.deleteMany({ where: { id: { in: scanIds } } });
   }
   await prisma.protocol.deleteMany({
@@ -119,7 +120,8 @@ async function seedScan(status: ScanStatus) {
       ipHash: `test-ip-${randomBytes(8).toString("hex")}`,
       userAgent: "g1-status-test/1.0",
       status,
-      compositeScore: status === "COMPLETE" ? 80 : null,
+      // Plan 03 §3.5 PR 1: column rename.
+      averageContractScore: status === "COMPLETE" ? 80 : null,
       compositeGrade: status === "COMPLETE" ? Grade.B : null,
       isPartialGrade: false,
       expiresAt: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
@@ -128,9 +130,21 @@ async function seedScan(status: ScanStatus) {
 }
 
 async function seedModuleRun(scanId: string) {
+  // Plan 03 §7.3 — per-Contract status payload requires a Contract row.
+  // Seed one PRIMARY Contract per scan and link the ModuleRun to it.
+  const contract = await prisma.contract.create({
+    data: {
+      scanId,
+      address: `0x${randomBytes(20).toString("hex")}`,
+      chain: Chain.ETHEREUM,
+      role: "PRIMARY",
+      isPrimary: true,
+    },
+  });
   return prisma.moduleRun.create({
     data: {
       scanId,
+      contractId: contract.id,
       module: ModuleName.GOVERNANCE,
       status: ModuleStatus.COMPLETE,
       grade: Grade.B,
@@ -153,7 +167,7 @@ function buildRequest(scanId: string): NextRequest {
 describe.skipIf(!hasDb)(
   "GET /api/scan/[id]/status (Plan 02 G.1 — lightweight polling endpoint)",
   () => {
-    it("returns lightweight status payload for QUEUED scan with Cache-Control: no-store", async () => {
+    it("returns Plan 03 §7.3 per-Contract status payload for QUEUED scan with Cache-Control: no-store", async () => {
       const scan = await seedScan("QUEUED");
       await seedModuleRun(scan.id);
 
@@ -164,13 +178,17 @@ describe.skipIf(!hasDb)(
       const body = await res.json();
       expect(body.id).toBe(scan.id);
       expect(body.status).toBe("QUEUED");
-      expect(Array.isArray(body.modules)).toBe(true);
-      expect(body.modules).toHaveLength(1);
-      expect(body.modules[0]).toEqual({
-        module: "GOVERNANCE",
-        status: "COMPLETE",
-        grade: "B",
-      });
+      // Plan 03 §7.3 — flat `modules` array removed; payload now nests
+      // modules under each Contract.
+      expect(body).not.toHaveProperty("modules");
+      expect(Array.isArray(body.contracts)).toBe(true);
+      expect(body.contracts).toHaveLength(1);
+      const primary = body.contracts[0];
+      expect(primary.role).toBe("PRIMARY");
+      expect(primary.isPrimary).toBe(true);
+      expect(primary.modules).toEqual([
+        { module: "GOVERNANCE", status: "COMPLETE", grade: "B" },
+      ]);
 
       // No findings, no protocol, no error stacks leak through this endpoint.
       expect(body).not.toHaveProperty("findings");

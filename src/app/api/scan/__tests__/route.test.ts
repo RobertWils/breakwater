@@ -16,6 +16,9 @@ import { NextRequest } from "next/server";
 vi.mock("@/lib/config", () => ({
   assertProductionHashSalts: vi.fn(),
   assertProductionExternalApis: vi.fn(),
+  // Plan 03 §4.1: ScanSubmissionSchema now imports MAX_RELATED_CONTRACTS
+  // from this module; mock must export it to satisfy the module graph.
+  MAX_RELATED_CONTRACTS: 20,
 }));
 
 // Mock next-auth so getServerSession is controllable.

@@ -20,7 +20,7 @@ import type {
 import {
   computeModuleExecutionMs,
   executeGovernanceModule,
-  loadScanContext,
+  loadContractContext,
   markModuleComplete,
   markModuleRunning,
   markModuleSkippedDisabled,
@@ -76,12 +76,12 @@ describe("executeGovernanceModule (Plan 02 F.1 — function shape)", () => {
   });
 });
 
-describe("markModuleRunning (compare-and-set on QUEUED)", () => {
+describe("markModuleRunning (per-Contract compare-and-set on QUEUED, Plan 03 E.1)", () => {
   it("returns skipped:false when the QUEUED row was updated", async () => {
     const client = fakeClient({
       moduleRun: { updateMany: fakeUpdateMany(1) },
     });
-    const result = await markModuleRunning(client, "scan-1", "evt-1");
+    const result = await markModuleRunning(client, "scan-1", "contract-1", "evt-1");
     expect(result).toEqual({ skipped: false });
   });
 
@@ -89,20 +89,26 @@ describe("markModuleRunning (compare-and-set on QUEUED)", () => {
     const client = fakeClient({
       moduleRun: { updateMany: fakeUpdateMany(0) },
     });
-    const result = await markModuleRunning(client, "scan-1", "evt-1");
+    const result = await markModuleRunning(client, "scan-1", "contract-1", "evt-1");
     expect(result).toEqual({ skipped: true });
   });
 
-  it("issues update with status:QUEUED filter and writes inngestEventId/RunId", async () => {
+  it("scopes the update by (scanId, module, contractId, status: QUEUED) per spec §5.3.1", async () => {
     const updateMany = fakeUpdateMany(1);
     const client = fakeClient({ moduleRun: { updateMany } });
-    await markModuleRunning(client, "scan-42", "evt-99");
+    await markModuleRunning(client, "scan-42", "contract-77", "evt-99");
     const args = updateMany.mock.calls[0]![0] as {
-      where: { scanId: string; module: string; status: string };
+      where: {
+        scanId: string;
+        module: string;
+        contractId: string;
+        status: string;
+      };
       data: { status: string; inngestEventId: string; inngestRunId: string };
     };
     expect(args.where.scanId).toBe("scan-42");
     expect(args.where.module).toBe("GOVERNANCE");
+    expect(args.where.contractId).toBe("contract-77");
     expect(args.where.status).toBe("QUEUED");
     expect(args.data.status).toBe("RUNNING");
     expect(args.data.inngestEventId).toBe("evt-99");
@@ -112,7 +118,7 @@ describe("markModuleRunning (compare-and-set on QUEUED)", () => {
   it("writes nulls for inngestEventId/RunId when event id is undefined", async () => {
     const updateMany = fakeUpdateMany(1);
     const client = fakeClient({ moduleRun: { updateMany } });
-    await markModuleRunning(client, "scan-1", undefined);
+    await markModuleRunning(client, "scan-1", "contract-1", undefined);
     const args = updateMany.mock.calls[0]![0] as {
       data: { inngestEventId: string | null; inngestRunId: string | null };
     };
@@ -121,18 +127,23 @@ describe("markModuleRunning (compare-and-set on QUEUED)", () => {
   });
 });
 
-describe("markModuleSkippedDisabled", () => {
-  it("marks the QUEUED row as SKIPPED with the feature-flag reason", async () => {
+describe("markModuleSkippedDisabled (per-Contract, Plan 03 E.1)", () => {
+  it("marks the QUEUED row as SKIPPED with the feature-flag reason, scoped by contractId", async () => {
     const updateMany = fakeUpdateMany(1);
     const client = fakeClient({ moduleRun: { updateMany } });
-    const result = await markModuleSkippedDisabled(client, "scan-1");
+    const result = await markModuleSkippedDisabled(
+      client,
+      "scan-1",
+      "contract-1",
+    );
     expect(result).toEqual({ marked: 1 });
 
     const args = updateMany.mock.calls[0]![0] as {
-      where: { status: string };
+      where: { status: string; contractId: string };
       data: { status: string; errorMessage: string };
     };
     expect(args.where.status).toBe("QUEUED");
+    expect(args.where.contractId).toBe("contract-1");
     expect(args.data.status).toBe("SKIPPED");
     expect(args.data.errorMessage).toMatch(/feature flag/);
   });
@@ -142,68 +153,151 @@ describe("markModuleSkippedDisabled", () => {
     // that arrive after the row is already in a terminal state.
     const updateMany = fakeUpdateMany(0);
     const client = fakeClient({ moduleRun: { updateMany } });
-    const result = await markModuleSkippedDisabled(client, "scan-1");
+    const result = await markModuleSkippedDisabled(
+      client,
+      "scan-1",
+      "contract-1",
+    );
     expect(result).toEqual({ marked: 0 });
   });
 });
 
-describe("loadScanContext", () => {
-  it("returns protocol address + declared multisigs (string array)", async () => {
-    const client = fakeClient({
-      scan: {
-        findUnique: vi.fn(async () => ({
-          id: "scan-1",
-          protocol: {
-            primaryContractAddress: "0xabc",
-            knownMultisigs: ["0x111", "0x222"],
-          },
-        })) as AnyFn,
+describe("loadContractContext (Plan 03 E.1 — per-Contract row + sibling hints)", () => {
+  function fakeContractClient(opts: {
+    contract: {
+      address: string;
+      role: string;
+      scanId: string;
+    } | null;
+    siblings?: Array<{ address: string; role: string }>;
+    // Codex Review #4 IMPORTANT 1 — Plan 02 legacy fallback fixture.
+    // `undefined` means the scan.findUnique mock returns null (no
+    // Protocol row joined), matching the realistic case where the
+    // fallback simply has nothing to read.
+    knownMultisigs?: unknown;
+  }) {
+    const scanFindUnique = vi.fn(async () =>
+      opts.knownMultisigs !== undefined
+        ? { protocol: { knownMultisigs: opts.knownMultisigs } }
+        : null,
+    ) as AnyFn;
+    return {
+      moduleRun: { updateMany: vi.fn(), findFirst: vi.fn() },
+      scan: { findUnique: scanFindUnique, updateMany: vi.fn() },
+      contract: {
+        findUnique: vi.fn(async () =>
+          opts.contract
+            ? { id: "contract-1", ...opts.contract }
+            : null,
+        ) as AnyFn,
+        findMany: vi.fn(async () => opts.siblings ?? []) as AnyFn,
       },
+      finding: { findMany: vi.fn(), deleteMany: vi.fn() },
+    } as unknown as Parameters<typeof loadContractContext>[0];
+  }
+
+  it("returns the Contract's address + role; PRIMARY pulls sibling DECLARED_MULTISIG + TIMELOCK hints", async () => {
+    const client = fakeContractClient({
+      contract: { address: "0xprimary", role: "PRIMARY", scanId: "scan-1" },
+      siblings: [
+        { address: "0xmsig", role: "DECLARED_MULTISIG" },
+        { address: "0xtimelock", role: "TIMELOCK" },
+      ],
     });
-    const result = await loadScanContext(client, "scan-1");
-    expect(result.protocolAddress).toBe("0xabc");
-    expect(result.declaredMultisigAddresses).toEqual(["0x111", "0x222"]);
+    const result = await loadContractContext(client, "scan-1", "contract-1");
+    expect(result.contractAddress).toBe("0xprimary");
+    expect(result.role).toBe("PRIMARY");
+    expect(result.declaredMultisigCandidate).toBe("0xmsig");
+    expect(result.timelockCandidate).toBe("0xtimelock");
   });
 
-  it("normalises Prisma Json knownMultisigs to [] when not an array", async () => {
-    const client = fakeClient({
-      scan: {
-        findUnique: vi.fn(async () => ({
-          id: "scan-1",
-          protocol: {
-            primaryContractAddress: "0xabc",
-            knownMultisigs: { unexpected: "shape" },
-          },
-        })) as AnyFn,
-      },
+  it("non-PRIMARY roles do NOT issue a sibling lookup (hints stay undefined)", async () => {
+    const client = fakeContractClient({
+      contract: { address: "0xmsig", role: "DECLARED_MULTISIG", scanId: "scan-1" },
     });
-    const result = await loadScanContext(client, "scan-1");
-    expect(result.declaredMultisigAddresses).toEqual([]);
+    const result = await loadContractContext(client, "scan-1", "contract-1");
+    expect(result.role).toBe("DECLARED_MULTISIG");
+    expect(result.declaredMultisigCandidate).toBeUndefined();
+    expect(result.timelockCandidate).toBeUndefined();
+    expect(client.contract.findMany).not.toHaveBeenCalled();
   });
 
-  it("filters non-string entries from declaredMultisigAddresses", async () => {
-    const client = fakeClient({
-      scan: {
-        findUnique: vi.fn(async () => ({
-          id: "scan-1",
-          protocol: {
-            primaryContractAddress: "0xabc",
-            knownMultisigs: ["0x111", 42, null, "0x222"],
-          },
-        })) as AnyFn,
-      },
+  it("PRIMARY with no sibling hints returns undefined candidates (single-Contract scan)", async () => {
+    const client = fakeContractClient({
+      contract: { address: "0xprimary", role: "PRIMARY", scanId: "scan-1" },
+      siblings: [],
     });
-    const result = await loadScanContext(client, "scan-1");
-    expect(result.declaredMultisigAddresses).toEqual(["0x111", "0x222"]);
+    const result = await loadContractContext(client, "scan-1", "contract-1");
+    expect(result.declaredMultisigCandidate).toBeUndefined();
+    expect(result.timelockCandidate).toBeUndefined();
   });
 
-  it("throws when scan is missing", async () => {
-    const client = fakeClient({
-      scan: { findUnique: vi.fn(async () => null) as AnyFn },
+  it("throws when Contract row is missing", async () => {
+    const client = fakeContractClient({ contract: null });
+    await expect(
+      loadContractContext(client, "scan-1", "contract-1"),
+    ).rejects.toThrow(/Contract contract-1 not found/);
+  });
+
+  it("throws when Contract belongs to a different scanId (defense-in-depth against tampered event payloads)", async () => {
+    const client = fakeContractClient({
+      contract: { address: "0xprimary", role: "PRIMARY", scanId: "OTHER" },
     });
-    await expect(loadScanContext(client, "scan-1")).rejects.toThrow(
-      /Scan scan-1 not found/,
-    );
+    await expect(
+      loadContractContext(client, "scan-1", "contract-1"),
+    ).rejects.toThrow(/belongs to scan OTHER, not scan-1/);
+  });
+
+  // Codex Review #4 IMPORTANT 1 — Plan 02 legacy multisig backward-
+  // compat. Clients submitting via input.multisigs[] persist into
+  // Protocol.knownMultisigs (never converted to Contract rows); the
+  // PRIMARY-only fallback restores GOV-003 firing for those scans.
+
+  it("Plan 02 legacy fallback: PRIMARY with no sibling DECLARED_MULTISIG reads Protocol.knownMultisigs[0]", async () => {
+    const client = fakeContractClient({
+      contract: { address: "0xprimary", role: "PRIMARY", scanId: "scan-1" },
+      siblings: [],
+      knownMultisigs: ["0xABC"],
+    });
+    const result = await loadContractContext(client, "scan-1", "contract-1");
+    expect(result.declaredMultisigCandidate).toBe("0xABC");
+  });
+
+  it("Plan 02 legacy fallback: PRIMARY with empty knownMultisigs returns undefined candidate", async () => {
+    const client = fakeContractClient({
+      contract: { address: "0xprimary", role: "PRIMARY", scanId: "scan-1" },
+      siblings: [],
+      knownMultisigs: [],
+    });
+    const result = await loadContractContext(client, "scan-1", "contract-1");
+    expect(result.declaredMultisigCandidate).toBeUndefined();
+  });
+
+  it("Plan 02 legacy fallback: sibling DECLARED_MULTISIG wins over Protocol.knownMultisigs", async () => {
+    const client = fakeContractClient({
+      contract: { address: "0xprimary", role: "PRIMARY", scanId: "scan-1" },
+      siblings: [{ address: "0xDEF", role: "DECLARED_MULTISIG" }],
+      knownMultisigs: ["0xABC"],
+    });
+    const result = await loadContractContext(client, "scan-1", "contract-1");
+    expect(result.declaredMultisigCandidate).toBe("0xDEF");
+    // Fallback path NOT taken — scan.findUnique should not have been
+    // queried at all when the sibling already supplied a candidate.
+    expect(client.scan.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("Plan 02 legacy fallback: TIMELOCK role does NOT consult Protocol.knownMultisigs (PRIMARY-only fallback)", async () => {
+    const client = fakeContractClient({
+      contract: { address: "0xtimelock", role: "TIMELOCK", scanId: "scan-1" },
+      siblings: [],
+      knownMultisigs: ["0xABC"],
+    });
+    const result = await loadContractContext(client, "scan-1", "contract-1");
+    expect(result.declaredMultisigCandidate).toBeUndefined();
+    // Neither sibling lookup nor scan.findUnique fires for
+    // non-PRIMARY roles.
+    expect(client.contract.findMany).not.toHaveBeenCalled();
+    expect(client.scan.findUnique).not.toHaveBeenCalled();
   });
 });
 
@@ -344,6 +438,7 @@ describe("persistSnapshotAndFindings", () => {
     const result = await persistSnapshotAndFindings(
       tx,
       "scan-1",
+      "scan-1-c",
       baseSnapshot(),
       [finding],
     );
@@ -379,6 +474,7 @@ describe("persistSnapshotAndFindings", () => {
     const result = await persistSnapshotAndFindings(
       tx,
       "scan-1",
+      "scan-1-c",
       baseSnapshot(),
       [],
     );
@@ -399,7 +495,7 @@ describe("persistSnapshotAndFindings", () => {
     const tx = buildTx({ findFirstResult: null });
 
     await expect(
-      persistSnapshotAndFindings(tx, "scan-1", baseSnapshot(), []),
+      persistSnapshotAndFindings(tx, "scan-1", "contract-1", baseSnapshot(), []),
     ).rejects.toThrow(/ModuleRun not found/);
   });
 
@@ -447,12 +543,12 @@ describe("persistSnapshotAndFindings", () => {
       publicRank: 1,
     };
 
-    await persistSnapshotAndFindings(tx, "scan-1", baseSnapshot(), [
+    await persistSnapshotAndFindings(tx, "scan-1", "contract-1", baseSnapshot(), [
       finding,
       finding,
       finding,
     ]);
-    await persistSnapshotAndFindings(tx, "scan-1", baseSnapshot(), [
+    await persistSnapshotAndFindings(tx, "scan-1", "contract-1", baseSnapshot(), [
       finding,
       finding,
       finding,
@@ -487,7 +583,7 @@ describe("persistSnapshotAndFindings", () => {
       publicRank: 1,
     };
 
-    await persistSnapshotAndFindings(tx, "scan-1", baseSnapshot(), [
+    await persistSnapshotAndFindings(tx, "scan-1", "contract-1", baseSnapshot(), [
       finding,
       finding,
       finding,
@@ -508,13 +604,23 @@ describe("persistSnapshotAndFindings", () => {
     );
     const tx = buildTx({ findingDeleteMany: deleteMany });
 
-    await persistSnapshotAndFindings(tx, "scan-42", baseSnapshot(), []);
+    await persistSnapshotAndFindings(
+      tx,
+      "scan-42",
+      "contract-42",
+      baseSnapshot(),
+      [],
+    );
 
+    // Plan 03 §5.3.1: deleteMany now also scopes by contractId so a
+    // retry of contract A's run doesn't erase sibling contracts B/C's
+    // findings.
     const args = deleteMany.mock.calls[0]![0] as {
-      where: { scanId: string; module: string };
+      where: { scanId: string; module: string; contractId: string };
     };
     expect(args.where.scanId).toBe("scan-42");
     expect(args.where.module).toBe("GOVERNANCE");
+    expect(args.where.contractId).toBe("contract-42");
   });
 
   it("I.1 FIX 3 writes errorDetectorCount alongside findingsCount", async () => {
@@ -526,6 +632,7 @@ describe("persistSnapshotAndFindings", () => {
     await persistSnapshotAndFindings(
       tx,
       "scan-1",
+      "scan-1-c",
       baseSnapshot(),
       [],
       2, // 2 detectors threw
@@ -548,7 +655,7 @@ describe("persistSnapshotAndFindings", () => {
     );
     const tx = buildTx({ moduleRunUpdate });
 
-    await persistSnapshotAndFindings(tx, "scan-1", baseSnapshot(), []);
+    await persistSnapshotAndFindings(tx, "scan-1", "contract-1", baseSnapshot(), []);
 
     const args = moduleRunUpdate.mock.calls[0]![0] as {
       data: { errorDetectorCount: number };
@@ -564,6 +671,7 @@ describe("markModuleComplete (compare-and-set on RUNNING)", () => {
     const result = await markModuleComplete(
       client,
       "scan-1",
+      "scan-1-c",
       "COMPLETE",
       null,
       "B",
@@ -593,6 +701,7 @@ describe("markModuleComplete (compare-and-set on RUNNING)", () => {
     await markModuleComplete(
       client,
       "scan-1",
+      "scan-1-c",
       "FAILED",
       "RPC outage",
       null,
@@ -618,6 +727,7 @@ describe("markModuleComplete (compare-and-set on RUNNING)", () => {
     const result = await markModuleComplete(
       client,
       "scan-1",
+      "scan-1-c",
       "COMPLETE",
       null,
       "A",
@@ -626,15 +736,24 @@ describe("markModuleComplete (compare-and-set on RUNNING)", () => {
     expect(result).toEqual({ finalized: false });
   });
 
-  it("persists grade + score in the updateMany data block (F.4.2)", async () => {
+  it("persists grade + score in the updateMany data block (F.4.2), scoped by contractId", async () => {
     const updateMany = fakeUpdateMany(1);
     const client = fakeClient({ moduleRun: { updateMany } });
-    await markModuleComplete(client, "scan-42", "COMPLETE", null, "F", 0);
+    await markModuleComplete(
+      client,
+      "scan-42",
+      "contract-42",
+      "COMPLETE",
+      null,
+      "F",
+      0,
+    );
     const args = updateMany.mock.calls[0]![0] as {
-      where: { scanId: string };
+      where: { scanId: string; contractId: string };
       data: { grade: string | null; score: number | null };
     };
     expect(args.where.scanId).toBe("scan-42");
+    expect(args.where.contractId).toBe("contract-42");
     expect(args.data.grade).toBe("F");
     expect(args.data.score).toBe(0);
   });

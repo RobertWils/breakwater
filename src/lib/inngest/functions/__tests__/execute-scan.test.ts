@@ -80,6 +80,12 @@ describe("markComplete helper (C.4 B1 + I3 — finalStatus capture + race guards
   };
   type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
 
+  // Phase F.2: markComplete now loads contracts with their moduleRuns
+  // + findings and computes per-Contract grades before rolling up. The
+  // legacy fake supplied `modules` + scan-wide `findings`; we wrap
+  // those into a single Contract whose moduleRuns ARE those modules
+  // and whose findings ARE those findings, so existing tests keep
+  // describing Plan 02 single-Contract semantics.
   function makeClient(opts: {
     modules: Module[];
     updateCount?: number;
@@ -87,6 +93,18 @@ describe("markComplete helper (C.4 B1 + I3 — finalStatus capture + race guards
     findings?: Array<{ severity: Severity }>;
     executionStartedAt?: Date | null;
   }) {
+    const moduleRuns = opts.modules.map((m) => ({
+      id: "mr",
+      errorDetectorCount: 0,
+      ...m,
+    }));
+    const contracts = [
+      {
+        id: "contract-1",
+        moduleRuns,
+        findings: opts.findings ?? [],
+      },
+    ];
     return {
       scan: {
         findUnique: vi.fn(async () =>
@@ -94,10 +112,8 @@ describe("markComplete helper (C.4 B1 + I3 — finalStatus capture + race guards
             ? null
             : {
                 id: "scan-1",
-                modules: opts.modules.map((m) => ({
-                  errorDetectorCount: 0,
-                  ...m,
-                })),
+                modules: moduleRuns,
+                contracts,
                 executionStartedAt:
                   opts.executionStartedAt === undefined
                     ? new Date("2026-05-05T12:00:00.000Z")
@@ -109,6 +125,9 @@ describe("markComplete helper (C.4 B1 + I3 — finalStatus capture + race guards
       moduleRun: { updateMany: vi.fn() },
       finding: {
         findMany: vi.fn(async () => opts.findings ?? []),
+      },
+      contract: {
+        update: vi.fn(async () => ({})),
       },
     } as unknown as Parameters<typeof markComplete>[0];
   }
@@ -259,14 +278,26 @@ describe("markComplete grade integration (F.3 — compositeScore + compositeGrad
     findings?: Array<{ severity: Severity }>;
     executionStartedAt?: Date | null;
   }) {
+    // Phase F.2: single-Contract wrapping for the Plan 02 backward-
+    // compat shape (see the earlier describe block for the rationale).
+    const moduleRuns = opts.modules.map((m) => ({
+      id: "mr",
+      errorDetectorCount: 0,
+      ...m,
+    }));
+    const contracts = [
+      {
+        id: "contract-1",
+        moduleRuns,
+        findings: opts.findings ?? [],
+      },
+    ];
     return {
       scan: {
         findUnique: vi.fn(async () => ({
           id: "scan-1",
-          modules: opts.modules.map((m) => ({
-            errorDetectorCount: 0,
-            ...m,
-          })),
+          modules: moduleRuns,
+          contracts,
           executionStartedAt:
             opts.executionStartedAt === undefined
               ? new Date(Date.now() - 1234)
@@ -277,6 +308,9 @@ describe("markComplete grade integration (F.3 — compositeScore + compositeGrad
       moduleRun: { updateMany: vi.fn() },
       finding: {
         findMany: vi.fn(async () => opts.findings ?? []),
+      },
+      contract: {
+        update: vi.fn(async () => ({})),
       },
     } as unknown as Parameters<typeof markComplete>[0];
   }
@@ -353,11 +387,12 @@ describe("markComplete grade integration (F.3 — compositeScore + compositeGrad
     const args = updateMany.mock.calls[0]![0] as {
       data: {
         status: string;
-        compositeScore: number | null;
+        // Plan 03 §3.5 PR 1: column renamed from compositeScore.
+        averageContractScore: number | null;
         compositeGrade: string | null;
       };
     };
-    expect(args.data.compositeScore).toBe(80);
+    expect(args.data.averageContractScore).toBe(80);
     expect(args.data.compositeGrade).toBe("B");
   });
 
@@ -370,9 +405,12 @@ describe("markComplete grade integration (F.3 — compositeScore + compositeGrad
       mock: { calls: unknown[][] };
     };
     const args = updateMany.mock.calls[0]![0] as {
-      data: { compositeScore: number | null; compositeGrade: string | null };
+      data: {
+        averageContractScore: number | null;
+        compositeGrade: string | null;
+      };
     };
-    expect(args.data.compositeScore).toBeNull();
+    expect(args.data.averageContractScore).toBeNull();
     expect(args.data.compositeGrade).toBeNull();
   });
 
@@ -415,7 +453,14 @@ describe("markComplete grade integration (F.3 — compositeScore + compositeGrad
     expect(result.executionMs).toBe(0);
   });
 
-  it("queries findings filtered by scanId with severity-only select", async () => {
+  // Phase F.2 removed the standalone `finding.findMany({ where:
+  // { scanId } })` call — markComplete now reads findings via the
+  // `contracts.findings` nested include on the single Scan
+  // findUnique. The severity-only select still applies (see
+  // execute-scan.ts:scan.findUnique include shape); the equivalent
+  // assertion is covered by phase-f.integration.test.ts's
+  // round-trip against the real DB schema.
+  it("reads findings via the contracts include path (Phase F.2 — no standalone scanId-keyed findMany)", async () => {
     const client = makeClient({
       modules: [{ status: "COMPLETE" }],
       findings: [{ severity: "MEDIUM" }],
@@ -424,12 +469,7 @@ describe("markComplete grade integration (F.3 — compositeScore + compositeGrad
     const findMany = client.finding.findMany as unknown as {
       mock: { calls: unknown[][] };
     };
-    const args = findMany.mock.calls[0]![0] as {
-      where: { scanId: string };
-      select: { severity: boolean };
-    };
-    expect(args.where.scanId).toBe("scan-42");
-    expect(args.select.severity).toBe(true);
+    expect(findMany.mock.calls).toHaveLength(0);
   });
 
   it("deferred path does not query findings (no premature lookup)", async () => {

@@ -32,10 +32,18 @@ describe("inngest client", () => {
     const moduleRequested: ScanModuleRequestedEventData = {
       scanId: "scan-1",
       module: "GOVERNANCE",
+      // Plan 03 §4.3: contractId + contractAddress are required on
+      // both ScanModuleRequested/CompletedEventData so every emitter
+      // carries the per-Contract context the compound wait expression
+      // needs (Codex Review #3 IMPORTANT 3).
+      contractId: "contract-1",
+      contractAddress: "0x0000000000000000000000000000000000000000",
     };
     const moduleCompleted: ScanModuleCompletedEventData = {
       scanId: "scan-1",
       module: "GOVERNANCE",
+      contractId: "contract-1",
+      contractAddress: "0x0000000000000000000000000000000000000000",
       status: "COMPLETE",
       findingsCount: 0,
       grade: "A",

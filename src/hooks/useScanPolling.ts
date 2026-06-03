@@ -4,10 +4,11 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 /**
- * Client-side polling hook for /api/scan/[id]/status (Plan 02 G.2).
+ * Client-side polling hook for /api/scan/[id]/status.
  *
  * Drives /scan/[id] live status updates without manual page refresh.
- * Polls the lightweight G.1 endpoint (~200 bytes/poll) every 3 s while
+ * Polls the lightweight status endpoint (~200 bytes/poll for a single-
+ * Contract scan; scales linearly with Contract count) every 3 s while
  * the scan is non-terminal, then calls router.refresh() on terminal
  * transition to re-fetch the full server-rendered snapshot.
  *
@@ -20,7 +21,7 @@ import { useRouter } from "next/navigation";
  *     wait (errors 1–4 schedule the next attempt; error 5 returns
  *     without scheduling). The 16 s / 30 s tiers from ERROR_BACKOFF_
  *     MAX_MS are unreachable today — they exist for future tuning if
- *     the bailout count moves up. G.5 N1 doc clarification.
+ *     the bailout count moves up.
  *   - Terminal initial status → no polling at all (bail immediately)
  *   - Unmount safe via `cancelled` flag in closure
  *
@@ -28,20 +29,22 @@ import { useRouter } from "next/navigation";
  * PARTIAL_COMPLETE is non-terminal — polling continues while remaining
  * modules finish.
  *
- * Per-module state (G.5 I1): in addition to the scan-level status, the
- * hook surfaces the polled `modules` array as `polledModules`. ScanShell
- * merges this over its server snapshot so individual ModuleCards
- * transition live (RUNNING pulse + COMPLETE grade badge) without
- * waiting for the terminal `router.refresh()`. `polledModules` is null
- * until the first successful poll, signalling "no live data yet, use
- * the server snapshot."
+ * Phase G.5 — per-Contract polling shape per spec §7.3 + §7.5. The
+ * hook surfaces `polledContracts` (Array<PolledContractState>) instead
+ * of the legacy flat `polledModules`. Each entry carries the
+ * Contract's id + its per-(Contract, module) statuses; ScanShell
+ * merges this over the server snapshot's `contracts[i].modules` so
+ * each module's RUNNING pulse stays scoped to its own contract.
+ *
+ * `polledContracts` is null until the first successful poll, signalling
+ * "no live data yet, use the server snapshot." After the first success
+ * it's always the latest array — never goes back to null on subsequent
+ * errors (the merge falls back per-Contract per-module to the server
+ * value when a poll entry is missing).
  *
  * The hook uses both a closure-local `consecutiveErrors` counter (for
  * control-flow decisions inside one effect run) AND `setErrorCount`
- * (for the return-value useful in UI). React 18 state batching can
- * make `errorCount` lag the closure value across renders, so the
- * closure variable is the source of truth for backoff/bailout
- * decisions.
+ * (for the return-value useful in UI).
  */
 
 const POLL_INTERVAL_MS = 3_000;
@@ -59,14 +62,24 @@ function isTerminalStatus(status: string): boolean {
 interface StatusResponse {
   id: string;
   status: string;
-  modules: PolledModuleState[];
+  contracts: PolledContractState[];
 }
 
 /**
- * Per-module slice surfaced from /api/scan/[id]/status. ScanShell merges
- * this over its server-rendered ModuleRunResponse snapshot for live
- * RUNNING/COMPLETE transitions (G.5 I1).
+ * Plan 03 §7.3 — per-Contract polling slice surfaced from
+ * /api/scan/[id]/status. ScanShell merges this over its server-
+ * rendered ContractResponse[] snapshot for live RUNNING/COMPLETE
+ * transitions on each (Contract, module) pair.
  */
+export interface PolledContractState {
+  id: string;
+  address: string;
+  label: string | null;
+  role: string;
+  isPrimary: boolean;
+  modules: PolledModuleState[];
+}
+
 export interface PolledModuleState {
   module: string;
   status: string;
@@ -79,12 +92,12 @@ export interface UseScanPollingResult {
   /** Consecutive error counter — resets to 0 on a successful poll. */
   errorCount: number;
   /**
-   * Last-polled per-module state. Null until the first successful poll,
-   * which signals callers to fall back to the server snapshot. After
-   * the first successful poll this is always the latest array — never
-   * goes back to null on subsequent errors.
+   * Last-polled per-Contract state (Plan 03 §7.3). Null until the
+   * first successful poll, which signals callers to fall back to the
+   * server snapshot. After the first successful poll this is always
+   * the latest array.
    */
-  polledModules: PolledModuleState[] | null;
+  polledContracts: PolledContractState[] | null;
 }
 
 export function useScanPolling(
@@ -94,8 +107,8 @@ export function useScanPolling(
   const router = useRouter();
   const [currentStatus, setCurrentStatus] = useState(initialStatus);
   const [errorCount, setErrorCount] = useState(0);
-  const [polledModules, setPolledModules] = useState<
-    PolledModuleState[] | null
+  const [polledContracts, setPolledContracts] = useState<
+    PolledContractState[] | null
   >(null);
 
   useEffect(() => {
@@ -130,7 +143,7 @@ export function useScanPolling(
         consecutiveErrors = 0;
         setErrorCount(0);
         setCurrentStatus(data.status);
-        setPolledModules(data.modules);
+        setPolledContracts(data.contracts);
 
         if (isTerminalStatus(data.status)) {
           router.refresh();
@@ -166,5 +179,5 @@ export function useScanPolling(
     };
   }, [scanId, initialStatus, router]);
 
-  return { currentStatus, errorCount, polledModules };
+  return { currentStatus, errorCount, polledContracts };
 }

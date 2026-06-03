@@ -1,9 +1,17 @@
 import type { Grade, Prisma, ScanStatus } from "@prisma/client";
 
+import {
+  formatInngestDuration,
+  getTimeoutPerModuleRunMs,
+} from "@/lib/config";
 import { isGovernanceModuleEnabled } from "@/lib/feature-flags";
 import { inngest } from "@/lib/inngest/client";
 import { prisma } from "@/lib/prisma";
 import { calculateCompositeGrade } from "@/lib/scoring/composite-grade";
+import {
+  rollupProtocolComposite,
+  type ProtocolRollupContract,
+} from "@/lib/scoring/protocol-rollup";
 
 /**
  * Phase C.1 + C.4 dispatcher orchestrator for the scan lifecycle.
@@ -34,6 +42,14 @@ type DbClient = {
   finding: {
     findMany: Prisma.FindingDelegate["findMany"];
   };
+  // Phase F.2: per-Contract composite is persisted before the rollup
+  // runs. The CAS on Scan.status === RUNNING below is the final guard
+  // against double-finalization; per-Contract updates are
+  // deterministic over the same inputs, so a retried finalize re-writes
+  // identical values to each Contract row.
+  contract: {
+    update: Prisma.ContractDelegate["update"];
+  };
 };
 
 export type MarkRunningResult =
@@ -59,27 +75,80 @@ export type MarkCompleteResult =
       finalStatus: ScanStatus;
       deferred: false;
       alreadyFinalized: false;
-      /** Composite score 0–100. Null when finalStatus !== "COMPLETE" (F.3 Option 1). */
+      /**
+       * Plan 03 §6.2 protocol-level rollup score. Phase F semantics:
+       * this carries the `averageContractScore` (arithmetic mean over
+       * ELIGIBLE Contracts). Kept under the legacy `compositeScore`
+       * field name for backward-compat with the scan.completed event
+       * payload and downstream consumers (rename deferred to Phase G's
+       * response-shape rewrite). Null when finalStatus !== "COMPLETE".
+       */
       compositeScore: number | null;
-      /** Letter grade. Null when finalStatus !== "COMPLETE" (F.3 Option 1). */
+      /**
+       * Plan 03 §6.2 protocol-level rollup grade — worst-grade-wins
+       * across ELIGIBLE Contracts. Null when finalStatus !== "COMPLETE".
+       */
       compositeGrade: Grade | null;
       /** Total findings persisted for the scan. */
       findingsCount: number;
       /** Wall-clock ms from executionStartedAt → now. 0 if executionStartedAt missing. */
       executionMs: number;
-      /** True when any COMPLETE module had detector errors (I.1 FIX 3). */
+      /** True when any Contract has its own isPartialGrade flag set (Plan 02 detector-error carry-over, aggregated across Contracts per §6.3). */
       isPartialGrade: boolean;
     }
   | { finalStatus: null; deferred: true; alreadyFinalized: false }
   | { finalStatus: null; deferred: false; alreadyFinalized: true };
 
+/**
+ * Derive a Contract's status from its ModuleRuns (Phase F.2). Preserves
+ * Plan 02's H.9 BLOCKER Layer C strict semantic — any FAILED ModuleRun
+ * within a Contract poisons that Contract — so the per-Contract gate
+ * mirrors the scan-level gate Plan 02 used. In practice Plan 03's
+ * dispatcher only runs GOVERNANCE per Contract (other modules seeded
+ * SKIPPED at submission), so mixed FAILED+COMPLETE within one Contract
+ * is contrived; the gate is defensive against future module additions.
+ *
+ *   - FAILED: any ModuleRun ended FAILED. Excluded from the protocol
+ *     composite via `compositeGrade=null`; surfaced separately via
+ *     `isPartialCoverage` when sibling Contracts contributed grades.
+ *   - SKIPPED: every ModuleRun ended SKIPPED, or no ModuleRuns exist
+ *     (e.g., a Contract whose role has no applicable module under §4.2's
+ *     role-applicability table). No grade contributor by design.
+ *   - COMPLETE: no FAILED ModuleRuns, at least one COMPLETE. The
+ *     Contract yields a grade from its findings.
+ */
+function deriveContractStatus(
+  moduleRuns: ReadonlyArray<{ status: string }>,
+): "COMPLETE" | "FAILED" | "SKIPPED" {
+  if (moduleRuns.length === 0) return "SKIPPED";
+  if (moduleRuns.some((m) => m.status === "FAILED")) return "FAILED";
+  if (moduleRuns.some((m) => m.status === "COMPLETE")) return "COMPLETE";
+  return "SKIPPED";
+}
+
 export async function markComplete(
   client: DbClient,
   scanId: string,
 ): Promise<MarkCompleteResult> {
+  // Phase F.2: load Contracts with their ModuleRuns + findings so the
+  // per-Contract composite can be computed without a second round-trip.
+  // `modules` (the scan-wide ModuleRun relation) is kept on the load
+  // for the allTerminal gate — it's the same set of rows as
+  // `contracts.flatMap(c => c.moduleRuns)` but pre-flattened for the
+  // every() check.
   const scan = await client.scan.findUnique({
     where: { id: scanId },
-    include: { modules: true },
+    include: {
+      modules: true,
+      contracts: {
+        include: {
+          moduleRuns: {
+            select: { id: true, status: true, errorDetectorCount: true },
+          },
+          findings: { select: { severity: true } },
+        },
+      },
+    },
   });
   if (!scan) {
     throw new Error(
@@ -87,6 +156,9 @@ export async function markComplete(
     );
   }
 
+  // Plan 03 §4.5 step 2: defer until every ModuleRun across every
+  // Contract is terminal. The race-guard semantic from Plan 02 I.3
+  // carries over unchanged.
   const allTerminal = scan.modules.every(
     (m) =>
       m.status === "COMPLETE" ||
@@ -97,55 +169,70 @@ export async function markComplete(
     return { finalStatus: null, deferred: true, alreadyFinalized: false };
   }
 
-  const allTerminalSuccess = scan.modules.every(
-    (m) => m.status === "COMPLETE" || m.status === "SKIPPED",
+  // Plan 03 §6.1 + §4.5 step 5: per-Contract composite. For each
+  // Contract derive its status from its ModuleRuns, compute the
+  // Plan 02 §5.3 composite from its findings when COMPLETE, and
+  // capture per-Contract isPartialGrade (Plan 02 I.1 FIX 3 semantic,
+  // scoped per-Contract).
+  const perContract = scan.contracts.map((c) => {
+    const status = deriveContractStatus(c.moduleRuns);
+    let compositeScore: number | null = null;
+    let compositeGrade: Grade | null = null;
+    if (status === "COMPLETE") {
+      const result = calculateCompositeGrade(c.findings);
+      compositeScore = result.score;
+      compositeGrade = result.grade;
+    }
+    // Per-Contract isPartialGrade: at least one of this Contract's
+    // COMPLETE ModuleRuns had errorDetectorCount > 0.
+    const isPartialGrade = c.moduleRuns.some(
+      (m) => m.status === "COMPLETE" && (m.errorDetectorCount ?? 0) > 0,
+    );
+    return { id: c.id, status, compositeScore, compositeGrade, isPartialGrade };
+  });
+
+  // Persist per-Contract grades. These are deterministic over the
+  // same ModuleRuns + findings, so a retried finalize that races
+  // against the scan-level CAS below is safe — both attempts write
+  // identical values. Per-Contract failure (e.g., one Contract row
+  // missing) would surface as an error and bubble up; Inngest's
+  // retry contract on step.run handles the redo.
+  await Promise.all(
+    perContract.map((c) =>
+      client.contract.update({
+        where: { id: c.id },
+        data: {
+          compositeScore: c.compositeScore,
+          compositeGrade: c.compositeGrade,
+          isPartialGrade: c.isPartialGrade,
+        },
+      }),
+    ),
   );
-  // H.9 BLOCKER Layer C: require at least one module that actually ran
-  // (status COMPLETE) for a finalStatus of COMPLETE. Pre-H.9, a scan
-  // with every ModuleRun seeded SKIPPED ("0 runnable") would be
-  // classified COMPLETE here because vacuous-true + SKIPPED-counts-as-
-  // success → finalStatus=COMPLETE → composite grade A surfaced for
-  // a scan where no detector actually ran. Layer A (schema) + Layer B
-  // (submission) should already prevent this from reaching the
-  // executor, but markComplete is the last line of defense; keeping
-  // this check makes the executor robust to any future seeding path
-  // that bypasses the submission-layer gate.
-  const hasAnyCompleteModule = scan.modules.some(
-    (m) => m.status === "COMPLETE",
-  );
+
+  // Plan 03 §6.2: roll up per-Contract composites into the protocol
+  // composite. The pure function in `protocol-rollup.ts` handles the
+  // worst-grade-wins logic, tie-breaking, partial flags, and the
+  // zero-graded-Contracts guard (§6.2 extension of Plan 02 H.9
+  // BLOCKER Layer C from executor to graph layer).
+  const rollupContracts: ProtocolRollupContract[] = perContract.map((c) => ({
+    compositeScore: c.compositeScore,
+    compositeGrade: c.compositeGrade,
+    isPartialGrade: c.isPartialGrade,
+    status: c.status,
+  }));
+  const rollup = rollupProtocolComposite(rollupContracts);
+
+  // Plan 03 §6.2 zero-graded-Contracts guard → FAILED. When at least
+  // one Contract contributed a grade → COMPLETE (with isPartialCoverage
+  // surfacing any FAILED siblings).
   const finalStatus: ScanStatus =
-    allTerminalSuccess && hasAnyCompleteModule ? "COMPLETE" : "FAILED";
+    rollup.compositeGrade !== null ? "COMPLETE" : "FAILED";
 
-  // F.3: only compute composite grade on COMPLETE scans. FAILED scans
-  // persist null score/grade — partial findings on a failed scan don't
-  // represent a meaningful protocol assessment.
-  let compositeScore: number | null = null;
-  let compositeGrade: Grade | null = null;
-  let findingsCount = 0;
-
-  if (finalStatus === "COMPLETE") {
-    const findings = await client.finding.findMany({
-      where: { scanId },
-      select: { severity: true },
-    });
-    findingsCount = findings.length;
-    const result = calculateCompositeGrade(findings);
-    compositeScore = result.score;
-    compositeGrade = result.grade;
-  }
-
-  // I.1 FIX 3: isPartialGrade fires when a COMPLETE module had one
-  // or more detectors throw. A degraded coverage signal — distinct
-  // from a clean COMPLETE (all detectors ran) and from a FAILED
-  // scan (no useful grade at all). Product decision: NOT triggered
-  // by `module_not_implemented` SKIPPED rows — those are Plan 02
-  // scope (single-module by design), not coverage degradation, and
-  // are surfaced separately via the per-module SKIPPED card.
-  // FAILED modules also don't count: those represent module-level
-  // failure, not partial coverage.
-  const isPartialGrade = scan.modules.some(
-    (m) => m.status === "COMPLETE" && (m.errorDetectorCount ?? 0) > 0,
-  );
+  const findingsCount =
+    finalStatus === "COMPLETE"
+      ? scan.contracts.reduce((acc, c) => acc + c.findings.length, 0)
+      : 0;
 
   const completedAt = new Date();
   const updated = await client.scan.updateMany({
@@ -153,9 +240,11 @@ export async function markComplete(
     data: {
       status: finalStatus,
       completedAt,
-      compositeScore,
-      compositeGrade,
-      isPartialGrade,
+      compositeGrade: rollup.compositeGrade,
+      averageContractScore: rollup.averageContractScore,
+      worstContractScore: rollup.worstContractScore,
+      isPartialGrade: rollup.isPartialGrade,
+      isPartialCoverage: rollup.isPartialCoverage,
     },
   });
   if (updated.count === 0) {
@@ -173,11 +262,15 @@ export async function markComplete(
     finalStatus,
     deferred: false,
     alreadyFinalized: false,
-    compositeScore,
-    compositeGrade,
+    // Backward-compat name: the result field stays `compositeScore`
+    // (consumed by the scan.completed event payload + the function
+    // return value); semantically it now carries `averageContractScore`.
+    // Phase G's response-shape rewrite renames this on the wire.
+    compositeScore: rollup.averageContractScore,
+    compositeGrade: rollup.compositeGrade,
     findingsCount,
     executionMs,
-    isPartialGrade,
+    isPartialGrade: rollup.isPartialGrade,
   };
 }
 
@@ -203,40 +296,143 @@ export const executeScan = inngest.createFunction(
       } as const;
     }
 
-    // Step 2: Decide which modules to dispatch.
+    // Step 2: Decide whether the governance module dispatches at all.
+    // Plan 02's `willRunGovernance` flag carries over — the feature
+    // flag short-circuit still applies to the whole scan.
     const willRunGovernance =
       modulesEnabled.includes("GOVERNANCE") && isGovernanceModuleEnabled();
 
-    // Step 3: Fan out to governance + wait for completion echo.
-    if (willRunGovernance) {
-      await step.sendEvent("dispatch-governance", {
-        name: "scan.module.requested",
-        data: { scanId, module: "GOVERNANCE" },
-      });
+    // Step 3: Plan 03 §4.3 — load the QUEUED ModuleRun rows for this
+    // scan + fan out one scan.module.requested per (Contract, module)
+    // pair in a single batched step.sendEvent.
+    //
+    // Phase B's submitScan creates one ModuleRun per (Contract,
+    // ModuleName) pair (N×M rows per scan) with status QUEUED when
+    // implemented + role-applicable. Phase D dispatches each of those
+    // QUEUED rows as its own event so the per-Contract execution
+    // model can drive each independently. The legacy
+    // @@unique([scanId, module]) was dropped in PR 1's
+    // `plan_03_drop_modulerun_legacy_unique` migration to permit this.
+    //
+    // The willRunGovernance flag still applies: when governance is
+    // disabled by the feature flag, no GOVERNANCE events are
+    // dispatched even if QUEUED rows exist (the flag is the kill
+    // switch). Phase D ships M=1 (GOVERNANCE only) so this gate
+    // effectively governs the whole fan-out.
+    const queuedRuns = willRunGovernance
+      ? await step.run("load-queued-module-runs", async () => {
+          const rows = await prisma.moduleRun.findMany({
+            where: { scanId, status: "QUEUED", module: "GOVERNANCE" },
+            include: { contract: { select: { id: true, address: true } } },
+          });
+          return rows.map((r) => ({
+            id: r.id,
+            module: r.module,
+            contractId: r.contractId,
+            contractAddress: r.contract?.address ?? null,
+          }));
+        })
+      : [];
 
-      const completedEvent = await step.waitForEvent("wait-governance", {
-        event: "scan.module.completed",
-        match: "data.scanId",
-        timeout: "5m",
-      });
+    if (queuedRuns.length > 0) {
+      // Spec §4.3 step 2: a single batched step.sendEvent for all
+      // (Contract, module) pairs — one durable step, not N. Inngest
+      // accepts an array on the send call.
+      await step.sendEvent(
+        "dispatch-modules",
+        queuedRuns.map((mr) => ({
+          name: "scan.module.requested" as const,
+          data: {
+            scanId,
+            module: mr.module,
+            // Phase B always populates `contractId` on new rows; the
+            // load step above filters to status: "QUEUED" which only
+            // matches Plan-03-era rows (legacy historical rows are
+            // already in a terminal state). The non-null assertion is
+            // safe by construction.
+            contractId: mr.contractId!,
+            contractAddress: mr.contractAddress!,
+          },
+        })),
+      );
 
-      if (!completedEvent) {
-        // Timeout: mark non-terminal governance ModuleRun rows as FAILED.
-        // The mark-complete step below tolerates a late completion arriving
-        // after this update via its compare-and-set + deferred guards.
-        await step.run("mark-governance-timeout", () =>
-          prisma.moduleRun.updateMany({
-            where: {
-              scanId,
-              module: "GOVERNANCE",
-              status: { in: ["QUEUED", "RUNNING"] },
-            },
-            data: {
-              status: "FAILED",
-              errorMessage: "module_timeout",
-              completedAt: new Date(),
-            },
+      // Spec §4.3 step 3 — parallel wait via Promise.all over per-
+      // (module, contractId) waitForEvent calls. Inngest 3.x treats
+      // each step.waitForEvent as its own durable step; wrapping them
+      // in Promise.all is the idiomatic concurrent-wait pattern (same
+      // shape used for parallel step.run calls). Each wait has an
+      // independent 5-minute timeout that runs concurrently with the
+      // others, so the scan-level wall-time cap is ~5 minutes
+      // regardless of how many Contracts dispatched.
+      //
+      // BLOCKER 1 fix — `event` vs `async` binding distinction in
+      // Inngest's if-expression DSL (spec §4.3):
+      //   - `event` references the original `scan.queued` event that
+      //     triggered this function. It carries scanId but NOT module
+      //     or contractId.
+      //   - `async` references the incoming `scan.module.completed`
+      //     event being matched. It carries all three fields.
+      // The equality `event.data.scanId == async.data.scanId` scopes
+      // the waiter to this scan; the literal module + contractId
+      // comparisons against async.data narrow to the specific
+      // (Contract, module) row. Referencing `event.data.module` or
+      // `event.data.contractId` here would silently fail to ever
+      // match — those fields don't exist on the trigger event. This
+      // is the load-bearing factual claim about Inngest 3.x that
+      // Phase D.4's cross-scope isolation tests guard against
+      // regression.
+      //
+      // Each waitForEvent step is uniquely named per (module,
+      // contractId) so retries don't cross-resume across siblings.
+      // Plan 03 §4.4 default is 5 minutes; the TIMEOUT_PER_MODULE_RUN_MS
+      // env var lets integration tests override to a short value (e.g.,
+      // 10s) so per-Contract timeout isolation can be runtime-verified
+      // within a vitest wall-time budget.
+      const waitTimeout = formatInngestDuration(getTimeoutPerModuleRunMs());
+      const waitResults = await Promise.all(
+        queuedRuns.map((mr) =>
+          step.waitForEvent(`wait-${mr.module}-${mr.contractId}`, {
+            event: "scan.module.completed",
+            if: `event.data.scanId == async.data.scanId && async.data.module == '${mr.module}' && async.data.contractId == '${mr.contractId}'`,
+            timeout: waitTimeout,
           }),
+        ),
+      );
+
+      // Spec §4.4 — for any wait that timed out (waitForEvent returns
+      // null on timeout), mark the corresponding ModuleRun as FAILED
+      // with errorMessage "module_timeout". The status filter
+      // (where: { status: { in: ["QUEUED", "RUNNING"] } }) is the
+      // race-safety mechanism per spec §4.3 orphan-event handling: if
+      // a delayed completion event already wrote the row to
+      // COMPLETE/FAILED between this Promise.all settling and the
+      // updateMany executing, the where-clause matches zero rows and
+      // the timeout step becomes a harmless no-op.
+      //
+      // The inner Promise.all parallelises the per-row updateManys but
+      // is itself wrapped in a single step.run — Inngest only
+      // serialises one step boundary here, not N, keeping the step
+      // count predictable.
+      const timedOut = queuedRuns.filter((_, i) => waitResults[i] === null);
+      if (timedOut.length > 0) {
+        await step.run("mark-module-timeout", () =>
+          Promise.all(
+            timedOut.map((mr) =>
+              prisma.moduleRun.updateMany({
+                where: {
+                  scanId,
+                  module: mr.module,
+                  contractId: mr.contractId,
+                  status: { in: ["QUEUED", "RUNNING"] },
+                },
+                data: {
+                  status: "FAILED",
+                  errorMessage: "module_timeout",
+                  completedAt: new Date(),
+                },
+              }),
+            ),
+          ),
         );
       }
     }

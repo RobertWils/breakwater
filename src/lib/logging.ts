@@ -55,11 +55,14 @@ export type ScanLogEvent =
   | {
       event: "module.skip_not_queued";
       scanId: string;
+      /** Plan 03 §4.3 — per-Contract context. Optional for Plan 02 carryover callsites. */
+      contractId?: string;
       module: string;
     }
   | {
       event: "module.already_terminal";
       scanId: string;
+      contractId?: string;
       module: string;
       /** Which compare-and-set failed: `skip` (marked=0) or `complete` (finalized=false). */
       stage: "skip" | "complete";
@@ -67,12 +70,14 @@ export type ScanLogEvent =
   | {
       event: "module.execution_error";
       scanId: string;
+      contractId?: string;
       module: string;
       error: string;
     }
   | {
       event: "module.completed";
       scanId: string;
+      contractId?: string;
       module: string;
       status: "COMPLETE" | "FAILED" | "SKIPPED";
       findingCount: number;
@@ -81,6 +86,7 @@ export type ScanLogEvent =
   | {
       event: "detector.error";
       scanId: string;
+      contractId?: string;
       detectorId: string;
       error: string;
     };

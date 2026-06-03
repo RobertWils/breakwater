@@ -16,9 +16,13 @@ import { log } from "@/lib/logging";
 import { checkIpRateLimit, DEDUPE_WINDOW_MS } from "@/lib/rate-limit";
 import { createScanAttempt } from "@/lib/scan-attempt";
 import { ScanErrors, ScanSubmissionError } from "@/lib/scan-submission/errors";
-import type { ScanSubmission } from "@/lib/schemas/scan";
+import {
+  validateRelatedContracts,
+  type NormalizedRelatedContract,
+  type ScanSubmission,
+} from "@/lib/schemas/scan";
 
-import { ModuleName } from "@prisma/client";
+import { ContractRole, ModuleName, Prisma } from "@prisma/client";
 
 // Sentinel values for NOT NULL fields on ScanAttempt when full context is unavailable.
 const SENTINEL_COOLDOWN_MALFORMED_JSON = "invalid:json";
@@ -62,30 +66,61 @@ export const IMPLEMENTED_MODULES: ReadonlySet<ModuleName> = new Set<ModuleName>(
 /**
  * Discriminator for why a ModuleRun ships SKIPPED. `null` means the
  * row will ship QUEUED (no skip condition triggered).
+ *
+ * Plan 03 §4.2 adds `role_not_applicable_to_module` between the
+ * `module_not_implemented` and `domain_required` priority levels.
  */
 export type SkipReason =
   | "module_disabled_by_user"
   | "module_not_implemented"
+  | "role_not_applicable_to_module"
   | "domain_required"
   | null;
+
+/**
+ * Plan 03 §4.2 — applicable Contract roles per module. The GOVERNANCE
+ * module skips TOKEN_CONTRACT (ERC-20 surface, not governance) and
+ * DECLARED_BRIDGE (deferred to Plan 04 GOV-007). Future modules will
+ * add their own entries here.
+ */
+const APPLICABLE_ROLES_BY_MODULE: Record<ModuleName, ReadonlySet<ContractRole>> = {
+  [ModuleName.GOVERNANCE]: new Set<ContractRole>([
+    ContractRole.PRIMARY,
+    ContractRole.PROXY_IMPLEMENTATION,
+    ContractRole.DECLARED_MULTISIG,
+    ContractRole.TIMELOCK,
+    ContractRole.RELATED,
+  ]),
+  // ORACLE / SIGNER / FRONTEND are not yet implemented; their entries
+  // here are placeholders so the type is exhaustive. The
+  // module_not_implemented gate fires before the role check for these.
+  [ModuleName.ORACLE]: new Set<ContractRole>(),
+  [ModuleName.SIGNER]: new Set<ContractRole>(),
+  [ModuleName.FRONTEND]: new Set<ContractRole>(),
+};
 
 /**
  * H.9 N2: pure, exported priority-resolution for the skip reason on
  * a ModuleRun row. Priority order (first match wins):
  *   1. `module_disabled_by_user` — user explicit opt-out beats other
  *      reasons because their intent is the most useful audit signal.
- *   2. `module_not_implemented` — no Inngest handler; beats
- *      `domain_required` because "we cannot run this module at all"
- *      is a more fundamental reason than "we'd need more input."
- *   3. `domain_required` — the FRONTEND-needs-domain case.
+ *   2. `module_not_implemented` — no Inngest handler; beats role and
+ *      domain checks because "we cannot run this module at all" is a
+ *      more fundamental reason than "we'd need different input."
+ *   3. `role_not_applicable_to_module` — Plan 03 §4.2. The module is
+ *      implemented but doesn't apply to this Contract's role (e.g.,
+ *      GOVERNANCE on a TOKEN_CONTRACT or DECLARED_BRIDGE).
+ *   4. `domain_required` — the FRONTEND-needs-domain case.
  *
- * Returns `null` when none of the three conditions trigger — the
+ * Returns `null` when none of the four conditions trigger — the
  * caller seeds the row as QUEUED with `errorMessage: null`.
  *
  * Pure function with no IO — unit-testable without the integration
  * fixture cost. See `scan-submission-modules.test.ts`.
  */
 export function computeSkipReason(params: {
+  module: ModuleName;
+  role: ContractRole;
   enabled: boolean;
   implemented: boolean;
   requiresDomain: boolean;
@@ -93,6 +128,9 @@ export function computeSkipReason(params: {
 }): SkipReason {
   if (!params.enabled) return "module_disabled_by_user";
   if (!params.implemented) return "module_not_implemented";
+  if (!APPLICABLE_ROLES_BY_MODULE[params.module].has(params.role)) {
+    return "role_not_applicable_to_module";
+  }
   if (params.requiresDomain && !params.hasDomain) return "domain_required";
   return null;
 }
@@ -119,10 +157,14 @@ export function generateSlug(
   return `${chain.toLowerCase()}-${shortAddr}`.toLowerCase();
 }
 
-function generateIdempotencyKey(scanId: string, module: string): string {
+function generateIdempotencyKey(
+  scanId: string,
+  module: string,
+  contractId: string,
+): string {
   const hourBucket = Math.floor(Date.now() / (60 * 60 * 1000));
   return createHash("sha256")
-    .update(`${scanId}:${module}:${hourBucket}`)
+    .update(`${scanId}:${module}:${contractId}:${hourBucket}`)
     .digest("hex");
 }
 
@@ -290,6 +332,28 @@ export async function submitScan(
     }
   }
 
+  // ── Step 1b (Plan 03 §4.1): per-related-contract address validation ──
+  // The new `relatedContracts` array goes through isValidAddress just like
+  // the primary + legacy extras above. This catches malformed entries
+  // before the normalization + dedup step below.
+  for (let i = 0; i < input.relatedContracts.length; i++) {
+    const entry = input.relatedContracts[i]!;
+    if (!isValidAddress(input.chain, entry.address)) {
+      await logInvalidAttempt({
+        ipHash,
+        userId,
+        userAgent,
+        cooldownKey: SENTINEL_COOLDOWN_ADDRESS,
+        inputPayloadHash: SENTINEL_PAYLOAD_ADDRESS,
+        reason: `invalid_relatedContracts`,
+      });
+      throw ScanErrors.invalidAddress(input.chain, entry.address, {
+        field: "relatedContracts",
+        index: i,
+      });
+    }
+  }
+
   // ── Step 2: Normalize all addresses ──
   const normalizedAddress = normalizeAddress(input.chain, input.primaryContractAddress);
   const normalizedExtras = input.extraContractAddresses.map((a) =>
@@ -298,6 +362,42 @@ export async function submitScan(
   const normalizedMultisigs = input.multisigs.map((a) =>
     normalizeAddress(input.chain, a),
   );
+
+  // ── Step 2b (Plan 03 §4.1): merge legacy extras into relatedContracts +
+  //    run validateRelatedContracts ──
+  // Legacy `extraContractAddresses` plain strings normalise to RELATED-role
+  // entries so a single validation pass covers both submission shapes. The
+  // helper handles primary-address-in-related (misconfiguration vs silent
+  // dedupe) and inter-related deduplication.
+  const mergedRelated = [
+    ...input.relatedContracts.map((entry) => ({
+      ...entry,
+      address: normalizeAddress(input.chain, entry.address),
+    })),
+    ...normalizedExtras.map((addr) => ({
+      address: addr,
+      role: "RELATED" as const,
+      label: undefined,
+      crossChainTwins: [] as { chain: string; address: string }[],
+    })),
+  ];
+  const relatedResult = validateRelatedContracts(normalizedAddress, mergedRelated);
+  if (!relatedResult.ok) {
+    await logInvalidAttempt({
+      ipHash,
+      userId,
+      userAgent,
+      cooldownKey: SENTINEL_COOLDOWN_ADDRESS,
+      inputPayloadHash: SENTINEL_PAYLOAD_ADDRESS,
+      reason: relatedResult.code,
+    });
+    throw ScanErrors.primaryAddressInRelated(
+      relatedResult.details.address,
+      relatedResult.details.role,
+    );
+  }
+  const normalizedRelatedContracts: NormalizedRelatedContract[] =
+    relatedResult.normalized;
 
   // ── Step 2 cont: Compute hashes and cooldown key ──
   const payloadHash = hashPayload({
@@ -457,7 +557,13 @@ export async function submitScan(
         data: {
           chain: input.chain,
           primaryContractAddress: normalizedAddress,
-          extraContractAddresses: normalizedExtras,
+          // Plan 03 §3.4: `Protocol.extraContractAddresses` is superseded
+          // by the new Contract model. New scans no longer write this
+          // column (the related-contract data lives on Contract rows
+          // via §4.2). The column stays on the schema for backward-compat
+          // reads of pre-Plan-03 Protocol rows but is dead data going
+          // forward — initialise as `[]` here, never updated again.
+          extraContractAddresses: [],
           domain: input.domain ?? null,
           displayName: deriveDisplayName(input, normalizedAddress),
           slug: generateSlug(input.chain, normalizedAddress),
@@ -504,46 +610,94 @@ export async function submitScan(
           : null,
         ipHash,
         userAgent,
-        compositeScore: null,
+        // Plan 03 §3.5 PR 1: `compositeScore` renamed to `averageContractScore`.
+        averageContractScore: null,
+        worstContractScore: null,
         compositeGrade: null,
         isPartialGrade: false,
+        isPartialCoverage: false,
         expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
       },
       select: { id: true },
     });
 
-    // Step 10: Create one ModuleRun row per ModuleName enum value.
+    // Step 9b (Plan 03 §4.2): Create Contract rows. The PRIMARY row is
+    // always created from `primaryContractAddress`; one additional row
+    // per normalized related contract from `normalizedRelatedContracts`
+    // (which already merges the legacy `extraContractAddresses` shape and
+    // ran through validateRelatedContracts). The Contract.scan FK
+    // cascades on delete, so a tx rollback after this point cleanly
+    // removes the rows alongside the parent Scan.
+    const primaryContract = await tx.contract.create({
+      data: {
+        scanId: scan.id,
+        address: normalizedAddress,
+        chain: input.chain,
+        role: ContractRole.PRIMARY,
+        isPrimary: true,
+        label: null,
+        crossChainTwins: [],
+      },
+      select: { id: true, address: true, role: true },
+    });
+    const relatedContractRows: { id: string; address: string; role: ContractRole }[] =
+      [];
+    for (const entry of normalizedRelatedContracts) {
+      const row = await tx.contract.create({
+        data: {
+          scanId: scan.id,
+          address: entry.address,
+          chain: input.chain,
+          role: entry.role as ContractRole,
+          isPrimary: false,
+          label: entry.label ?? null,
+          crossChainTwins: entry.crossChainTwins,
+        },
+        select: { id: true, address: true, role: true },
+      });
+      relatedContractRows.push(row);
+    }
+    const allContractRows = [primaryContract, ...relatedContractRows];
+
+    // Step 10 (Plan 03 §4.2): Create ModuleRun rows per (Contract, module)
+    // pair. The H.6 + H.9 N2 priority resolution still applies; Plan 03
+    // §4.2 adds `role_not_applicable_to_module` between the
+    // module_not_implemented and domain_required priority levels (see
+    // `computeSkipReason`).
     //
-    // H.6 introduced the SKIPPED-with-audit-reason gate; H.9 refined
-    // it: iteration is now derived from the ModuleName enum
-    // (Object.values) instead of a hardcoded array — N1 future-proofing
-    // against adding a new ModuleName without updating this loop. The
-    // skip-reason priority resolution lives in the pure `computeSkipReason`
-    // helper above; this loop just applies its decision.
-    const moduleRuns = (Object.values(ModuleName) as ModuleName[]).map(
-      (name) => {
+    // The legacy @@unique([scanId, module]) was dropped in PR 1's
+    // `plan_03_drop_modulerun_legacy_unique` migration so N×M rows per
+    // scan can coexist. PR 2's tightening adds the new composite unique
+    // (scanId, module, contractId) once contractId is NOT NULL across
+    // all historical rows.
+    const moduleRuns: Prisma.ModuleRunCreateManyInput[] = [];
+    for (const contract of allContractRows) {
+      for (const name of Object.values(ModuleName) as ModuleName[]) {
         const enabled = (input.modulesEnabled as string[]).includes(name);
         const implemented = IMPLEMENTED_MODULES.has(name);
         const requiresDomain = name === ModuleName.FRONTEND;
         const hasDomain = !!input.domain;
 
         const skipReason = computeSkipReason({
+          module: name,
+          role: contract.role,
           enabled,
           implemented,
           requiresDomain,
           hasDomain,
         });
 
-        return {
+        moduleRuns.push({
           scanId: scan.id,
+          contractId: contract.id,
           module: name,
-          status: skipReason
-            ? ("SKIPPED" as const)
-            : ("QUEUED" as const),
+          status: skipReason ? "SKIPPED" : "QUEUED",
           errorMessage: skipReason,
-          idempotencyKey: generateIdempotencyKey(scan.id, name),
+          idempotencyKey: generateIdempotencyKey(scan.id, name, contract.id),
           inputSnapshot: {
             chain: input.chain,
+            contractAddress: contract.address,
+            contractRole: contract.role,
             normalizedAddress,
             extraContractAddresses: normalizedExtras,
             domain: input.domain ?? null,
@@ -553,16 +707,16 @@ export async function submitScan(
           attemptCount: 0,
           rpcCallsUsed: 0,
           detectorVersions: {},
-        };
-      },
-    );
+        });
+      }
+    }
 
-    // H.9 BLOCKER Layer B: reject scans where every module would ship
-    // SKIPPED (zero runnable). Schema-level `.min(1)` catches
-    // `modulesEnabled: []`; this catches the case where only
-    // unimplemented modules are enabled (e.g. `["ORACLE"]`). Throws
-    // before `createMany` so no ModuleRun rows persist; the throw
-    // also rolls back the Scan row this tx callback already created.
+    // H.9 BLOCKER Layer B (Plan 03 extension): reject scans where every
+    // (Contract, module) pair would ship SKIPPED (zero runnable across
+    // the entire graph). Plan 02 checked per-module; Plan 03 checks
+    // across the flattened (Contract × Module) matrix. Throws before
+    // `createMany` so no ModuleRun rows persist; the throw also rolls
+    // back the Scan + Contract rows this tx callback already created.
     if (!moduleRuns.some((m) => m.status === "QUEUED")) {
       throw ScanErrors.noRunnableModules(
         Array.from(IMPLEMENTED_MODULES).sort(),

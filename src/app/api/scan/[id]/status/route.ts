@@ -1,20 +1,25 @@
 /**
- * GET /api/scan/[id]/status — lightweight polling endpoint (Plan 02 G.1).
+ * GET /api/scan/[id]/status — lightweight polling endpoint.
  *
- * Returns status-level data only (no findings, no protocol, no error
- * stacks). Used by the Phase G.2 `useScanPolling` hook so /scan/[id]
- * can transition QUEUED → RUNNING → COMPLETE without re-fetching the
- * full ~2 KB scan body. Target payload ≤200 bytes (spec §6.3).
+ * Plan 03 §7.3 — per-Contract polling shape. Returns one entry per
+ * Contract on the scan, each with its own per-(Contract, module)
+ * ModuleRun statuses. `useScanPolling` consumes this for the
+ * per-Contract status pulses inside each ContractCard.
  *
- * Cache-Control per spec §6.2:
+ * Used by the `useScanPolling` hook so /scan/[id] can transition
+ * QUEUED → RUNNING → COMPLETE without re-fetching the full ~2 KB
+ * scan body.
+ *
+ * Cache-Control per spec §6.2 (Plan 02 carry-over):
  *   - Non-terminal (QUEUED, RUNNING, PARTIAL_COMPLETE) → no-store
  *   - Terminal (COMPLETE, FAILED, EXPIRED) → private, max-age=60
  *
  * Drift vs spec §6.3 payload: `updatedAt` is omitted. The Scan model
  * has `createdAt` + `completedAt` but no `@updatedAt`; spec listed
  * `updatedAt` against a column that doesn't exist. The polling hook
- * only reads `data.status`, so the field is unused downstream. Adding
- * an `updatedAt` column is a Plan 03+ schema change if needed.
+ * only reads `data.status` + `data.contracts`, so the field is unused
+ * downstream. Adding an `updatedAt` column is a Plan 04+ schema
+ * change if needed.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -49,12 +54,21 @@ export async function GET(
       select: {
         id: true,
         status: true,
-        modules: {
-          orderBy: { module: "asc" },
+        contracts: {
           select: {
-            module: true,
-            status: true,
-            grade: true,
+            id: true,
+            address: true,
+            label: true,
+            role: true,
+            isPrimary: true,
+            moduleRuns: {
+              orderBy: { module: "asc" },
+              select: {
+                module: true,
+                status: true,
+                grade: true,
+              },
+            },
           },
         },
       },
@@ -71,7 +85,14 @@ export async function GET(
       {
         id: scan.id,
         status: scan.status,
-        modules: scan.modules,
+        contracts: scan.contracts.map((c) => ({
+          id: c.id,
+          address: c.address,
+          label: c.label,
+          role: c.role,
+          isPrimary: c.isPrimary,
+          modules: c.moduleRuns,
+        })),
       },
       {
         status: 200,

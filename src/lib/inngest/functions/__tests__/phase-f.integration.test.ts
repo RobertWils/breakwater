@@ -152,9 +152,25 @@ async function seedProtocolAndScan() {
     },
   });
 
+  // Plan 03 Phase B: every scan has at least one Contract row (the
+  // PRIMARY). Phase E.1 made executeGovernanceModule per-Contract so
+  // the test fixture has to seed the Contract row that the ModuleRun
+  // references — without it `markModuleRunning(scanId, contractId, ...)`
+  // matches zero rows.
+  const contract = await prisma.contract.create({
+    data: {
+      scanId: scan.id,
+      address: address.toLowerCase(),
+      chain: "ETHEREUM",
+      role: "PRIMARY",
+      isPrimary: true,
+    },
+  });
+
   const moduleRun = await prisma.moduleRun.create({
     data: {
       scanId: scan.id,
+      contractId: contract.id,
       module: "GOVERNANCE",
       status: "QUEUED",
       detectorVersions: {},
@@ -163,17 +179,22 @@ async function seedProtocolAndScan() {
     },
   });
 
-  return { protocol, scan, moduleRun };
+  return { protocol, scan, contract, moduleRun };
 }
 
 async function seedFindings(
   scanId: string,
+  contractId: string,
   moduleRunId: string,
   severities: Array<"CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO">,
 ) {
   await prisma.finding.createMany({
     data: severities.map((severity, idx) => ({
       scanId,
+      // Phase F.2: markComplete reads findings via `Contract.findings`,
+      // so the test fixture must mirror what persistSnapshotAndFindings
+      // writes in real execution — contractId set.
+      contractId,
       moduleRunId,
       module: "GOVERNANCE" as const,
       severity,
@@ -199,19 +220,19 @@ describe.skipIf(!hasDb)(
   "Phase F integration smoke (DB-backed: ModuleRun + Scan grade persistence)",
   () => {
     it("COMPLETE path: ModuleRun.grade + score AND Scan.compositeScore + compositeGrade persisted", async () => {
-      const { scan, moduleRun } = await seedProtocolAndScan();
+      const { scan, contract, moduleRun } = await seedProtocolAndScan();
 
       // Lifecycle step 1: executeScan.markRunning → Scan QUEUED → RUNNING.
       const runResult = await markRunning(prisma, scan.id);
       expect(runResult.skipped).toBe(false);
 
       // Lifecycle step 2: module-side markModuleRunning → ModuleRun QUEUED → RUNNING.
-      const modRun = await markModuleRunning(prisma, scan.id, "evt-smoke-1");
+      const modRun = await markModuleRunning(prisma, scan.id, contract.id, "evt-smoke-1");
       expect(modRun.skipped).toBe(false);
 
       // Seed findings the way persistSnapshotAndFindings would —
       // 1 HIGH + 2 MEDIUM = -40 penalty → score 60, grade C (spec §5.3).
-      await seedFindings(scan.id, moduleRun.id, [
+      await seedFindings(scan.id, contract.id, moduleRun.id, [
         "HIGH",
         "MEDIUM",
         "MEDIUM",
@@ -229,6 +250,7 @@ describe.skipIf(!hasDb)(
       const modCompleted = await markModuleComplete(
         prisma,
         scan.id,
+        contract.id,
         "COMPLETE",
         null,
         computed.grade,
@@ -255,7 +277,11 @@ describe.skipIf(!hasDb)(
         where: { id: scan.id },
       });
       expect(persistedScan.status).toBe("COMPLETE");
-      expect(persistedScan.compositeScore).toBe(60);
+      // Plan 03 §3.5 PR 1: column renamed. Single-contract scans (Plan 02
+      // legacy + Phase A behavior) still write the same value here — the
+      // semantic of "average of one Contract == that one Contract's score"
+      // is preserved while the schema rename lands.
+      expect(persistedScan.averageContractScore).toBe(60);
       expect(persistedScan.compositeGrade).toBe("C");
       expect(persistedScan.completedAt).not.toBeNull();
 
@@ -273,19 +299,20 @@ describe.skipIf(!hasDb)(
     });
 
     it("FAILED path: ModuleRun.grade + score null AND Scan.compositeScore + compositeGrade null", async () => {
-      const { scan, moduleRun } = await seedProtocolAndScan();
+      const { scan, contract, moduleRun } = await seedProtocolAndScan();
 
       await markRunning(prisma, scan.id);
-      await markModuleRunning(prisma, scan.id, "evt-smoke-2");
+      await markModuleRunning(prisma, scan.id, contract.id, "evt-smoke-2");
 
       // Even though findings exist, FAILED skips grade computation
       // (F.4.2 Option 1: partial findings on a failed module run don't
       // represent a meaningful assessment).
-      await seedFindings(scan.id, moduleRun.id, ["CRITICAL"]);
+      await seedFindings(scan.id, contract.id, moduleRun.id, ["CRITICAL"]);
 
       const modCompleted = await markModuleComplete(
         prisma,
         scan.id,
+        contract.id,
         "FAILED",
         "smoke_test_failure",
         null,
@@ -308,7 +335,8 @@ describe.skipIf(!hasDb)(
         where: { id: scan.id },
       });
       expect(persistedScan.status).toBe("FAILED");
-      expect(persistedScan.compositeScore).toBeNull();
+      // Plan 03 §3.5 PR 1: column renamed.
+      expect(persistedScan.averageContractScore).toBeNull();
       expect(persistedScan.compositeGrade).toBeNull();
 
       const persistedModule = await prisma.moduleRun.findUniqueOrThrow({
@@ -326,9 +354,9 @@ describe.skipIf(!hasDb)(
       // Closes the F.5 review IMPORTANT that the smoke test was
       // bypassing the actual code that runs in the Inngest function
       // body's capture-detect-persist step.
-      const { scan, moduleRun } = await seedProtocolAndScan();
+      const { scan, contract, moduleRun } = await seedProtocolAndScan();
       await markRunning(prisma, scan.id);
-      await markModuleRunning(prisma, scan.id, "evt-smoke-i2");
+      await markModuleRunning(prisma, scan.id, contract.id, "evt-smoke-i2");
 
       const snapshot = baseSnapshot({
         blockNumber: BigInt(20_000_001),
@@ -365,12 +393,16 @@ describe.skipIf(!hasDb)(
       ];
 
       const result = await prisma.$transaction((tx) =>
-        persistSnapshotAndFindings(tx, scan.id, snapshot, findings),
+        persistSnapshotAndFindings(tx, scan.id, contract.id, snapshot, findings),
       );
       expect(result.findingCount).toBe(2);
       expect(result.snapshot.scanId).toBe(scan.id);
 
-      const persistedSnapshot = await prisma.governanceSnapshot.findUnique({
+      // Plan 03 §3.5 PR 1: GovernanceSnapshot.scanId is no longer @unique,
+      // so findUnique({ where: { scanId } }) doesn't type-check. Use
+      // findFirst for the test assertion; the data invariant (one snapshot
+      // per scan) still holds for Plan-02-shape data.
+      const persistedSnapshot = await prisma.governanceSnapshot.findFirst({
         where: { scanId: scan.id },
       });
       expect(persistedSnapshot).not.toBeNull();
@@ -402,9 +434,9 @@ describe.skipIf(!hasDb)(
       // The Inngest step.run replay contract requires this. Without
       // delete-then-insert in persistSnapshotAndFindings, a retry
       // after a partial commit doubles the Finding row count.
-      const { scan, moduleRun } = await seedProtocolAndScan();
+      const { scan, contract, moduleRun } = await seedProtocolAndScan();
       await markRunning(prisma, scan.id);
-      await markModuleRunning(prisma, scan.id, "evt-smoke-idem");
+      await markModuleRunning(prisma, scan.id, contract.id, "evt-smoke-idem");
 
       const snapshot = baseSnapshot({ blockNumber: BigInt(20_000_002) });
       const findings: GovernanceFindingInput[] = [
@@ -426,15 +458,15 @@ describe.skipIf(!hasDb)(
 
       // First call: 1 row.
       await prisma.$transaction((tx) =>
-        persistSnapshotAndFindings(tx, scan.id, snapshot, findings),
+        persistSnapshotAndFindings(tx, scan.id, contract.id, snapshot, findings),
       );
       // Second call (simulates Inngest replay): must still be 1 row.
       await prisma.$transaction((tx) =>
-        persistSnapshotAndFindings(tx, scan.id, snapshot, findings),
+        persistSnapshotAndFindings(tx, scan.id, contract.id, snapshot, findings),
       );
       // Third call for safety: still 1 row.
       await prisma.$transaction((tx) =>
-        persistSnapshotAndFindings(tx, scan.id, snapshot, findings),
+        persistSnapshotAndFindings(tx, scan.id, contract.id, snapshot, findings),
       );
 
       const rows = await prisma.finding.findMany({
@@ -457,9 +489,9 @@ describe.skipIf(!hasDb)(
       // 3. Mark the module COMPLETE
       // 4. Run scan-level markComplete → reads ModuleRun.errorDetectorCount
       //    and flips Scan.isPartialGrade
-      const { scan, moduleRun } = await seedProtocolAndScan();
+      const { scan, contract, moduleRun } = await seedProtocolAndScan();
       await markRunning(prisma, scan.id);
-      await markModuleRunning(prisma, scan.id, "evt-i1-fix3");
+      await markModuleRunning(prisma, scan.id, contract.id, "evt-i1-fix3");
 
       const snapshot = baseSnapshot({ blockNumber: BigInt(20_000_003) });
       const findings: GovernanceFindingInput[] = [
@@ -480,7 +512,7 @@ describe.skipIf(!hasDb)(
       ];
 
       await prisma.$transaction((tx) =>
-        persistSnapshotAndFindings(tx, scan.id, snapshot, findings, 2),
+        persistSnapshotAndFindings(tx, scan.id, contract.id, snapshot, findings, 2),
       );
 
       // ModuleRun.errorDetectorCount is now 2 on disk.
@@ -491,7 +523,7 @@ describe.skipIf(!hasDb)(
 
       // Flip module COMPLETE so scan-level markComplete sees a terminal
       // module to read errorDetectorCount from.
-      await markModuleComplete(prisma, scan.id, "COMPLETE", null, "C", 70);
+      await markModuleComplete(prisma, scan.id, contract.id, "COMPLETE", null, "C", 70);
 
       const scanResult = await markComplete(prisma, scan.id);
       if (scanResult.finalStatus === null) {
@@ -506,6 +538,159 @@ describe.skipIf(!hasDb)(
         where: { id: scan.id },
       });
       expect(persistedScan.isPartialGrade).toBe(true);
+    });
+
+    // Phase F.2 — multi-Contract rollup end-to-end. Exercises the
+    // §6.2 worst-grade-wins + tie-break + isPartialCoverage logic
+    // against the real DB + the per-Contract grading inside
+    // markComplete. Complements the pure-function unit tests in
+    // src/lib/scoring/__tests__/protocol-rollup.test.ts (covering
+    // cases A-J) by verifying the wire-up writes Scan + Contract
+    // rows with the expected values.
+    it("multi-Contract rollup: 3 Contracts (A clean / C with findings / FAILED) → Scan composite C + isPartialCoverage TRUE + per-Contract grades persisted", async () => {
+      const protocol = await prisma.protocol.create({
+        data: {
+          slug: uniqueSlug(),
+          displayName: "Phase F multi-Contract Rollup",
+          chain: "ETHEREUM",
+          primaryContractAddress: uniqueEthAddress().toLowerCase(),
+          ownershipStatus: "UNCLAIMED",
+        },
+      });
+      createdProtocolIds.push(protocol.id);
+
+      const scan = await prisma.scan.create({
+        data: {
+          protocolId: protocol.id,
+          status: "RUNNING",
+          executionStartedAt: new Date(),
+          ipHash: uniqueIpHash(),
+          userAgent: "phase-f-rollup/1.0",
+          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        },
+      });
+
+      // Three Contracts on the scan:
+      //   - cA: PRIMARY, grades A (clean, 0 findings)
+      //   - cB: PROXY_IMPLEMENTATION, grades C (1 HIGH + 2 MEDIUM → score 60)
+      //   - cC: TIMELOCK, FAILED (module crashed, no grade)
+      const cA = await prisma.contract.create({
+        data: {
+          scanId: scan.id,
+          address: uniqueEthAddress().toLowerCase(),
+          chain: "ETHEREUM",
+          role: "PRIMARY",
+          isPrimary: true,
+        },
+      });
+      const cB = await prisma.contract.create({
+        data: {
+          scanId: scan.id,
+          address: uniqueEthAddress().toLowerCase(),
+          chain: "ETHEREUM",
+          role: "PROXY_IMPLEMENTATION",
+          isPrimary: false,
+        },
+      });
+      const cC = await prisma.contract.create({
+        data: {
+          scanId: scan.id,
+          address: uniqueEthAddress().toLowerCase(),
+          chain: "ETHEREUM",
+          role: "TIMELOCK",
+          isPrimary: false,
+        },
+      });
+
+      // Per-Contract ModuleRun + completion via the real
+      // markModuleComplete helper, so the test exercises the actual
+      // status-write path.
+      for (const [contract, status, grade, score] of [
+        [cA, "COMPLETE", "A", 100],
+        [cB, "COMPLETE", "C", 60],
+        [cC, "FAILED", null, null],
+      ] as const) {
+        const mr = await prisma.moduleRun.create({
+          data: {
+            scanId: scan.id,
+            contractId: contract.id,
+            module: "GOVERNANCE",
+            status: "RUNNING",
+            startedAt: new Date(),
+            detectorVersions: {},
+            inputSnapshot: {},
+            idempotencyKey: `pf-roll-${scan.id}-${contract.id}`,
+          },
+        });
+        if (status === "COMPLETE" && contract.id === cB.id) {
+          await seedFindings(scan.id, cB.id, mr.id, [
+            "HIGH",
+            "MEDIUM",
+            "MEDIUM",
+          ]);
+        }
+        await markModuleComplete(
+          prisma,
+          scan.id,
+          contract.id,
+          status,
+          status === "FAILED" ? "module_timeout" : null,
+          grade,
+          score,
+        );
+      }
+
+      const scanResult = await markComplete(prisma, scan.id);
+      if (scanResult.finalStatus === null) {
+        throw new Error(
+          `expected finalised result, got ${JSON.stringify(scanResult)}`,
+        );
+      }
+
+      // Scan-level rollup assertions — §6.2 worst-grade-wins with
+      // averageContractScore over the 2 graded contributors.
+      expect(scanResult.finalStatus).toBe("COMPLETE");
+      expect(scanResult.compositeGrade).toBe("C"); // worst grade of {A, C}
+      // averageContractScore: round((100 + 60) / 2) = 80
+      expect(scanResult.compositeScore).toBe(80);
+      expect(scanResult.findingsCount).toBe(3); // only cB's findings
+      // No COMPLETE ModuleRun had errorDetectorCount > 0.
+      expect(scanResult.isPartialGrade).toBe(false);
+
+      // Persisted Scan fields — confirms the wire-up writes the new
+      // columns added in Phase A's additive migration.
+      const persistedScan = await prisma.scan.findUniqueOrThrow({
+        where: { id: scan.id },
+      });
+      expect(persistedScan.status).toBe("COMPLETE");
+      expect(persistedScan.compositeGrade).toBe("C");
+      expect(persistedScan.averageContractScore).toBe(80);
+      expect(persistedScan.worstContractScore).toBe(60); // C-grader's score
+      expect(persistedScan.isPartialGrade).toBe(false);
+      expect(persistedScan.isPartialCoverage).toBe(true); // FAILED sibling
+
+      // Per-Contract grades persisted on Contract rows — Phase F.2
+      // writes these inside markComplete via client.contract.update.
+      const persistedA = await prisma.contract.findUniqueOrThrow({
+        where: { id: cA.id },
+      });
+      expect(persistedA.compositeGrade).toBe("A");
+      expect(persistedA.compositeScore).toBe(100);
+      expect(persistedA.isPartialGrade).toBe(false);
+
+      const persistedB = await prisma.contract.findUniqueOrThrow({
+        where: { id: cB.id },
+      });
+      expect(persistedB.compositeGrade).toBe("C");
+      expect(persistedB.compositeScore).toBe(60);
+      expect(persistedB.isPartialGrade).toBe(false);
+
+      const persistedC = await prisma.contract.findUniqueOrThrow({
+        where: { id: cC.id },
+      });
+      expect(persistedC.compositeGrade).toBeNull();
+      expect(persistedC.compositeScore).toBeNull();
+      expect(persistedC.isPartialGrade).toBe(false);
     });
   },
 );

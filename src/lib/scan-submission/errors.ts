@@ -75,4 +75,33 @@ export const ScanErrors = {
       `Scan has no runnable modules. At least one implemented module must be enabled. Currently implemented: ${implementedModules.join(", ")}.`,
       { implementedModules },
     ),
+
+  /**
+   * Plan 03 §4.1: only Ethereum scanning is supported. The Chain enum
+   * still includes SOLANA so curated Solana demos render unchanged, but
+   * a live submission with chain !== "ETHEREUM" is rejected here. Plan
+   * 04+ lifts this gate when multi-chain scanning lands.
+   */
+  unsupportedChain: (chain: string) =>
+    new ScanSubmissionError(
+      "unsupported_chain_for_plan_03",
+      400,
+      `Plan 03 only supports ETHEREUM scans. Received chain: ${chain}.`,
+      { chain },
+    ),
+
+  /**
+   * Plan 03 §4.1: the user submitted `primaryContractAddress` AND listed
+   * the same address in `relatedContracts` with a non-default role
+   * (anything other than RELATED). This is a misconfiguration — the data
+   * model cannot represent one address with two roles. RELATED + no-role
+   * duplicates are silently deduped instead (see `validateRelatedContracts`).
+   */
+  primaryAddressInRelated: (address: string, role: string) =>
+    new ScanSubmissionError(
+      "primary_address_in_related",
+      400,
+      `Primary address ${address} also appears in relatedContracts with role ${role}. Submit it with role RELATED to dedupe silently, or remove it from relatedContracts.`,
+      { address, role },
+    ),
 };

@@ -13,45 +13,82 @@ import type { GovernanceSnapshotData } from "./types";
  * Same convention as `ScanAttemptClient` in `src/lib/scan-attempt.ts` —
  * keeps the public API decoupled from Prisma's specific union types.
  */
+// Plan 03 Phase E.2: SnapshotClient now keys lookups on contractId
+// (spec §5.3.1 idempotency invariant — every persistence op scoped by
+// the full composite key). The PR 1 GovernanceSnapshot.scanId column
+// stays nullable on the schema for legacy reads, but the function
+// implementation uses contractId exclusively. The previous Phase A
+// `findFirst({ where: { scanId } })` pattern, which existed as a
+// transitional fallback before Phase E re-keyed this, is gone.
+//
+// Narrow concrete signatures are kept because Prisma's generic
+// `GovernanceSnapshotDelegate` is too wide for `vi.fn<T>()` to satisfy;
+// the real Prisma delegate is structurally compatible with the narrow
+// form below at every call site we make.
 export type SnapshotClient = {
   governanceSnapshot: {
-    upsert: (args: {
-      where: Prisma.GovernanceSnapshotWhereUniqueInput;
-      create: Prisma.GovernanceSnapshotUncheckedCreateInput;
-      update: Prisma.GovernanceSnapshotUncheckedUpdateInput;
+    findFirst: (args: {
+      where: { contractId: string };
+      select: { id: true };
+    }) => Promise<{ id: string } | null>;
+    update: (args: {
+      where: { id: string };
+      data: Prisma.GovernanceSnapshotUncheckedUpdateInput;
+    }) => Promise<GovernanceSnapshot>;
+    create: (args: {
+      data: Prisma.GovernanceSnapshotUncheckedCreateInput;
     }) => Promise<GovernanceSnapshot>;
   };
 };
 
 export interface PersistSnapshotContext {
   scanId: string;
+  contractId: string;
   snapshot: GovernanceSnapshotData;
 }
 
 /**
  * Persist a governance snapshot to the GovernanceSnapshot table.
  *
- * Uses upsert keyed on `scanId` (unique per spec §3 + B.1 schema):
- *   - First write for a scan: insert.
- *   - Re-snapshot (e.g., orchestrator retry): overwrite all detector-
- *     derived fields and bump `capturedAt` to wall-clock now.
+ * Plan 03 §5.3.1 idempotency invariant: keyed on contractId. Plan 02
+ * keyed on scanId (under the @unique constraint), which under Plan 03's
+ * N-Contract-per-scan model would conflict across siblings. Each
+ * Contract gets its own GovernanceSnapshot row.
  *
- * The `client` parameter accepts both the top-level `prisma` and an
- * in-transaction `tx` client. Phase F's executeScan can call this
- * inside a transaction alongside ModuleRun status updates so the
- * snapshot lands atomically with the run record.
+ * Plan 03 §3.5 PR 1 transition: scanId lost its @unique, so the
+ * Plan 02 atomic `upsert({ where: { scanId } })` is replaced with
+ * `findFirst → create / update` keyed on contractId. This is NOT
+ * atomic against concurrent writes for the same contractId, but the
+ * production safety holds because (Codex Review #4 NICE_TO_HAVE):
+ *   - `markModuleRunning`'s compare-and-set on RUNNING prevents
+ *     concurrent same-Contract execution within a scan.
+ *   - Inngest sequential replay semantics prevent concurrent steps
+ *     within a single function execution.
+ *   - Different Contract rows target different snapshot rows
+ *     (Phase E.2's per-Contract scoping ensures each invocation
+ *     persists only its own contractId).
+ * PR 2 adds `@unique(contractId)` to GovernanceSnapshot; this
+ * function can return to atomic upsert at that point.
  */
 export async function persistGovernanceSnapshot(
   context: PersistSnapshotContext,
   client: SnapshotClient = prisma,
 ): Promise<GovernanceSnapshot> {
-  const { scanId, snapshot } = context;
+  const { scanId, contractId, snapshot } = context;
   const data = mapSnapshotToCreate(snapshot);
 
-  return client.governanceSnapshot.upsert({
-    where: { scanId },
-    create: { scanId, ...data },
-    update: { ...data, capturedAt: new Date() },
+  const existing = await client.governanceSnapshot.findFirst({
+    where: { contractId },
+    select: { id: true },
+  });
+  if (existing) {
+    return client.governanceSnapshot.update({
+      where: { id: existing.id },
+      data: { ...data, capturedAt: new Date() },
+    });
+  }
+  return client.governanceSnapshot.create({
+    data: { scanId, contractId, ...data },
   });
 }
 
