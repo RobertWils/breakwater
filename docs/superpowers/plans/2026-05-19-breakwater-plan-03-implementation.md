@@ -1756,7 +1756,9 @@ The soak window is open-ended — Robert decides when to proceed to PR 2 based o
 
 **Files:** none.
 
-- [ ] **Step 1: Verify zero null contractId rows in production**
+**PR 2 deploy preflight (run in order; ANY query returning rows ⇒ STOP, do not deploy):**
+
+- [ ] **Step 1a: Verify zero null contractId rows in production** — covers the three `SET NOT NULL` statements.
 
 ```sql
 SELECT
@@ -1766,6 +1768,26 @@ SELECT
 ```
 
 All three must be 0. If non-zero, **stop and re-run the backfill** — do not proceed.
+
+- [ ] **Step 1b: Verify zero duplicates for the two new unique indexes** — PR 1 did NOT enforce these at the DB layer, so a pre-existing duplicate (however unlikely) would make `CREATE UNIQUE INDEX` fail mid-migration. Both queries must return ZERO rows.
+
+```sql
+-- GovernanceSnapshot.contractId uniqueness preflight
+SELECT "contractId", COUNT(*)
+FROM "GovernanceSnapshot"
+GROUP BY "contractId"
+HAVING COUNT(*) > 1;
+
+-- ModuleRun (scanId, module, contractId) composite uniqueness preflight
+SELECT "scanId", "module", "contractId", COUNT(*)
+FROM "ModuleRun"
+GROUP BY "scanId", "module", "contractId"
+HAVING COUNT(*) > 1;
+```
+
+If either returns rows, **stop and reconcile the duplicates** — do not proceed.
+
+- [ ] **Step 1c: Take a fresh `pg_dump` backup** of the production database immediately before deploy. Only after Steps 1a + 1b return clean and the backup is captured should `prisma migrate deploy` run.
 
 - [ ] **Step 2: Confirm soak smoke**
 
