@@ -5,12 +5,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     governanceSnapshot: {
-      // Plan 03 §3.5 PR 1: persistGovernanceSnapshot's atomic upsert is
-      // replaced with findFirst → create / update (scanId no longer
-      // @unique). Mocks updated to match.
-      findFirst: vi.fn(),
-      create: vi.fn(),
-      update: vi.fn(),
+      // Plan 03 §3.5 PR 2: persistGovernanceSnapshot is a single atomic
+      // upsert keyed on the contractId unique. Mock exposes only upsert.
+      upsert: vi.fn(),
     },
   },
 }));
@@ -23,9 +20,7 @@ import {
 } from "../persist-snapshot";
 import type { GovernanceSnapshotData } from "../types";
 
-const findFirstMock = vi.mocked(prisma.governanceSnapshot.findFirst);
-const createMock = vi.mocked(prisma.governanceSnapshot.create);
-const updateMock = vi.mocked(prisma.governanceSnapshot.update);
+const upsertMock = vi.mocked(prisma.governanceSnapshot.upsert);
 
 const fullSnapshot: GovernanceSnapshotData = {
   blockNumber: BigInt(20_000_000),
@@ -130,16 +125,13 @@ const stubReturn = (overrides: Partial<GovernanceSnapshot> = {}) =>
     ...overrides,
   }) as GovernanceSnapshot;
 
-describe("persistGovernanceSnapshot (Plan 02 D.4, Plan 03 §3.5 PR 1, Plan 03 Phase E.2 — keyed on contractId)", () => {
+describe("persistGovernanceSnapshot (Plan 03 §3.5 PR 2 — atomic upsert keyed on contractId unique)", () => {
   beforeEach(() => {
-    findFirstMock.mockReset();
-    createMock.mockReset();
-    updateMock.mockReset();
+    upsertMock.mockReset();
   });
 
-  it("creates a fully populated snapshot when none exists for the contract", async () => {
-    findFirstMock.mockResolvedValueOnce(null);
-    createMock.mockResolvedValueOnce(stubReturn({ scanId: "scan-1" }));
+  it("upserts a fully populated snapshot — create payload carries scanId + contractId + all fields", async () => {
+    upsertMock.mockResolvedValueOnce(stubReturn({ scanId: "scan-1" }));
 
     await persistGovernanceSnapshot({
       scanId: "scan-1",
@@ -147,15 +139,12 @@ describe("persistGovernanceSnapshot (Plan 02 D.4, Plan 03 §3.5 PR 1, Plan 03 Ph
       snapshot: fullSnapshot,
     });
 
-    expect(findFirstMock).toHaveBeenCalledOnce();
-    // Plan 03 Phase E.2: findFirst now keys on contractId (was scanId).
-    expect(findFirstMock).toHaveBeenCalledWith({
-      where: { contractId: "contract-1" },
-      select: { id: true },
-    });
-    expect(createMock).toHaveBeenCalledOnce();
-    const args = createMock.mock.calls[0]![0];
-    expect(args.data).toMatchObject({
+    expect(upsertMock).toHaveBeenCalledOnce();
+    const args = upsertMock.mock.calls[0]![0];
+    // Keyed on the contractId unique PR 2 added — this is what makes the
+    // upsert atomic (no findFirst→write gap).
+    expect(args.where).toEqual({ contractId: "contract-1" });
+    expect(args.create).toMatchObject({
       scanId: "scan-1",
       contractId: "contract-1",
       blockNumber: BigInt(20_000_000),
@@ -164,12 +153,10 @@ describe("persistGovernanceSnapshot (Plan 02 D.4, Plan 03 §3.5 PR 1, Plan 03 Ph
       proxyType: "EIP_1967_TRANSPARENT",
       multisigOwners: ["0x1", "0x2", "0x3", "0x4", "0x5"],
     });
-    expect(updateMock).not.toHaveBeenCalled();
   });
 
-  it("creates a minimal snapshot with all-null governance fields", async () => {
-    findFirstMock.mockResolvedValueOnce(null);
-    createMock.mockResolvedValueOnce(stubReturn({ scanId: "scan-2" }));
+  it("upsert create payload for a minimal snapshot — all-null governance fields", async () => {
+    upsertMock.mockResolvedValueOnce(stubReturn({ scanId: "scan-2" }));
 
     await persistGovernanceSnapshot({
       scanId: "scan-2",
@@ -177,8 +164,8 @@ describe("persistGovernanceSnapshot (Plan 02 D.4, Plan 03 §3.5 PR 1, Plan 03 Ph
       snapshot: minimalSnapshot,
     });
 
-    const args = createMock.mock.calls[0]![0];
-    expect(args.data).toMatchObject({
+    const args = upsertMock.mock.calls[0]![0];
+    expect(args.create).toMatchObject({
       scanId: "scan-2",
       contractId: "contract-2",
       hasGovernor: false,
@@ -189,10 +176,9 @@ describe("persistGovernanceSnapshot (Plan 02 D.4, Plan 03 §3.5 PR 1, Plan 03 Ph
     });
   });
 
-  it("updates the existing row on re-snapshot, bumping capturedAt to now", async () => {
+  it("upsert update payload bumps capturedAt to now (re-snapshot path)", async () => {
     const beforeCall = Date.now();
-    findFirstMock.mockResolvedValueOnce(stubReturn({ id: "snap-existing" }));
-    updateMock.mockResolvedValueOnce(stubReturn({ id: "snap-existing" }));
+    upsertMock.mockResolvedValueOnce(stubReturn({ id: "snap-existing" }));
 
     await persistGovernanceSnapshot({
       scanId: "scan-3",
@@ -200,19 +186,16 @@ describe("persistGovernanceSnapshot (Plan 02 D.4, Plan 03 §3.5 PR 1, Plan 03 Ph
       snapshot: fullSnapshot,
     });
 
-    expect(updateMock).toHaveBeenCalledOnce();
-    const args = updateMock.mock.calls[0]![0];
-    expect(args.where).toEqual({ id: "snap-existing" });
-    expect(args.data.capturedAt).toBeInstanceOf(Date);
-    expect((args.data.capturedAt as Date).getTime()).toBeGreaterThanOrEqual(
+    expect(upsertMock).toHaveBeenCalledOnce();
+    const args = upsertMock.mock.calls[0]![0];
+    expect(args.update.capturedAt).toBeInstanceOf(Date);
+    expect((args.update.capturedAt as Date).getTime()).toBeGreaterThanOrEqual(
       beforeCall,
     );
-    expect(createMock).not.toHaveBeenCalled();
   });
 
-  it("locates the existing row by contractId on findFirst (Plan 03 §5.3.1 idempotency invariant)", async () => {
-    findFirstMock.mockResolvedValueOnce(null);
-    createMock.mockResolvedValueOnce(stubReturn());
+  it("keys the upsert on the contractId unique (Plan 03 §5.3.1 idempotency invariant — atomic, no findFirst→write gap)", async () => {
+    upsertMock.mockResolvedValueOnce(stubReturn());
 
     await persistGovernanceSnapshot({
       scanId: "scan-x",
@@ -220,15 +203,13 @@ describe("persistGovernanceSnapshot (Plan 02 D.4, Plan 03 §3.5 PR 1, Plan 03 Ph
       snapshot: minimalSnapshot,
     });
 
-    expect(findFirstMock).toHaveBeenCalledWith({
-      where: { contractId: "unique-contract-id" },
-      select: { id: true },
-    });
+    expect(upsertMock).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { contractId: "unique-contract-id" } }),
+    );
   });
 
-  it("preserves rawState as a JSON object", async () => {
-    findFirstMock.mockResolvedValueOnce(null);
-    createMock.mockResolvedValueOnce(stubReturn());
+  it("preserves rawState as a JSON object in the upsert create payload", async () => {
+    upsertMock.mockResolvedValueOnce(stubReturn());
 
     const snapshot: GovernanceSnapshotData = {
       ...fullSnapshot,
@@ -244,28 +225,19 @@ describe("persistGovernanceSnapshot (Plan 02 D.4, Plan 03 §3.5 PR 1, Plan 03 Ph
       snapshot,
     });
 
-    const args = createMock.mock.calls[0]![0];
-    expect(args.data.rawState).toEqual({
+    const args = upsertMock.mock.calls[0]![0];
+    expect(args.create.rawState).toEqual({
       governor: { name: "TestGov", votingDelay: "7200" },
       proxy: { type: "EIP_1967_TRANSPARENT" },
     });
   });
 
   it("routes through a custom client when one is provided (transaction support)", async () => {
-    const txFindFirst = vi
-      .fn<SnapshotClient["governanceSnapshot"]["findFirst"]>()
-      .mockResolvedValueOnce(null);
-    const txCreate = vi
-      .fn<SnapshotClient["governanceSnapshot"]["create"]>()
+    const txUpsert = vi
+      .fn<SnapshotClient["governanceSnapshot"]["upsert"]>()
       .mockResolvedValueOnce(stubReturn({ scanId: "scan-5" }));
-    const txUpdate = vi
-      .fn<SnapshotClient["governanceSnapshot"]["update"]>();
     const txClient: SnapshotClient = {
-      governanceSnapshot: {
-        findFirst: txFindFirst,
-        create: txCreate,
-        update: txUpdate,
-      },
+      governanceSnapshot: { upsert: txUpsert },
     };
 
     await persistGovernanceSnapshot(
@@ -273,16 +245,13 @@ describe("persistGovernanceSnapshot (Plan 02 D.4, Plan 03 §3.5 PR 1, Plan 03 Ph
       txClient,
     );
 
-    expect(txFindFirst).toHaveBeenCalledOnce();
-    expect(txCreate).toHaveBeenCalledOnce();
-    expect(findFirstMock).not.toHaveBeenCalled();
-    expect(createMock).not.toHaveBeenCalled();
+    expect(txUpsert).toHaveBeenCalledOnce();
+    expect(upsertMock).not.toHaveBeenCalled();
   });
 
-  it("returns the persisted GovernanceSnapshot row from create", async () => {
+  it("returns the persisted GovernanceSnapshot row from the upsert", async () => {
     const persistedRow = stubReturn({ id: "snap-999", scanId: "scan-6" });
-    findFirstMock.mockResolvedValueOnce(null);
-    createMock.mockResolvedValueOnce(persistedRow);
+    upsertMock.mockResolvedValueOnce(persistedRow);
 
     const result = await persistGovernanceSnapshot({
       scanId: "scan-6",
