@@ -102,10 +102,10 @@ export interface ModuleRunResponse {
 /**
  * Tier-discriminated finding union (Plan 02 G.4 — resolves Plan 01 backlog).
  *
- * Plan 03 §7.2 — every variant now carries `contractId` so the UI can
- * group findings by Contract without joining tables. The field is
- * nullable for the historical pre-Phase-E rows where contractId was
- * null on the schema; new findings (Phase E.2 onward) always set it.
+ * Plan 03 §7.2 — every variant carries `contractId` so the UI can group
+ * findings by Contract without joining tables. Post-PR-2 (§3.5)
+ * `Finding.contractId` is NOT NULL and the graceful-degradation adapter
+ * is gone, so this is always a real Contract id — non-null.
  */
 export type FindingResponse =
   | FindingResponseUnauth
@@ -114,7 +114,7 @@ export type FindingResponse =
 
 export interface FindingResponseUnauth {
   tier: "UNAUTH";
-  contractId: string | null;
+  contractId: string;
   severity: string;
   publicTitle: string;
   remediationHint: string;
@@ -122,7 +122,7 @@ export interface FindingResponseUnauth {
 
 export interface FindingResponseEmail {
   tier: "EMAIL";
-  contractId: string | null;
+  contractId: string;
   id: string;
   moduleRunId: string;
   module: string;
