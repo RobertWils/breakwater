@@ -39,6 +39,10 @@ function makeFinding(overrides: Partial<Finding> = {}): Finding {
   return {
     id: "finding-1",
     scanId: "scan-1",
+    // Plan 03 §3.5 PR 2: contractId is NOT NULL. Default to the
+    // `makeContractRow` default id so findings line up with the default
+    // single-Contract fixture; multi-Contract tests override per finding.
+    contractId: "contract-1",
     moduleRunId: "modrun-1",
     module: "GOVERNANCE",
     severity: "HIGH",
@@ -102,8 +106,6 @@ function makeScanRow(overrides: Record<string, unknown> = {}) {
       chain: "ETHEREUM",
       domain: "app.aave.com",
       ownershipStatus: "CURATED",
-      // Phase G.1: graceful-degradation adapter needs primaryContractAddress
-      // when scan.contracts is empty.
       primaryContractAddress: "0xprimary",
     },
     modules: [],
@@ -131,7 +133,9 @@ function makeContractRow(
     isPartialGrade: false,
     moduleRuns: [],
     findings: [],
-    governanceSnapshot: [],
+    // Plan 03 §3.5 PR 2: GovernanceSnapshot.contractId is @unique, so the
+    // relation is 1:1 — a single row or null, not an array.
+    governanceSnapshot: null,
     ...overrides,
   };
 }
@@ -350,7 +354,12 @@ describe("getScan", () => {
 
   it("returns correct top-level shape with nested data (email tier)", async () => {
     const scanRow = makeScanRow({
-      modules: [makeModuleRun()],
+      contracts: [
+        makeContractRow({
+          moduleRuns: [makeModuleRun()],
+          findings: [makeFinding({ publicRank: 1 })],
+        }),
+      ],
       findings: [makeFinding({ publicRank: 1 })],
     });
     mockFindUnique.mockResolvedValueOnce(scanRow);
@@ -369,21 +378,26 @@ describe("getScan", () => {
     expect(result!.completedAt).toBe("2026-01-01T01:10:00.000Z");
     expect(result!.expiresAt).toBe("2026-04-01T00:00:00.000Z");
     expect(result!.protocol.slug).toBe("aave");
-    // Graceful adapter: legacy scan with no Contract rows synthesises
-    // one PRIMARY ContractResponse carrying the scan-wide module list.
+    // Plan 03 §3.5 PR 2: modules nest under the (real) Contract row.
     expect(result!.contracts).toHaveLength(1);
     expect(result!.contracts[0].modules).toHaveLength(1);
     expect(result!.findings).toHaveLength(1);
   });
 
   it("unauth tier: findings shaped as teaser, hiddenFindingsCount on per-Contract module (Phase G.6 — nested under contracts[i].modules)", async () => {
+    const govFindings = [
+      makeFinding({ id: "f1", module: "GOVERNANCE", publicRank: 1 }),
+      makeFinding({ id: "f2", module: "GOVERNANCE", publicRank: 2 }),
+      makeFinding({ id: "f3", module: "GOVERNANCE", publicRank: 3 }),
+    ];
     const scanRow = makeScanRow({
-      modules: [makeModuleRun({ module: "GOVERNANCE", findingsCount: 3 })],
-      findings: [
-        makeFinding({ id: "f1", module: "GOVERNANCE", publicRank: 1 }),
-        makeFinding({ id: "f2", module: "GOVERNANCE", publicRank: 2 }),
-        makeFinding({ id: "f3", module: "GOVERNANCE", publicRank: 3 }),
+      contracts: [
+        makeContractRow({
+          moduleRuns: [makeModuleRun({ module: "GOVERNANCE", findingsCount: 3 })],
+          findings: govFindings,
+        }),
       ],
+      findings: govFindings,
     });
     mockFindUnique.mockResolvedValueOnce(scanRow);
 
@@ -397,8 +411,8 @@ describe("getScan", () => {
     expect(Object.keys(result!.findings[0]).sort()).toEqual(
       ["contractId", "publicTitle", "remediationHint", "severity", "tier"].sort(),
     );
-    // The graceful adapter synthesises one PRIMARY contract; its
-    // single module carries hiddenFindingsCount = 2.
+    // Single Contract; its GOVERNANCE module carries hiddenFindingsCount = 2
+    // (3 findings, 1 teaser shown).
     expect(result!.contracts).toHaveLength(1);
     expect(result!.contracts[0].modules[0].hiddenFindingsCount).toBe(2);
     expect(result!.contracts[0].modules[0].errorStack).toBeNull();
@@ -406,8 +420,11 @@ describe("getScan", () => {
 
   it("paid tier: findings include remediationDetailed, errorStack exposed (Phase G.6 — nested under contracts[i].modules)", async () => {
     const scanRow = makeScanRow({
-      modules: [
-        makeModuleRun({ errorStack: "Error: real stack trace" }),
+      contracts: [
+        makeContractRow({
+          moduleRuns: [makeModuleRun({ errorStack: "Error: real stack trace" })],
+          findings: [makeFinding({ remediationDetailed: "Detailed steps here" })],
+        }),
       ],
       findings: [makeFinding({ remediationDetailed: "Detailed steps here" })],
     });
@@ -425,7 +442,12 @@ describe("getScan", () => {
 
   it("scan with no findings: empty arrays, no hiddenFindingsCount on any per-Contract module", async () => {
     const scanRow = makeScanRow({
-      modules: [makeModuleRun()],
+      contracts: [
+        makeContractRow({
+          moduleRuns: [makeModuleRun()],
+          findings: [],
+        }),
+      ],
       findings: [],
     });
     mockFindUnique.mockResolvedValueOnce(scanRow);
@@ -561,9 +583,7 @@ describe("getScan — Phase G.1 multi-Contract path", () => {
           address: "0xaaa",
           role: "PRIMARY",
           isPrimary: true,
-          governanceSnapshot: [
-            { proxyImplementation: "0xIMPL", scanId: "scan-abc" },
-          ],
+          governanceSnapshot: { proxyImplementation: "0xIMPL", scanId: "scan-abc" },
         }),
       ],
     });
@@ -583,9 +603,7 @@ describe("getScan — Phase G.1 multi-Contract path", () => {
           address: "0xaaa",
           role: "PRIMARY",
           isPrimary: true,
-          governanceSnapshot: [
-            { proxyImplementation: "0xIMPL", scanId: "scan-abc" },
-          ],
+          governanceSnapshot: { proxyImplementation: "0xIMPL", scanId: "scan-abc" },
         }),
         makeContractRow({
           id: "c-impl",
@@ -610,10 +628,8 @@ describe("getScan — Phase G.1 multi-Contract path", () => {
           address: "0xaaa",
           role: "PRIMARY",
           isPrimary: true,
-          // governanceSnapshot[0].proxyImplementation is undefined.
-          governanceSnapshot: [
-            { proxyImplementation: null, scanId: "scan-abc" },
-          ],
+          // snapshot present but proxyImplementation is null → no warning.
+          governanceSnapshot: { proxyImplementation: null, scanId: "scan-abc" },
         }),
       ],
     });
@@ -663,85 +679,4 @@ describe("getScan — Phase G.1 multi-Contract path", () => {
     expect(result!.findings.map((f) => f.contractId).sort()).toEqual(["c-a", "c-b"]);
   });
 
-  it("graceful adapter (zero Contract rows) synthesises a single ContractResponse from primaryContractAddress + scan-wide modules", async () => {
-    // Plan 02 legacy scan shape: no Contract rows. The adapter
-    // synthesises one PRIMARY contract carrying the scan-wide modules.
-    const scanRow = makeScanRow({
-      contracts: [],
-      modules: [makeModuleRun({ id: "mr-legacy", scanId: "scan-abc" })],
-      findings: [makeFinding({ id: "fl", contractId: null })],
-    });
-    mockFindUnique.mockResolvedValueOnce(scanRow);
-
-    const result = await getScan({ scanId: "scan-abc", tier: "email" });
-    expect(result!.contracts).toHaveLength(1);
-    const synthetic = result!.contracts[0];
-    expect(synthetic.id).toBe("legacy-synthetic-primary");
-    expect(synthetic.role).toBe("PRIMARY");
-    expect(synthetic.isPrimary).toBe(true);
-    expect(synthetic.address).toBe("0xprimary");
-    expect(synthetic.modules).toHaveLength(1);
-    expect(synthetic.findingsCount).toBe(1);
-    expect(synthetic.proxyImplementationWarning).toBeNull();
-  });
-
-  // Phase G remediation #1 (Codex Review #5 IMPORTANT) — the
-  // graceful-degradation adapter previously dropped the scan-level
-  // grade, leaving the synthetic contract with null grade/score.
-  // Historical Plan 02 scans now render a grade chip on their single
-  // ContractCard.
-
-  it("legacy adapter propagates scan-level compositeGrade + averageContractScore into the synthetic contract", async () => {
-    const scanRow = makeScanRow({
-      contracts: [],
-      modules: [makeModuleRun({ id: "mr-legacy", scanId: "scan-abc" })],
-      findings: [],
-      compositeGrade: "C",
-      averageContractScore: 60,
-      isPartialGrade: false,
-    });
-    mockFindUnique.mockResolvedValueOnce(scanRow);
-
-    const result = await getScan({ scanId: "scan-abc", tier: "email" });
-    const synthetic = result!.contracts[0];
-    expect(synthetic.compositeGrade).toBe("C");
-    // Synthetic contract's compositeScore is sourced from Scan's
-    // averageContractScore (Phase A column rename); per spec §7.2
-    // the per-Contract field name stays `compositeScore`.
-    expect(synthetic.compositeScore).toBe(60);
-    expect(synthetic.isPartialGrade).toBe(false);
-  });
-
-  it("legacy adapter propagates isPartialGrade from the scan row", async () => {
-    const scanRow = makeScanRow({
-      contracts: [],
-      modules: [makeModuleRun()],
-      findings: [],
-      compositeGrade: "B",
-      averageContractScore: 80,
-      isPartialGrade: true,
-    });
-    mockFindUnique.mockResolvedValueOnce(scanRow);
-
-    const result = await getScan({ scanId: "scan-abc", tier: "email" });
-    expect(result!.contracts[0].isPartialGrade).toBe(true);
-  });
-
-  it("legacy adapter still surfaces null grade/score when the scan itself has none (e.g. mid-scan or FAILED before grading)", async () => {
-    const scanRow = makeScanRow({
-      contracts: [],
-      modules: [],
-      findings: [],
-      compositeGrade: null,
-      averageContractScore: null,
-      isPartialGrade: false,
-    });
-    mockFindUnique.mockResolvedValueOnce(scanRow);
-
-    const result = await getScan({ scanId: "scan-abc", tier: "email" });
-    const synthetic = result!.contracts[0];
-    expect(synthetic.compositeGrade).toBeNull();
-    expect(synthetic.compositeScore).toBeNull();
-    expect(synthetic.isPartialGrade).toBe(false);
-  });
 });

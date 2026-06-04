@@ -38,6 +38,7 @@ import { prisma } from "@/lib/prisma";
 import { getScan } from "@/lib/scan-response";
 import {
   Chain,
+  ContractRole,
   OwnershipStatus,
   ScanStatus,
   ModuleStatus,
@@ -64,8 +65,11 @@ async function cleanup() {
   const scanIds = scans.map((s) => s.id);
 
   if (scanIds.length) {
+    // Order matters: Finding / ModuleRun reference Contract via NoAction,
+    // so they must be deleted before the Contract rows.
     await prisma.finding.deleteMany({ where: { scanId: { in: scanIds } } });
     await prisma.moduleRun.deleteMany({ where: { scanId: { in: scanIds } } });
+    await prisma.contract.deleteMany({ where: { scanId: { in: scanIds } } });
     await prisma.scan.deleteMany({ where: { id: { in: scanIds } } });
   }
 
@@ -141,8 +145,28 @@ async function seedScan(
   });
 }
 
+// Plan 03 §3.5 PR 2: every Scan now has ≥1 Contract row (contractId is
+// NOT NULL on ModuleRun / Finding), so each test seeds a PRIMARY Contract
+// and links its child rows via contractId. getScan reads modules/findings
+// from under each Contract.
+async function seedContract(scanId: string) {
+  return prisma.contract.create({
+    data: {
+      scanId,
+      address: uniqueAddress(),
+      chain: Chain.ETHEREUM,
+      role: ContractRole.PRIMARY,
+      isPrimary: true,
+      compositeScore: 80,
+      compositeGrade: Grade.B,
+      isPartialGrade: false,
+    },
+  });
+}
+
 async function seedModuleRun(
   scanId: string,
+  contractId: string,
   module: ModuleName,
   status: ModuleStatus = ModuleStatus.COMPLETE,
   overrides: {
@@ -153,6 +177,7 @@ async function seedModuleRun(
   return prisma.moduleRun.create({
     data: {
       scanId,
+      contractId,
       module,
       status,
       grade: status === ModuleStatus.COMPLETE ? "B" : null,
@@ -170,6 +195,7 @@ async function seedModuleRun(
 
 async function seedFinding(
   scanId: string,
+  contractId: string,
   moduleRunId: string,
   module: ModuleName,
   publicRank: number,
@@ -186,6 +212,7 @@ async function seedFinding(
   return prisma.finding.create({
     data: {
       scanId,
+      contractId,
       moduleRunId,
       module,
       severity: overrides.severity ?? Severity.HIGH,
@@ -213,16 +240,17 @@ describe.skipIf(!hasDb)("scan-get integration", () => {
   it("(a) unauth: returns only publicRank=1 teaser per module, hiddenFindingsCount correct", async () => {
     const protocol = await seedProtocol();
     const scan = await seedScan(protocol.id);
-    const govRun = await seedModuleRun(scan.id, ModuleName.GOVERNANCE);
+    const contract = await seedContract(scan.id);
+    const govRun = await seedModuleRun(scan.id, contract.id, ModuleName.GOVERNANCE);
 
     // Seed 3 findings: ranks 1, 2, 3 for GOVERNANCE
-    await seedFinding(scan.id, govRun.id, ModuleName.GOVERNANCE, 1, {
+    await seedFinding(scan.id, contract.id, govRun.id, ModuleName.GOVERNANCE, 1, {
       publicTitle: "Gov finding rank 1",
     });
-    await seedFinding(scan.id, govRun.id, ModuleName.GOVERNANCE, 2, {
+    await seedFinding(scan.id, contract.id, govRun.id, ModuleName.GOVERNANCE, 2, {
       publicTitle: "Gov finding rank 2",
     });
-    await seedFinding(scan.id, govRun.id, ModuleName.GOVERNANCE, 3, {
+    await seedFinding(scan.id, contract.id, govRun.id, ModuleName.GOVERNANCE, 3, {
       publicTitle: "Gov finding rank 3",
     });
 
@@ -257,10 +285,11 @@ describe.skipIf(!hasDb)("scan-get integration", () => {
   it("(b) email: returns all findings with full shape, no remediationDetailed", async () => {
     const protocol = await seedProtocol();
     const scan = await seedScan(protocol.id);
-    const govRun = await seedModuleRun(scan.id, ModuleName.GOVERNANCE);
+    const contract = await seedContract(scan.id);
+    const govRun = await seedModuleRun(scan.id, contract.id, ModuleName.GOVERNANCE);
 
-    await seedFinding(scan.id, govRun.id, ModuleName.GOVERNANCE, 1);
-    await seedFinding(scan.id, govRun.id, ModuleName.GOVERNANCE, 2);
+    await seedFinding(scan.id, contract.id, govRun.id, ModuleName.GOVERNANCE, 1);
+    await seedFinding(scan.id, contract.id, govRun.id, ModuleName.GOVERNANCE, 2);
 
     const result = await getScan({ scanId: scan.id, tier: "email" });
 
@@ -296,7 +325,8 @@ describe.skipIf(!hasDb)("scan-get integration", () => {
   it("(e) scan with no findings: empty arrays, no hiddenFindingsCount", async () => {
     const protocol = await seedProtocol();
     const scan = await seedScan(protocol.id);
-    await seedModuleRun(scan.id, ModuleName.GOVERNANCE);
+    const contract = await seedContract(scan.id);
+    await seedModuleRun(scan.id, contract.id, ModuleName.GOVERNANCE);
 
     const result = await getScan({ scanId: scan.id, tier: "unauth" });
 
@@ -314,8 +344,9 @@ describe.skipIf(!hasDb)("scan-get integration", () => {
     const scan = await seedScan(protocol.id, {
       status: ScanStatus.EXPIRED,
     });
-    const govRun = await seedModuleRun(scan.id, ModuleName.GOVERNANCE);
-    await seedFinding(scan.id, govRun.id, ModuleName.GOVERNANCE, 1);
+    const contract = await seedContract(scan.id);
+    const govRun = await seedModuleRun(scan.id, contract.id, ModuleName.GOVERNANCE);
+    await seedFinding(scan.id, contract.id, govRun.id, ModuleName.GOVERNANCE, 1);
 
     const result = await getScan({ scanId: scan.id, tier: "email" });
 
@@ -330,16 +361,17 @@ describe.skipIf(!hasDb)("scan-get integration", () => {
   it("(g) 4 modules in varying states: all returned, errorStack null for unauth", async () => {
     const protocol = await seedProtocol();
     const scan = await seedScan(protocol.id);
+    const contract = await seedContract(scan.id);
 
-    const govRun = await seedModuleRun(scan.id, ModuleName.GOVERNANCE, ModuleStatus.COMPLETE);
-    await seedModuleRun(scan.id, ModuleName.ORACLE, ModuleStatus.QUEUED);
-    await seedModuleRun(scan.id, ModuleName.SIGNER, ModuleStatus.FAILED, {
+    const govRun = await seedModuleRun(scan.id, contract.id, ModuleName.GOVERNANCE, ModuleStatus.COMPLETE);
+    await seedModuleRun(scan.id, contract.id, ModuleName.ORACLE, ModuleStatus.QUEUED);
+    await seedModuleRun(scan.id, contract.id, ModuleName.SIGNER, ModuleStatus.FAILED, {
       errorMessage: "RPC timeout",
       errorStack: "Error: RPC timeout\n  at ...",
     });
-    await seedModuleRun(scan.id, ModuleName.FRONTEND, ModuleStatus.SKIPPED);
+    await seedModuleRun(scan.id, contract.id, ModuleName.FRONTEND, ModuleStatus.SKIPPED);
 
-    await seedFinding(scan.id, govRun.id, ModuleName.GOVERNANCE, 1);
+    await seedFinding(scan.id, contract.id, govRun.id, ModuleName.GOVERNANCE, 1);
 
     const result = await getScan({ scanId: scan.id, tier: "unauth" });
 

@@ -44,10 +44,10 @@ export interface ScanResponse {
   /**
    * Plan 03 §7.2 — per-Contract response shape. The Plan 02 top-level
    * `modules` array was REMOVED in Phase G.6 (spec §13 breaking change);
-   * modules now live under each ContractResponse. The graceful
-   * adapter (`buildLegacySingleContract`) synthesises a single
-   * ContractResponse for legacy scans with zero Contract rows so
-   * Plan 02-shaped scans still render in the new UI.
+   * modules now live under each ContractResponse. Post-PR-2 (spec §3.5)
+   * every Scan has ≥1 Contract row (backfill + NOT NULL contractId), so
+   * all reads go through this contractId-keyed shape exclusively — the
+   * PR 1 graceful-degradation adapter for zero-Contract scans is gone.
    */
   contracts: ContractResponse[];
   findings: FindingResponse[];
@@ -160,7 +160,9 @@ export interface FindingResponsePaid
 type ContractWithRelations = Contract & {
   moduleRuns: ModuleRun[];
   findings: Finding[];
-  governanceSnapshot: GovernanceSnapshot[];
+  // Plan 03 §3.5 PR 2: GovernanceSnapshot.contractId is now @unique, so
+  // this 1:1 relation loads as a single row (or null), not an array.
+  governanceSnapshot: GovernanceSnapshot | null;
 };
 
 export async function getScan(params: {
@@ -177,11 +179,7 @@ export async function getScan(params: {
           chain: true,
           domain: true,
           ownershipStatus: true,
-          primaryContractAddress: true,
         },
-      },
-      modules: {
-        orderBy: { module: "asc" },
       },
       findings: {
         orderBy: [{ module: "asc" }, { publicRank: "asc" }],
@@ -199,19 +197,8 @@ export async function getScan(params: {
   if (!scan) return null;
 
   const { contracts, findings } = buildContractsAndFindings({
-    scanId: scan.id,
     scanContracts: (scan.contracts ?? []) as ContractWithRelations[],
-    scanModules: scan.modules,
     scanFindings: scan.findings,
-    primaryContractAddress: scan.protocol.primaryContractAddress,
-    // Phase G remediation #1 — scan-level grade fields fed into the
-    // graceful-degradation adapter so historical Plan 02 scans (no
-    // Contract rows) still surface a per-Contract grade chip in the
-    // new UI. The Scan-level columns ARE the synthetic contract's
-    // grade — there's only one contract, so the rollup is identity.
-    scanCompositeGrade: scan.compositeGrade,
-    scanAverageContractScore: scan.averageContractScore,
-    scanIsPartialGrade: scan.isPartialGrade,
     tier: params.tier,
   });
 
@@ -276,7 +263,7 @@ function deriveProxyImplementationWarning(
   contract: ContractWithRelations,
   allContracts: ReadonlyArray<{ address: string; role: ContractRole }>,
 ): { detectedAddress: string } | null {
-  const snapshot = contract.governanceSnapshot[0] ?? null;
+  const snapshot = contract.governanceSnapshot;
   const impl = snapshot?.proxyImplementation;
   if (!impl) return null;
   const implLower = impl.toLowerCase();
@@ -332,51 +319,15 @@ function filterUnauthGrouped(findings: Finding[]): {
 }
 
 function buildContractsAndFindings(params: {
-  scanId: string;
   scanContracts: ContractWithRelations[];
-  scanModules: ModuleRun[];
   scanFindings: Finding[];
-  primaryContractAddress: string;
-  /**
-   * Phase G remediation #1 — Scan-level grade fields, threaded into the
-   * graceful-degradation adapter for legacy single-Contract scans
-   * (no Contract rows). For multi-Contract scans these are ignored;
-   * per-Contract grades come from `Contract.compositeGrade/Score`.
-   */
-  scanCompositeGrade: string | null;
-  scanAverageContractScore: number | null;
-  scanIsPartialGrade: boolean;
   tier: VisibilityTier;
 }): { contracts: ContractResponse[]; findings: FindingResponse[] } {
-  const {
-    scanContracts,
-    scanModules,
-    scanFindings,
-    primaryContractAddress,
-    scanCompositeGrade,
-    scanAverageContractScore,
-    scanIsPartialGrade,
-    tier,
-  } = params;
+  const { scanContracts, scanFindings, tier } = params;
 
-  // PR 1 graceful degradation — removed in PR 2: legacy single-Contract
-  // scans (pre-backfill) have no Contract rows. Synthesise one
-  // ContractResponse from Protocol.primaryContractAddress + the
-  // scan-wide ModuleRuns + scan-wide findings so the Phase G UI can
-  // render these scans unchanged.
-  if (scanContracts.length === 0) {
-    return buildLegacySingleContract({
-      scanModules,
-      scanFindings,
-      primaryContractAddress,
-      scanCompositeGrade,
-      scanAverageContractScore,
-      scanIsPartialGrade,
-      tier,
-    });
-  }
-
-  // Multi-Contract path.
+  // Plan 03 §3.5 PR 2: every Scan has ≥1 Contract row post-backfill, so
+  // reads go through the contractId-keyed shape exclusively. The PR 1
+  // zero-Contract graceful-degradation adapter was removed here.
   const allContracts = scanContracts.map((c) => ({
     address: c.address,
     role: c.role,
@@ -479,69 +430,6 @@ function normaliseCrossChainTwins(
     }
   }
   return out;
-}
-
-function buildLegacySingleContract(params: {
-  scanModules: ModuleRun[];
-  scanFindings: Finding[];
-  primaryContractAddress: string;
-  scanCompositeGrade: string | null;
-  scanAverageContractScore: number | null;
-  scanIsPartialGrade: boolean;
-  tier: VisibilityTier;
-}): { contracts: ContractResponse[]; findings: FindingResponse[] } {
-  const {
-    scanModules,
-    scanFindings,
-    primaryContractAddress,
-    scanCompositeGrade,
-    scanAverageContractScore,
-    scanIsPartialGrade,
-    tier,
-  } = params;
-
-  const { findings, hiddenByModule } = filterFindings({
-    findings: scanFindings,
-    tier,
-  });
-
-  const synthetic: ContractResponse = {
-    // PR 1 graceful degradation — removed in PR 2.
-    id: "legacy-synthetic-primary",
-    address: primaryContractAddress,
-    role: "PRIMARY",
-    label: null,
-    isPrimary: true,
-    // Phase G remediation #1 (Codex Review #5 IMPORTANT): legacy
-    // single-Contract scans had their grade dropped — the synthetic
-    // contract held null grade/score even though the Scan row carried
-    // them. Phase F's rollup over one ELIGIBLE contract is identity,
-    // so the Scan-level fields ARE the synthetic contract's per-
-    // Contract grade. `compositeScore` on the synthetic contract is
-    // sourced from `Scan.averageContractScore` (Phase A renamed
-    // `Scan.compositeScore` → `Scan.averageContractScore`; the
-    // ContractResponse field name is `compositeScore` per spec §7.2).
-    compositeScore: scanAverageContractScore,
-    compositeGrade: scanCompositeGrade,
-    isPartialGrade: scanIsPartialGrade,
-    crossChainTwins: [],
-    modules: scanModules.map((m) =>
-      shapeModuleRun(m, tier, hiddenByModule.get(m.module) ?? 0),
-    ),
-    findingsCount: scanFindings.length,
-    proxyImplementationWarning: null,
-  };
-
-  // For unauth tier, stamp the synthetic contractId onto each teaser so
-  // the UI can still group by contractId in the multi-Contract render
-  // path; for email/paid the findings already carry their original
-  // (real) contractId from Phase E.2 onward, OR null if pre-Phase-E.
-  const findingsWithContract = findings.map((f) => ({
-    ...f,
-    contractId: f.contractId ?? synthetic.id,
-  })) as FindingResponse[];
-
-  return { contracts: [synthetic], findings: findingsWithContract };
 }
 
 // ── Finding filtering ────────────────────────────────────────────────────────

@@ -133,18 +133,29 @@ async function backfillScan(
     return { skipped: true, reason: "missing_primary_address" };
   }
 
+  // "Unlinked rows" filter: contractId IS NULL. This backfill runs against
+  // the PRE-PR-2 database, where contractId is still nullable; the
+  // generated client (post-PR-2, spec §3.5) types it as non-null, so the
+  // IS NULL orphan filter needs an explicit cast. At runtime Prisma emits
+  // `contractId IS NULL` for a null value regardless of the static type.
+  // Centralised so the three child-table queries share one documented
+  // escape hatch. (This script is a no-op once PR 2's migration has run,
+  // since no NULL contractId rows can exist — it is a prerequisite tool
+  // that runs BEFORE the tightening migration.)
+  const UNLINKED = { contractId: null } as unknown as { contractId: string };
+
   if (dryRun) {
     // Count the rows that WOULD be touched without writing.
     const [moduleRunsLinked, governanceSnapshotsLinked, findingsLinked] =
       await Promise.all([
         prisma.moduleRun.count({
-          where: { scanId, contractId: null },
+          where: { scanId, ...UNLINKED },
         }),
         prisma.governanceSnapshot.count({
-          where: { scanId, contractId: null },
+          where: { scanId, ...UNLINKED },
         }),
         prisma.finding.count({
-          where: { scanId, contractId: null },
+          where: { scanId, ...UNLINKED },
         }),
       ]);
     return {
@@ -181,17 +192,17 @@ async function backfillScan(
     });
 
     const moduleRunsResult = await tx.moduleRun.updateMany({
-      where: { scanId: scan.id, contractId: null },
+      where: { scanId: scan.id, ...UNLINKED },
       data: { contractId: contract.id },
     });
     const governanceSnapshotsResult = await tx.governanceSnapshot.updateMany(
       {
-        where: { scanId: scan.id, contractId: null },
+        where: { scanId: scan.id, ...UNLINKED },
         data: { contractId: contract.id },
       },
     );
     const findingsResult = await tx.finding.updateMany({
-      where: { scanId: scan.id, contractId: null },
+      where: { scanId: scan.id, ...UNLINKED },
       data: { contractId: contract.id },
     });
 

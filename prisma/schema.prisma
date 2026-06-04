@@ -263,19 +263,20 @@ model ModuleRun {
   id               String       @id @default(cuid())
   scanId           String
   scan             Scan         @relation(fields: [scanId], references: [id])
-  // Plan 03 §3.5 PR 1: nullable in PR 1; PR 2 tightens to NOT NULL and
-  // adds @@unique([scanId, module, contractId]). The legacy
+  // Plan 03 §3.5 PR 2: tightened to NOT NULL (was nullable in PR 1) now
+  // that the backfill has populated contractId on every row. The legacy
   // @@unique([scanId, module]) was dropped in PR 1's
   // `plan_03_drop_modulerun_legacy_unique` migration so the multi-Contract
   // execution model (§4.2's N×M ModuleRuns per scan) can write rows
-  // without colliding on the old constraint.
+  // without colliding on the old constraint; the new composite
+  // @@unique([scanId, module, contractId]) lands below in this PR.
   // Explicit referential actions match the hand-written SQL (no
   // ON DELETE / ON UPDATE clause = Postgres default NO ACTION). Codex
   // Review #1 IMPORTANT 1 — keeps Prisma metadata in sync with the DB
   // so `prisma migrate dev` doesn't spuriously regenerate this FK with
   // its default `SET NULL / CASCADE` referential actions.
-  contractId       String?
-  contract         Contract?    @relation(fields: [contractId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  contractId       String
+  contract         Contract     @relation(fields: [contractId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   module           ModuleName
   status           ModuleStatus @default(QUEUED)
   grade            Grade?
@@ -307,20 +308,21 @@ model ModuleRun {
 
   // Plan 03 §3.5 PR 1: legacy @@unique([scanId, module]) DROPPED so the
   // multi-Contract execution model can write N×M rows per scan
-  // (one per (Contract, module) pair). The new composite unique
-  // @@unique([scanId, module, contractId]) lands in PR 2 once contractId
-  // is NOT NULL across all rows.
+  // (one per (Contract, module) pair). PR 2 (this migration) adds the
+  // composite unique now that contractId is NOT NULL across all rows —
+  // one ModuleRun per (scan, module, contract).
+  @@unique([scanId, module, contractId])
 }
 
 model Finding {
   id                  String     @id @default(cuid())
   scanId              String
   scan                Scan       @relation(fields: [scanId], references: [id])
-  // Plan 03 §3.5 PR 1: nullable in PR 1; PR 2 tightens to NOT NULL.
+  // Plan 03 §3.5 PR 2: tightened to NOT NULL (was nullable in PR 1).
   // Explicit referential actions match the hand-written SQL — see the
   // matching note on `ModuleRun.contract` (Codex Review #1 IMPORTANT 1).
-  contractId          String?
-  contract            Contract?  @relation(fields: [contractId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  contractId          String
+  contract            Contract   @relation(fields: [contractId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   moduleRunId         String
   moduleRun           ModuleRun  @relation(fields: [moduleRunId], references: [id])
   module              ModuleName
@@ -352,13 +354,15 @@ model GovernanceSnapshot {
   // unique constraint in PR 2 lands on contractId instead.
   scanId String?
   scan   Scan?   @relation(fields: [scanId], references: [id], onDelete: Cascade)
-  // Plan 03 §3.5 PR 1: nullable in PR 1; PR 2 tightens to NOT NULL + @unique
-  // (1:1 with Contract). Phase A keeps Contract.governanceSnapshot as an
-  // array to satisfy Prisma's relation typing in the absence of @unique.
+  // Plan 03 §3.5 PR 2: tightened to NOT NULL + @unique (1:1 with Contract)
+  // now that the backfill populated contractId on every row. With @unique
+  // in place, the Contract.governanceSnapshot side narrows from an array
+  // to `GovernanceSnapshot?` and persistGovernanceSnapshot can return to
+  // an atomic contractId-keyed upsert.
   // Explicit referential actions match the hand-written SQL — see the
   // matching note on `ModuleRun.contract` (Codex Review #1 IMPORTANT 1).
-  contractId String?
-  contract   Contract? @relation(fields: [contractId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  contractId String    @unique
+  contract   Contract  @relation(fields: [contractId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   blockNumber BigInt
   capturedAt  DateTime @default(now())
@@ -403,12 +407,11 @@ model GovernanceSnapshot {
 }
 
 // Plan 03 §3.1: Contract model — one scannable address within a Scan.
-// PR 1 shape (Phase A): contractId on child tables is nullable; the 1:1
-// relation to GovernanceSnapshot is modelled as an array on this side
-// because GovernanceSnapshot.contractId is not yet @unique. PR 2 (Phase J)
-// tightens contractId NOT NULL on all child tables and adds the
-// unique constraint on GovernanceSnapshot.contractId, at which point
-// the relation here narrows to `GovernanceSnapshot?`.
+// PR 2 (Phase J) shape: contractId is NOT NULL on all child tables and
+// GovernanceSnapshot.contractId is @unique, so the relation to
+// GovernanceSnapshot is a true 1:1 (`GovernanceSnapshot?`). In the PR 1
+// window it was modelled as an array because the @unique did not yet
+// exist.
 model Contract {
   id              String        @id @default(cuid())
   scanId          String
@@ -435,7 +438,7 @@ model Contract {
   // had `errorDetectorCount > 0`.
   isPartialGrade  Boolean       @default(false)
 
-  governanceSnapshot GovernanceSnapshot[]
+  governanceSnapshot GovernanceSnapshot?
   moduleRuns         ModuleRun[]
   findings           Finding[]
 

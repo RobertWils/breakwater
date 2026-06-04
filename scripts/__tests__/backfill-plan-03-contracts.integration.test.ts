@@ -48,7 +48,6 @@ import { prisma } from "@/lib/prisma";
 
 import { runBackfill } from "../backfill-plan-03-contracts";
 
-const hasDb = !!process.env.DATABASE_URL;
 vi.setConfig({ testTimeout: 30000 });
 
 const createdProtocolIds: string[] = [];
@@ -140,7 +139,7 @@ async function seedLegacyScan(opts: {
       data: {
         scanId: scan.id,
         // contractId intentionally null — legacy Plan 02 shape.
-        contractId: null,
+        contractId: null as unknown as string, // legacy null shape; suite skipped post-PR-2 (NOT NULL)
         module: "GOVERNANCE",
         status: "COMPLETE",
         detectorVersions: {},
@@ -155,7 +154,7 @@ async function seedLegacyScan(opts: {
     await prisma.finding.create({
       data: {
         scanId: scan.id,
-        contractId: null,
+        contractId: null as unknown as string, // legacy null shape; suite skipped post-PR-2 (NOT NULL)
         moduleRunId,
         module: "GOVERNANCE",
         severity: "MEDIUM",
@@ -178,7 +177,7 @@ async function seedLegacyScan(opts: {
     await prisma.governanceSnapshot.create({
       data: {
         scanId: scan.id,
-        contractId: null,
+        contractId: null as unknown as string, // legacy null shape; suite skipped post-PR-2 (NOT NULL)
         blockNumber: BigInt(20_000_000),
         capturedAt: new Date(),
         hasGovernor: false,
@@ -194,8 +193,17 @@ async function seedLegacyScan(opts: {
   return { scanId: scan.id, primaryAddress };
 }
 
-describe.skipIf(!hasDb)(
-  "Plan 03 Phase H.1 — Contract backfill (spec §3.5 PR 1)",
+// Plan 03 §3.5 PR 2: this suite is now SKIPPED unconditionally. It seeds
+// "legacy" rows with `contractId IS NULL` to verify the backfill links
+// them — but PR 2 tightened contractId to NOT NULL on ModuleRun / Finding
+// / GovernanceSnapshot, so the fixture rows can no longer be inserted
+// (the DB rejects them) and the scenario the suite covers is structurally
+// unreachable. The backfill tool itself is retained as a one-time
+// prerequisite that ran against production before PR 2's migration.
+// Kept (skipped, not deleted) as a record of how the backfill was
+// validated; a future cleanup can retire the tool + this suite together.
+describe.skip(
+  "Plan 03 Phase H.1 — Contract backfill (spec §3.5 PR 1) [disabled post-PR-2: NOT NULL contractId makes the legacy-null fixtures uninsertable]",
   () => {
     it("creates exactly ONE PRIMARY Contract per legacy scan + links ModuleRun / Finding / Snapshot", async () => {
       const { scanId, primaryAddress } = await seedLegacyScan({

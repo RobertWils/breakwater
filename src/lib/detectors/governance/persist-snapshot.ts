@@ -101,7 +101,7 @@ export async function persistGovernanceSnapshot(
  */
 function mapSnapshotToCreate(
   data: GovernanceSnapshotData,
-): Omit<Prisma.GovernanceSnapshotUncheckedCreateInput, "scanId"> {
+): Omit<Prisma.GovernanceSnapshotUncheckedCreateInput, "scanId" | "contractId"> {
   return {
     blockNumber: data.blockNumber,
     capturedAt: data.capturedAt,

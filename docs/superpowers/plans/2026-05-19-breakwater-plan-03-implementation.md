@@ -1808,6 +1808,25 @@ ALTER TABLE "GovernanceSnapshot" ADD CONSTRAINT "GovernanceSnapshot_contractId_k
 ALTER TABLE "Finding" ALTER COLUMN "contractId" SET NOT NULL;
 ```
 
+> **DEPLOY PREREQUISITE — backfill must run first.** The three `SET NOT
+> NULL` statements FAIL (correctly, as a guard) if any row still has
+> `contractId IS NULL`. `pnpm db:backfill-plan-03-contracts` MUST have run
+> against the target DB and the Task J.1 soak check MUST show zero NULL
+> contractId rows before `prisma migrate deploy` applies this migration in
+> production. The backfill is a separate, idempotent, dry-runnable data
+> script — it is intentionally NOT inlined in the migration (schema-only
+> migration / data-only backfill split). This prerequisite is also
+> recorded in the migration file's comment header.
+>
+> **DDL form.** As built, the unique constraints are emitted in Prisma's
+> `CREATE UNIQUE INDEX` idiom (what `@@unique`/`@unique` generate), not
+> `ADD CONSTRAINT ... UNIQUE`. In Postgres these are functionally
+> identical and the index names match the spec's constraint names
+> (`ModuleRun_scanId_module_contractId_key`,
+> `GovernanceSnapshot_contractId_key`) verbatim — the same index-vs-
+> constraint nuance documented in PR 1's `DROP INDEX` migration. This
+> keeps `prisma migrate diff` drift-free against `schema.prisma`.
+
 - [ ] **Step 3: Update Prisma schema to match (NOT NULL + new uniques)**
 
 ```bash
