@@ -182,3 +182,43 @@ Plan 02 doesn't use middleware for auth (NextAuth handles in routes), so middlew
 
 - Patched in Inngest 3.27.5 → 3.54.2 during Phase A.
 - Currently on 3.54.2+ — not vulnerable.
+
+## Plan 03 — Multi-Contract Execution Model (shipped 2026-06-05)
+
+Spec: `docs/superpowers/plans/2026-05-19-breakwater-plan-03-design.md`.
+Plan: `docs/superpowers/plans/2026-05-19-breakwater-plan-03-implementation.md`.
+Shipped as two PRs (#3 PR 1, #4 PR 2), both merged to `main` and deployed.
+
+### What shipped
+
+- The full multi-Contract scanning **machinery**: a Scan can hold N Contracts with roles (`PRIMARY`, `PROXY_IMPLEMENTATION`, `DECLARED_MULTISIG`, `TIMELOCK`, `TOKEN_CONTRACT`, `DECLARED_BRIDGE`, `RELATED`). End-to-end path: submission → role-aware capture → Inngest per-`(contract, module)` fan-out → per-Contract execution → protocol composite scoring → multi-Contract response shape + UI.
+- Two-PR rollout (forced by `prisma migrate deploy` sequencing — see spec §3.5):
+  - **PR 1** additive — new `Contract` table + nullable `contractId` on `ModuleRun` / `Finding` / `GovernanceSnapshot`, legacy `ModuleRun (scanId, module)` unique dropped, all the application code, and the backfill script.
+  - **PR 2** tightening — `contractId` `NOT NULL` on all three child tables, composite unique `ModuleRun (scanId, module, contractId)`, and `GovernanceSnapshot.contractId` unique; plus the atomic snapshot upsert and the read-side fallback adapter removal.
+- **Production data migrated** (reported by the deploy, not re-verified at close-out): 26 legacy Plan 02 scans backfilled to one `PRIMARY` Contract each — 104 ModuleRuns and 8 GovernanceSnapshots linked. NOT NULL + the two unique constraints applied and verified clean.
+- Curated demos (Aave V3, Uniswap V3) seeded as **Protocol metadata** (see the gap below — no demo Scans yet).
+- Render verified live: a historical (backfilled) scan renders cleanly through the new multi-Contract UI components.
+
+### Architecture decisions (and why)
+
+- **`deriveContractStatus` uses strict "any FAILED → FAILED."** Carried over from the Plan 02 grade semantic. In the current GOVERNANCE-only module set this is somewhat contrived (one module ⇒ the rollup is near-identity); revisit when more modules land so a single failed module doesn't unduly sink a multi-module Contract. See Phase F notes in the plan.
+- **Atomic snapshot upsert keyed on `GovernanceSnapshot.contractId`.** PR 1 had to use a non-atomic `findFirst → create/update` (scanId lost its unique, contractId wasn't unique yet), which left a read→write race window. PR 2 added the `contractId` unique and switched `persistGovernanceSnapshot` to a single `upsert({ where: { contractId } })`, closing the window. The whole point of adding that unique was to take this payoff.
+- **Read-side fallback adapter removed in PR 2.** PR 1 shipped a graceful-degradation adapter (`buildLegacySingleContract`) that synthesised a single Contract for zero-Contract scans. Once `contractId` is `NOT NULL` and the backfill has run, every Scan has ≥1 Contract, so the zero-Contract branch is unreachable for real data — the adapter was deleted and reads go through the contractId-keyed shape exclusively.
+
+### KNOWN GAPS — IMPORTANT for whoever continues
+
+- **Multi-Contract INPUT path is NOT built. This is the headline gap.** The backend, scoring, and rendering all handle N Contracts, but the public homepage form accepts only a **single** address. There is no UI to submit related contracts with roles. A user (or operator) cannot start a multi-Contract scan through the app — only programmatically via `submitScan` with a `relatedContracts` array. The machinery is built but has no user-facing gas pedal. Likely Plan 04 scope.
+- **Curated demo Scans are NOT populated.** The seed creates Protocol *metadata* only. The planned `scripts/populate-curated-demos.ts` (run real multi-Contract scans for Aave/Uniswap against live RPC) was never written, so the curated demos have no actual demo scan to display yet.
+- **No end-to-end seam test.** Nothing runs submission → execution → rollup → rendered response in a single pass; each stage is covered in isolation. Tracked as a NICE_TO_HAVE through the holistic review.
+
+### Dead code to clean up (post-PR-2) — deliberate future work, not done here
+
+- `scripts/backfill-plan-03-contracts.ts` + its 4 integration tests (currently `describe.skip`'d): the backfill did its job in production, and `NOT NULL` makes its legacy-null-row scenario structurally unreachable, so the suite can no longer run. Safe to retire the script + suite together.
+- `filterFindings` in `src/lib/scan-response.ts`: was only used by the now-removed adapter. It's internally unused but kept exported + tested. Safe to remove with its tests.
+
+These were intentionally **not** removed at close-out — they're a clean future change, not a rider on the release.
+
+### Operational notes
+
+- **Vercel Preview shares the production `DATABASE_URL`, and the build script runs `prisma migrate deploy`** (`"build": "prisma generate && prisma migrate deploy && next build"`). Consequence: a new migration applies to the **production** database on **any** branch push that triggers a preview build — not only on merge to `main`. Be deliberate about pushing branches that carry an unreviewed migration; treat a migration-bearing branch with the same care as a prod deploy.
+- **Two duplicate Vercel plugins are enabled** (`vercel@claude-plugins-official` and `vercel-plugin@vercel-vercel-plugin`) — harmless (the duplicate MCP server is de-duped) but cleanup is deferred.
