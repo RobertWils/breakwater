@@ -329,7 +329,7 @@ describe("FindingsList", () => {
             }),
             makeEmailFinding({
               id: "ghost-c",
-              contractId: null,
+              contractId: "no-such-contract-c",
               publicTitle: "Ghost C",
             }),
           ]}

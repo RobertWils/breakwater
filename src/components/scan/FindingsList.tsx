@@ -110,13 +110,14 @@ export function FindingsList({
   // Phase G.4: group findings by contractId per spec §7.4. The
   // response builder returns contracts pre-sorted (PRIMARY first → role
   // priority → address); preserve that order for the rendered sections.
-  // Findings whose contractId doesn't match any contract (defensive —
-  // can occur for legacy pre-Phase-E rows where contractId is null and
-  // the graceful adapter assigns the synthetic id) collapse into ONE
-  // "Other findings" section at the end (Phase G remediation #2 /
-  // Codex Review #5 NTH 2 — multiple orphan buckets previously
-  // produced duplicate `id="findings-unassoc-heading"` ARIA labels,
-  // weakening the nested-region structure).
+  // Findings whose contractId doesn't match any contract in `contracts`
+  // collapse into ONE "Other findings" section at the end (Phase G
+  // remediation #2 / Codex Review #5 NTH 2 — multiple orphan buckets
+  // previously produced duplicate `id="findings-unassoc-heading"` ARIA
+  // labels, weakening the nested-region structure). Post-PR-2
+  // (§3.5) Finding.contractId is NOT NULL, so this is purely defensive
+  // (e.g. an id that doesn't resolve to a loaded contract); the `?? null`
+  // bucket key below is kept as a harmless guard.
   const findingsByContractId = new Map<string | null, FindingResponse[]>()
   for (const f of findings) {
     const key = f.contractId ?? null
