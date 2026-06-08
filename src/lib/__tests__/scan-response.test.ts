@@ -680,3 +680,97 @@ describe("getScan — Phase G.1 multi-Contract path", () => {
   });
 
 });
+
+// ── worstContractScore null-safe read-fallback (Plan 04 Step 2 BLOCKER) ───────
+
+describe("getScan — worstContractScore read-fallback", () => {
+  it("falls back to the GLOBAL min graded contract score when Scan.worstContractScore is null (legacy Plan 03 backfill row)", async () => {
+    const scanRow = makeScanRow({
+      compositeGrade: "F",
+      // Legacy backfill never wrote this column (migration added it nullable).
+      worstContractScore: null,
+      averageContractScore: 75,
+      contracts: [
+        makeContractRow({
+          id: "c-a",
+          address: "0x" + "a".repeat(40),
+          isPrimary: true,
+          role: "PRIMARY",
+          compositeGrade: "A",
+          compositeScore: 100,
+        }),
+        makeContractRow({
+          id: "c-f",
+          address: "0x" + "f".repeat(40),
+          isPrimary: false,
+          role: "RELATED",
+          compositeGrade: "F",
+          compositeScore: 0,
+        }),
+      ],
+    });
+    mockFindUnique.mockResolvedValueOnce(scanRow);
+
+    const result = await getScan({ scanId: "scan-abc", tier: "email" });
+    // Recomputed worst-wins value, NOT the 75 average, NOT null.
+    expect(result!.worstContractScore).toBe(0);
+  });
+
+  it("legacy N=1 row: null worstContractScore falls back to the single contract's score", async () => {
+    const scanRow = makeScanRow({
+      compositeGrade: "B",
+      worstContractScore: null,
+      averageContractScore: 80,
+      contracts: [
+        makeContractRow({ compositeGrade: "B", compositeScore: 80 }),
+      ],
+    });
+    mockFindUnique.mockResolvedValueOnce(scanRow);
+
+    const result = await getScan({ scanId: "scan-abc", tier: "email" });
+    expect(result!.worstContractScore).toBe(80);
+  });
+
+  it("does NOT override a non-null stored worstContractScore (fallback is null-only)", async () => {
+    const scanRow = makeScanRow({
+      compositeGrade: "F",
+      // Stored value present — must win even though min(contracts) would be 0.
+      worstContractScore: 50,
+      contracts: [
+        makeContractRow({
+          id: "c-a",
+          address: "0x" + "a".repeat(40),
+          compositeGrade: "A",
+          compositeScore: 100,
+        }),
+        makeContractRow({
+          id: "c-f",
+          address: "0x" + "f".repeat(40),
+          isPrimary: false,
+          role: "RELATED",
+          compositeGrade: "F",
+          compositeScore: 0,
+        }),
+      ],
+    });
+    mockFindUnique.mockResolvedValueOnce(scanRow);
+
+    const result = await getScan({ scanId: "scan-abc", tier: "email" });
+    expect(result!.worstContractScore).toBe(50);
+  });
+
+  it("returns null when worstContractScore is null and no contract is graded", async () => {
+    const scanRow = makeScanRow({
+      compositeGrade: null,
+      worstContractScore: null,
+      averageContractScore: null,
+      contracts: [
+        makeContractRow({ compositeGrade: null, compositeScore: null }),
+      ],
+    });
+    mockFindUnique.mockResolvedValueOnce(scanRow);
+
+    const result = await getScan({ scanId: "scan-abc", tier: "email" });
+    expect(result!.worstContractScore).toBeNull();
+  });
+});

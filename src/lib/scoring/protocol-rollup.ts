@@ -16,12 +16,14 @@ import type { Grade } from "@prisma/client";
  *     the role-applicability table): null compositeGrade — excluded.
  *   - Any future status carrying null compositeGrade.
  *
- * Worst-grade-wins (§6.2). The protocol composite grade is the
- * F-most letter across ELIGIBLE Contracts. Rationale: a protocol is
- * only as safe as its weakest contract — averaging dilutes the
- * signal. `worstContractScore` surfaces the lowest score within the
- * tied-worst-grade set so a 2-Contract scan that both grade F at
- * scores 0 and 15 reports the 0, not an arbitrary picker.
+ * Worst-grade-wins (§6.2 + Plan 04 §2). The protocol composite grade is
+ * the F-most letter across ELIGIBLE Contracts, and `worstContractScore`
+ * is the GLOBAL minimum composite score across those same Contracts.
+ * Rationale: a protocol is only as safe as its weakest contract —
+ * averaging dilutes the signal, so the headline number must be the worst
+ * score, never the mean. Both the letter and the number are worst-wins,
+ * so they always tell the same story. `averageContractScore` is retained
+ * as an honest secondary statistic (the mean) but is NOT the headline.
  *
  * Two-clause partial semantics (§6.3):
  *   - `isPartialGrade` (Plan 02 carry-over): any Contract has its own
@@ -92,8 +94,16 @@ export function rollupProtocolComposite(
   }
 
   const compositeGrade = minGrade(graded.map((c) => c.compositeGrade));
-  const tied = graded.filter((c) => c.compositeGrade === compositeGrade);
-  const worstContractScore = Math.min(...tied.map((c) => c.compositeScore));
+  // Plan 04 §2 — the protocol headline number is worst-wins: the GLOBAL
+  // minimum composite score across eligible Contracts, so the number can
+  // never tell a kinder story than the worst-grade-wins letter. (Plan 03
+  // scoped this to the worst-grade tier; Plan 04 widens it to the global
+  // minimum. The two coincide whenever grade is monotonic with score, but
+  // the global min is the honest worst-wins value and survives any future
+  // penalty recalibration that breaks monotonicity.)
+  const worstContractScore = Math.min(...graded.map((c) => c.compositeScore));
+  // Honest secondary statistic only — the arithmetic mean across graded
+  // Contracts. NOT the headline (Plan 04 §2 makes the headline worst-wins).
   const averageContractScore = Math.round(
     graded.reduce((acc, c) => acc + c.compositeScore, 0) / graded.length,
   );
