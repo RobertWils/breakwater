@@ -47,19 +47,19 @@ const STATUS_COPY: Record<string, { label: string; description: string; color: s
 }
 
 /**
- * Plan 03 §7.4 — protocol-level composite display. Renders three
- * lines per spec:
+ * Protocol-level composite display. Renders two lines:
  *   1. Protocol grade letter (worst-grade-wins across ELIGIBLE
  *      Contracts; Phase F.1 §6.2).
- *   2. Worst contract score: X/100 (matches the grade letter; from
- *      Scan.worstContractScore with tie-break to lowest within the
- *      worst-grade tier).
- *   3. Average contract score: Y/100 across N contracts
- *      (informational; from Scan.averageContractScore + the
- *      contracts.length count).
+ *   2. Protocol score: X/100 — the worst-wins number (global minimum
+ *      composite score across eligible Contracts; Scan.worstContractScore,
+ *      Plan 04 §2).
  *
- * Both score lines surface separately to defuse the F/50 UX
- * disconnect (spec §6.2 rationale).
+ * Plan 04 §2: the number is worst-wins, so it can never tell a kinder
+ * story than the letter. The Plan 03 "average contract score" line was
+ * removed — surfacing the mean alongside a worst-wins letter let one
+ * F-contract hide behind several A's (F + 75), which the §2 model
+ * forbids. `Scan.averageContractScore` is retained as honest backend
+ * data but is no longer surfaced here.
  *
  * Partial affordance: appended when isPartialGrade OR
  * isPartialCoverage is true (spec §6.3 two-clause partial semantics).
@@ -70,7 +70,6 @@ export function CompositePanel({ scan, currentStatus }: CompositePanelProps) {
   const effectiveStatus = currentStatus ?? scan.status
   const statusInfo = STATUS_COPY[effectiveStatus] ?? STATUS_COPY.QUEUED
   const hasGrade = scan.compositeGrade !== null
-  const contractCount = scan.contracts.length
 
   const partialReason = derivePartialReason(scan)
 
@@ -94,33 +93,18 @@ export function CompositePanel({ scan, currentStatus }: CompositePanelProps) {
           >
             {scan.compositeGrade}
           </p>
-          <dl className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-md mx-auto text-left">
-            {scan.worstContractScore !== null && (
+          {scan.worstContractScore !== null && (
+            <dl className="mt-6 max-w-md mx-auto text-left">
               <div>
                 <dt className="font-mono text-xs uppercase tracking-wider text-muted">
-                  Worst contract score
+                  Protocol score
                 </dt>
                 <dd className="font-mono text-sm text-primary">
                   {scan.worstContractScore}/100
                 </dd>
               </div>
-            )}
-            {scan.averageContractScore !== null && (
-              <div>
-                <dt className="font-mono text-xs uppercase tracking-wider text-muted">
-                  Average contract score
-                </dt>
-                <dd className="font-mono text-sm text-primary">
-                  {scan.averageContractScore}/100
-                  {contractCount > 0 && (
-                    <span className="text-muted">
-                      {" "}across {contractCount} contract{contractCount !== 1 ? "s" : ""}
-                    </span>
-                  )}
-                </dd>
-              </div>
-            )}
-          </dl>
+            </dl>
+          )}
           {partialReason && (
             <p
               className="text-xs text-sev-medium mt-4"

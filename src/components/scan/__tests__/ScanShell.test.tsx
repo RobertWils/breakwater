@@ -227,7 +227,7 @@ describe("ScanShell — composition + polling integration (Plan 02 G.3, Phase G.
     ).toBeNull()
   })
 
-  it("renders the composite grade letter when scan.compositeGrade is populated (Plan 03 §7.4: 'Protocol grade' label + worst/average score lines)", () => {
+  it("renders the composite grade letter when scan.compositeGrade is populated (Plan 04 §2: 'Protocol grade' label + single worst-wins 'Protocol score' line)", () => {
     useScanPollingMock.mockReturnValue({
       currentStatus: "COMPLETE",
       errorCount: 0,
@@ -245,8 +245,10 @@ describe("ScanShell — composition + polling integration (Plan 02 G.3, Phase G.
       />,
     )
     expect(screen.getByText("Protocol grade")).toBeInTheDocument()
-    expect(screen.getByText("Worst contract score")).toBeInTheDocument()
-    expect(screen.getByText("Average contract score")).toBeInTheDocument()
+    expect(screen.getByText("Protocol score")).toBeInTheDocument()
+    expect(screen.getByText("80/100")).toBeInTheDocument()
+    // Plan 04 §2: the old "Average contract score" line is gone.
+    expect(screen.queryByText("Average contract score")).toBeNull()
   })
 
   describe("polled per-(Contract, module) merge (Plan 03 §7.3)", () => {

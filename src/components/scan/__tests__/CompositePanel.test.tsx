@@ -101,13 +101,13 @@ describe("CompositePanel — Plan 03 §7.4 protocol grade display", () => {
     expect(screen.queryByText("Complete")).not.toBeInTheDocument()
   })
 
-  it("renders Worst contract score + Average contract score lines per spec §7.4", () => {
+  it("renders a single worst-wins 'Protocol score' line and NO average line (Plan 04 §2)", () => {
     render(
       <CompositePanel
         scan={makeScan({
           status: "COMPLETE",
           compositeGrade: "F",
-          averageContractScore: 50,
+          averageContractScore: 75,
           worstContractScore: 0,
           contracts: [
             makeContract({ id: "c1", compositeGrade: "A", compositeScore: 100 }),
@@ -116,16 +116,16 @@ describe("CompositePanel — Plan 03 §7.4 protocol grade display", () => {
         })}
       />,
     )
-    expect(screen.getByText("Worst contract score")).toBeInTheDocument()
+    // The protocol number is the worst-wins score, so it agrees with the F.
+    expect(screen.getByText("Protocol score")).toBeInTheDocument()
     expect(screen.getByText("0/100")).toBeInTheDocument()
-    expect(screen.getByText("Average contract score")).toBeInTheDocument()
-    // "50/100 across 2 contracts" is split across span elements; the
-    // average value lives in one node, the across-N-contracts in another.
-    expect(screen.getByText("50/100", { exact: false })).toBeInTheDocument()
-    expect(screen.getByText(/across 2 contracts/i)).toBeInTheDocument()
+    // The misleading average (75) must NOT be surfaced as a competing number.
+    expect(screen.queryByText("Average contract score")).toBeNull()
+    expect(screen.queryByText(/75\/100/)).toBeNull()
+    expect(screen.queryByText(/across .* contracts?/i)).toBeNull()
   })
 
-  it("singular 'contract' when contracts.length === 1", () => {
+  it("single contract: protocol score = that contract's score (unchanged)", () => {
     render(
       <CompositePanel
         scan={makeScan({
@@ -137,10 +137,11 @@ describe("CompositePanel — Plan 03 §7.4 protocol grade display", () => {
         })}
       />,
     )
-    expect(screen.getByText(/across 1 contract$/i)).toBeInTheDocument()
+    expect(screen.getByText("Protocol score")).toBeInTheDocument()
+    expect(screen.getByText("80/100")).toBeInTheDocument()
   })
 
-  it("omits the worst-contract-score line when worstContractScore is null", () => {
+  it("omits the protocol-score line when worstContractScore is null", () => {
     render(
       <CompositePanel
         scan={makeScan({
@@ -151,21 +152,7 @@ describe("CompositePanel — Plan 03 §7.4 protocol grade display", () => {
         })}
       />,
     )
-    expect(screen.queryByText("Worst contract score")).toBeNull()
-  })
-
-  it("omits the average-contract-score line when averageContractScore is null", () => {
-    render(
-      <CompositePanel
-        scan={makeScan({
-          status: "COMPLETE",
-          compositeGrade: "B",
-          averageContractScore: null,
-          worstContractScore: 80,
-        })}
-      />,
-    )
-    expect(screen.queryByText("Average contract score")).toBeNull()
+    expect(screen.queryByText("Protocol score")).toBeNull()
   })
 })
 

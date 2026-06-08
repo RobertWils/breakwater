@@ -62,10 +62,10 @@ describe("rollupProtocolComposite (Plan 03 §6.2 + §6.3)", () => {
     expect(result.isPartialCoverage).toBe(false);
   });
 
-  // CASE C — three Contracts all grade F with distinct scores. Tie-
-  // break: worstContractScore is the LOWEST score within the worst-
-  // grade tier (spec §6.2).
-  it("C: three ELIGIBLE Contracts all F at scores [0, 15, 30] — composite F, avg 15, worst 0 (tie-break: lowest of worst-grade group)", () => {
+  // CASE C — three Contracts all grade F with distinct scores.
+  // worstContractScore is the GLOBAL minimum composite score across
+  // eligible Contracts (Plan 04 §2); here that is 0.
+  it("C: three ELIGIBLE Contracts all F at scores [0, 15, 30] — composite F, avg 15, worst 0 (global minimum)", () => {
     const result = rollupProtocolComposite([
       complete("F", 0),
       complete("F", 15),
@@ -161,6 +161,36 @@ describe("rollupProtocolComposite (Plan 03 §6.2 + §6.3)", () => {
     expect(result.worstContractScore).toBe(100);
     expect(result.isPartialGrade).toBe(false);
     expect(result.isPartialCoverage).toBe(true);
+  });
+
+  // CASE K (Plan 04 §2) — the protocol NUMBER is the GLOBAL minimum
+  // across eligible Contracts, NOT the min within the worst-grade tier.
+  // Synthetic grade/score mismatch isolates the two rules: the lowest
+  // score (10) sits on a non-worst-grade (D) Contract. Worst-wins must
+  // report 10, not the F-tier's 50.
+  it("K (Plan 04 §2): worst number = GLOBAL min across eligible, not min-within-worst-grade-tier", () => {
+    const result = rollupProtocolComposite([
+      complete("F", 50),
+      complete("D", 10),
+    ]);
+    expect(result.compositeGrade).toBe("F"); // letter unchanged: worst-grade-wins
+    expect(result.worstContractScore).toBe(10); // global min, NOT 50
+  });
+
+  // CASE L (Plan 04 §2) — the canonical "averaging lies" case. One F@0
+  // hidden behind three A@100. The protocol number must sink to 0 (worst-
+  // wins) so it agrees with the F letter; the average (75) is computed as
+  // an honest secondary field but must NOT be the headline number.
+  it("L (Plan 04 §2): F@0 + 3×A@100 — number 0 (worst-wins), grade F — number agrees with letter", () => {
+    const result = rollupProtocolComposite([
+      complete("F", 0),
+      complete("A", 100),
+      complete("A", 100),
+      complete("A", 100),
+    ]);
+    expect(result.compositeGrade).toBe("F");
+    expect(result.worstContractScore).toBe(0); // worst-wins, NOT the 75 mean
+    expect(result.averageContractScore).toBe(75); // honest secondary, not headline
   });
 
   // Backward-compat sanity: a single COMPLETE Contract with no errors
