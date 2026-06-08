@@ -93,7 +93,11 @@ export function CompositePanel({ scan, currentStatus }: CompositePanelProps) {
           >
             {scan.compositeGrade}
           </p>
-          {scan.worstContractScore !== null && (
+          {/* `!= null` guards both null and undefined so a missing score
+              degrades to a hidden line, never a rendered "null"/100. The
+              read-fallback (deriveWorstContractScore) fills legacy nulls, so
+              within a graded scan this normally renders. */}
+          {scan.worstContractScore != null && (
             <dl className="mt-6 max-w-md mx-auto text-left">
               <div>
                 <dt className="font-mono text-xs uppercase tracking-wider text-muted">

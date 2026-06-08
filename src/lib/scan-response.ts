@@ -18,8 +18,11 @@ export interface ScanResponse {
   /** Plan 03 §6.2 — arithmetic mean of per-Contract scores across graded Contracts. */
   averageContractScore: number | null;
   /**
-   * Plan 03 §6.2 — lowest `Contract.compositeScore` among Contracts whose
-   * grade matches `compositeGrade` (ties broken by lowest score).
+   * Plan 04 §2 — the worst-wins protocol score: the GLOBAL minimum
+   * `Contract.compositeScore` across all graded (eligible) Contracts. Always
+   * agrees with `compositeGrade` (worst-grade-wins). For legacy rows whose
+   * stored `Scan.worstContractScore` is null, this is recomputed from the
+   * graded contracts at read time (see `deriveWorstContractScore`).
    */
   worstContractScore: number | null;
   /** Plan 03 §6.2 — "worst contributing contract's grade." */
@@ -206,7 +209,10 @@ export async function getScan(params: {
     id: scan.id,
     status: scan.status,
     averageContractScore: scan.averageContractScore,
-    worstContractScore: scan.worstContractScore,
+    worstContractScore: deriveWorstContractScore(
+      scan.worstContractScore,
+      contracts,
+    ),
     compositeGrade: scan.compositeGrade,
     isPartialGrade: scan.isPartialGrade,
     isPartialCoverage: scan.isPartialCoverage,
@@ -223,6 +229,36 @@ export async function getScan(params: {
     contracts,
     findings,
   };
+}
+
+/**
+ * Plan 04 Step 2 null-safe read-fallback. The protocol headline now renders
+ * `worstContractScore` (worst-wins, Plan 04 §2), but the Plan 03 legacy
+ * backfill created single-PRIMARY-contract scans without writing
+ * `Scan.worstContractScore` (the migration added it nullable). For those rows
+ * the stored value is null, which would render no protocol score at all.
+ *
+ * When the stored value is null, recompute the true worst-wins value at read
+ * time as the GLOBAL minimum composite score across graded contracts — the
+ * same rule `rollupProtocolComposite` persists for new scans, so the fallback
+ * is exact (for the legacy N=1 rows, min over the single contract === that
+ * contract's score === the backfilled average). Triggers ONLY when the stored
+ * value is null; non-null rows pass through untouched, so no "average" is ever
+ * reintroduced into the headline for scans that already have a real value.
+ */
+function deriveWorstContractScore(
+  storedWorst: number | null,
+  contracts: ReadonlyArray<{
+    compositeScore: number | null;
+    compositeGrade: string | null;
+  }>,
+): number | null {
+  if (storedWorst !== null) return storedWorst;
+  const gradedScores = contracts
+    .filter((c) => c.compositeGrade !== null && c.compositeScore !== null)
+    .map((c) => c.compositeScore as number);
+  if (gradedScores.length === 0) return null;
+  return Math.min(...gradedScores);
 }
 
 // ── Multi-Contract projection ───────────────────────────────────────────────
