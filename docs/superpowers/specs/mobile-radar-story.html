@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Breakwater — Mobile v3</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+:root{--abyss:#020a0e;--deep:#04161c;--sonar:#1ee0b0;--sonar-d:#0e7a60;--amber:#ffcf5c;--red:#ff5a6e;--foam:#dcfff5;--muted:#6a9b92;}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{font-family:'Chakra Petch',sans-serif;background:var(--abyss);color:var(--foam);overflow-x:hidden}
+.bg{position:fixed;inset:0;z-index:0;background:radial-gradient(circle at 50% 28%,rgba(30,224,176,0.10),transparent 55%),linear-gradient(160deg,var(--abyss),var(--deep))}
+.sea{position:fixed;bottom:0;left:0;width:100%;height:12vh;z-index:1;pointer-events:none}
+.sea svg{position:absolute;bottom:0;left:0;width:200%;height:100%}.sea path{fill:var(--sonar)}
+.sea .s1{opacity:0.05;animation:tide 17s linear infinite}.sea .s2{opacity:0.07;animation:tide 11s linear infinite reverse}
+@keyframes tide{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+
+header{position:relative;z-index:30;display:flex;justify-content:space-between;align-items:center;padding:16px 20px}
+.logo{display:flex;gap:9px;align-items:center;font-weight:700;font-size:17px}.logo svg{width:24px;height:24px}
+.menu{font-size:18px;color:var(--muted)}
+
+.hero{position:relative;z-index:10;padding:14px 20px 26px}
+.eyebrow{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.18em;text-transform:uppercase;color:var(--sonar);margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.eyebrow .dot{width:7px;height:7px;border-radius:50%;background:var(--sonar);box-shadow:0 0 8px var(--sonar);animation:bl 1.5s infinite}@keyframes bl{50%{opacity:0.3}}
+h1{font-weight:700;font-size:33px;line-height:1.08;letter-spacing:-0.01em;margin-bottom:13px}
+h1 em{font-style:normal;color:var(--sonar)}
+.sub{font-size:14.5px;line-height:1.55;color:var(--muted);margin-bottom:22px}.sub b{color:var(--foam)}
+.card{background:linear-gradient(160deg,rgba(4,22,28,0.95),rgba(2,10,14,0.97));border:1px solid rgba(30,224,176,0.3);border-radius:14px;padding:22px;box-shadow:0 20px 50px -16px rgba(0,0,0,0.7)}
+.card h3{font-size:18px;font-weight:600;margin-bottom:4px}
+.status{font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--sonar);margin-bottom:18px;display:flex;align-items:center;gap:6px}
+.status .live{width:6px;height:6px;border-radius:50%;background:var(--sonar);animation:bl 1.2s infinite}
+.field{margin-bottom:14px}.field label{display:block;font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
+.field input,.field .sel{width:100%;padding:13px 14px;border-radius:8px;background:rgba(2,10,14,0.8);border:1px solid rgba(106,155,146,0.3);color:var(--foam);font-family:'IBM Plex Mono',monospace;font-size:14px}
+.field input::placeholder{color:rgba(106,155,146,0.5)}.field .sel{display:flex;justify-content:space-between}
+.hint{font-size:11.5px;color:rgba(106,155,146,0.8);margin-top:6px;line-height:1.45}
+.btn{width:100%;padding:14px;border:none;border-radius:8px;background:linear-gradient(135deg,var(--sonar),var(--sonar-d));color:var(--abyss);font-weight:700;font-size:15px;cursor:pointer;margin-top:4px;box-shadow:0 12px 28px -8px rgba(30,224,176,0.5);font-family:'Chakra Petch',sans-serif}
+.foot{text-align:center;font-family:'IBM Plex Mono',monospace;font-size:10px;color:rgba(106,155,146,0.75);margin-top:12px}
+
+/* STICKY RADAR on its own opaque layer (z-index 20) so text scrolls BEHIND it */
+.radar-layer{position:sticky;top:0;z-index:20;height:46vh;display:flex;align-items:center;justify-content:center;pointer-events:none;
+  /* opaque-ish backdrop so text passing behind is hidden under the radar band */
+  background:linear-gradient(180deg, var(--abyss) 0%, var(--abyss) 55%, rgba(2,10,14,0.85) 80%, transparent 100%);
+}
+.scope{position:relative;width:min(72vw,300px);height:min(72vw,300px)}
+.ring{position:absolute;border:1px solid rgba(30,224,176,0.16);border-radius:50%;inset:0}
+.ring:nth-child(2){inset:16%}.ring:nth-child(3){inset:32%}
+.cross{position:absolute;background:rgba(30,224,176,0.1)}.cross.h{top:50%;left:0;width:100%;height:1px}.cross.v{left:50%;top:0;height:100%;width:1px}
+.sweep{position:absolute;inset:0;border-radius:50%;background:conic-gradient(from 0deg,rgba(30,224,176,0.25),rgba(30,224,176,0.03) 22%,transparent 38%);animation:spin 4.5s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.shield{position:absolute;inset:32%;border-radius:50%;border:2px solid var(--sonar);opacity:0;box-shadow:0 0 24px rgba(30,224,176,0.4),inset 0 0 18px rgba(30,224,176,0.2);transition:opacity .7s}
+.shield.show{opacity:0.9}
+.edges{position:absolute;inset:0;width:100%;height:100%;overflow:visible;z-index:2}
+.edges line{stroke:var(--sonar);stroke-width:1.4;stroke-dasharray:5 5;opacity:0;transition:opacity .5s,stroke .5s;animation:dash 1.2s linear infinite}
+.edges line.show{opacity:0.4}.edges line.amber{stroke:var(--amber);opacity:0.55}.edges line.red{stroke:var(--red);opacity:0.55}.edges line.killed{opacity:0!important}
+@keyframes dash{to{stroke-dashoffset:-10}}
+.blip{position:absolute;transform:translate(-50%,-50%);opacity:0;transition:opacity .5s,transform .4s;z-index:3}
+.blip.show{opacity:1}.blip.killed{opacity:0!important;transform:translate(-50%,-50%) scale(0)!important}
+.blip .d{width:11px;height:11px;border-radius:50%;background:var(--sonar);box-shadow:0 0 12px var(--sonar);transition:background .5s,box-shadow .5s}
+.blip.core .d{width:14px;height:14px}
+.blip.amber .d{background:var(--amber);box-shadow:0 0 13px var(--amber)}
+.blip.red .d{background:var(--red);box-shadow:0 0 13px var(--red)}
+.blip .tag{position:absolute;left:15px;top:50%;transform:translateY(-50%);font-family:'IBM Plex Mono',monospace;font-size:8px;white-space:nowrap;color:var(--sonar);letter-spacing:0.04em}
+
+/* the beats live UNDER the radar layer (lower z-index) and scroll behind it */
+.beats{position:relative;z-index:11;margin-top:-6vh}
+.beat{min-height:82vh;display:flex;align-items:center;padding:0 20px}
+.beat-inner{opacity:0.25;transform:translateY(16px);transition:opacity .5s,transform .5s}
+.beat.active .beat-inner{opacity:1;transform:translateY(0)}
+.beat .step{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:var(--sonar);margin-bottom:10px}
+.beat.warn .step{color:var(--amber)}.beat.danger .step{color:var(--red)}
+.beat h2{font-weight:700;font-size:26px;line-height:1.12;margin-bottom:10px}
+.beat h2 em{font-style:normal;color:var(--sonar)}.beat h2 .r{color:var(--red)}
+.beat p{font-size:14.5px;line-height:1.55;color:var(--muted)}.beat p b{color:var(--foam)}
+.statline{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--muted);margin-top:14px;padding-top:12px;border-top:1px solid rgba(30,224,176,0.12)}
+.statline b{color:var(--sonar);font-family:'Chakra Petch',sans-serif;font-size:16px}
+.statline.warn b{color:var(--amber)}.statline.danger b{color:var(--red)}
+</style></head><body>
+<div class="bg"></div>
+<div class="sea"><svg viewBox="0 0 1440 200" preserveAspectRatio="none"><path class="s1" d="M0,110 C240,160 480,60 720,110 C960,160 1200,60 1440,110 L1440,200 L0,200 Z M1440,110 C1680,160 1920,60 2160,110 C2400,160 2640,60 2880,110 L2880,200 L1440,200 Z"/></svg><svg viewBox="0 0 1440 200" preserveAspectRatio="none"><path class="s2" d="M0,130 C360,80 720,170 1080,120 C1260,95 1350,130 1440,130 L1440,200 L0,200 Z M1440,130 C1800,80 2160,170 2520,120 C2700,95 2790,130 2880,130 L2880,200 L1440,200 Z"/></svg></div>
+
+<header><div class="logo"><svg viewBox="0 0 32 32" fill="none" stroke-linecap="round"><path d="M3 26 L10 4 L14 18" stroke="#1ee0b0" stroke-width="3"/><line x1="17" y1="4" x2="17" y2="28" stroke="#1ee0b0" stroke-width="3.5"/><path d="M21 18 L27 26" stroke="#1ee0b0" stroke-width="3"/></svg>Breakwater</div><div class="menu">☰</div></header>
+
+<section class="hero">
+  <div class="eyebrow"><span class="dot"></span>DeFi Security Monitoring</div>
+  <h1>We catch the attacks before they reach <em>shore</em></h1>
+  <p class="sub">Scan a protocol's whole graph — contracts, bridges, dependencies — for the patterns behind the biggest DeFi losses.</p>
+  <div class="card">
+    <h3>Scan a protocol</h3>
+    <div class="status"><span class="live"></span>sonar active · listening</div>
+    <div class="field"><label>Chain</label><div class="sel">Ethereum <span style="color:var(--muted)">▾</span></div></div>
+    <div class="field"><label>Protocol address</label><input placeholder="0x…"><p class="hint">The core contract users interact with — Pool, Router, or Vault.</p></div>
+    <button class="btn">Begin scan →</button>
+    <p class="foot">No signup · Results in &lt; 60 seconds</p>
+  </div>
+</section>
+
+<section class="story">
+  <!-- RADAR on opaque sticky layer (z 20) -->
+  <div class="radar-layer"><div class="scope" id="scope">
+    <div class="ring"></div><div class="ring"></div><div class="ring"></div>
+    <div class="cross h"></div><div class="cross v"></div><div class="sweep"></div>
+    <div class="shield" id="shield"></div>
+    <svg class="edges" id="edges" viewBox="0 0 300 300">
+      <line id="e-tl" data-min="2" x1="150" y1="150" x2="85" y2="88"/>
+      <line id="e-tr" data-min="2" x1="150" y1="150" x2="218" y2="95"/>
+      <line id="e-bl" data-min="2" x1="150" y1="150" x2="90" y2="222"/>
+      <line id="tr-a" data-min="3" x1="218" y1="95" x2="278" y2="52"/>
+      <line id="tr-b" data-min="3" x1="218" y1="95" x2="285" y2="115"/>
+    </svg>
+    <div class="blip core" id="n-core" data-min="1" style="left:50%;top:50%"><span class="tag">YOUR PROTOCOL</span></div>
+    <div class="blip" id="n-tl" data-min="2" style="left:28%;top:29%"><div class="d"></div></div>
+    <div class="blip" id="n-tr" data-min="2" style="left:73%;top:32%"><div class="d"></div></div>
+    <div class="blip" id="n-bl" data-min="2" style="left:30%;top:74%"><div class="d"></div></div>
+    <div class="blip" id="tr-x1" data-min="3" style="left:92%;top:17%"><div class="d"></div></div>
+    <div class="blip" id="tr-x2" data-min="3" style="left:95%;top:38%"><div class="d"></div></div>
+  </div></div>
+
+  <!-- beats scroll BEHIND the radar (lower z-index) -->
+  <div class="beats">
+    <div class="beat" data-phase="1"><div class="beat-inner"><div class="step">Your protocol</div><h2>You run a <em>tight ship</em>.</h2><p>Audited. Clean. On its own, your protocol looks <b>solid</b>.</p><div class="statline"><b>2,847</b> contracts scanned</div></div></div>
+    <div class="beat" data-phase="2"><div class="beat-inner"><div class="step">The graph</div><h2>A protocol is <em>never one contract</em>.</h2><p>Proxy, timelock, guardian — every contract you depend on is part of your real attack surface.</p><div class="statline"><b>$48B</b> in value scanned</div></div></div>
+    <div class="beat danger" data-phase="3"><div class="beat-inner"><div class="step">The contagion</div><h2>You're safe. But are <span class="r">they</span>?</h2><p>You inherit the worst score in your graph. One unsafe dependency, and your protocol is unsafe too — no matter how clean your own code is.</p><div class="statline danger"><b>312</b> hacks indexed — we learn from each</div></div></div>
+    <div class="beat" data-phase="4"><div class="beat-inner"><div class="step">The breakwater</div><h2>We catch it before it reaches <em>shore</em>.</h2><p>Breakwater scans your whole graph, scores every connection, and clears what's dangerous — <b>before</b> it ever reaches you.</p><div class="statline"><b>&lt;60s</b> to a full protocol read</div></div></div>
+  </div>
+</section>
+
+<script>
+const beats=[...document.querySelectorAll('.beat')];
+const $=id=>document.getElementById(id);
+const shield=$('shield');
+let timers=[]; const ct=()=>{timers.forEach(t=>clearTimeout(t));timers=[];};
+const nodes={core:$('n-core'),tl:$('n-tl'),tr:$('n-tr'),bl:$('n-bl'),trx1:$('tr-x1'),trx2:$('tr-x2')};
+const edges={tl:$('e-tl'),tr:$('e-tr'),bl:$('e-bl'),tra:$('tr-a'),trb:$('tr-b')};
+const allN=Object.values(nodes), allE=Object.values(edges);
+function paint(el,c){el.classList.remove('amber','red');if(c)el.classList.add(c);}
+function reset(){allN.forEach(n=>n.classList.remove('amber','red','killed'));allE.forEach(e=>e.classList.remove('amber','red','killed'));}
+function setPhase(p){
+  ct();reset();
+  allN.forEach(n=>n.classList.toggle('show',+n.dataset.min<=p));
+  allE.forEach(e=>e.classList.toggle('show',+e.dataset.min<=p));
+  if(p>=3){
+    paint(nodes.trx1,'amber');paint(nodes.trx2,'red');
+    paint(edges.tra,'amber');paint(edges.trb,'red');
+    paint(nodes.tr,'red');paint(edges.tr,'red');
+    if(p===3)paint(nodes.core,'red');
+  }
+  if(p===4){
+    [nodes.trx1,nodes.trx2].forEach((b,i)=>timers.push(setTimeout(()=>b.classList.add('killed'),400+i*150)));
+    [edges.tra,edges.trb].forEach(e=>timers.push(setTimeout(()=>e.classList.add('killed'),350)));
+    timers.push(setTimeout(()=>{[nodes.core,nodes.tr].forEach(n=>n.classList.remove('amber','red'));edges.tr.classList.remove('amber','red');},700));
+    shield.classList.add('show');
+  } else shield.classList.remove('show');
+}
+setPhase(1);
+const io=new IntersectionObserver(es=>{es.forEach(en=>{if(en.isIntersecting){beats.forEach(b=>b.classList.remove('active'));en.target.classList.add('active');setPhase(+en.target.dataset.phase);}})},{threshold:0.5});
+beats.forEach(b=>io.observe(b));
+</script>
+</body></html>
