@@ -96,7 +96,7 @@ export function ScanForm({ idPrefix = "" }: { idPrefix?: string } = {}) {
             value={chain}
             onChange={(e) => setChain(e.target.value as Chain)}
             disabled={state.kind === "submitting"}
-            className="sonar-input w-full appearance-none rounded-lg px-4 py-3 text-sm disabled:opacity-50"
+            className="sonar-input w-full appearance-none rounded-lg px-4 py-3 text-sm disabled:opacity-[0.85]"
           >
             <option value="ETHEREUM">Ethereum</option>
             <option value="SOLANA">Solana</option>
@@ -116,7 +116,7 @@ export function ScanForm({ idPrefix = "" }: { idPrefix?: string } = {}) {
             placeholder={chain === "ETHEREUM" ? "0x..." : "Solana address"}
             disabled={state.kind === "submitting"}
             required
-            className="sonar-input w-full appearance-none rounded-lg px-4 py-3 text-sm disabled:opacity-50"
+            className="sonar-input w-full appearance-none rounded-lg px-4 py-3 text-sm disabled:opacity-[0.85]"
           />
           <p className="text-xs text-sonar-muted/80 leading-relaxed">
             {chain === "ETHEREUM"

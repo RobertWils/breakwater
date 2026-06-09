@@ -137,10 +137,11 @@
   .sonar-btn:hover:not(:disabled) {
     transform: translateY(-2px);
   }
-  /* Keep the full-bright G1f gradient + glow even while disabled (empty
-     address / submitting) — the button is still functionally disabled, it
-     just isn't greyed out. cursor signals non-interactivity. */
+  /* Disabled (empty address / submitting): keep the bright G1f gradient +
+     glow, only a subtle 0.85 dim as the disabled cue — not the old greyed-out
+     0.5. Still functionally disabled (cursor + the disabled attribute). */
   .sonar-btn:disabled {
+    opacity: 0.85;
     cursor: not-allowed;
   }
   /* "Free scan" badge pill. */

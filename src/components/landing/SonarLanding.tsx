@@ -244,10 +244,12 @@ export function SonarLanding({ counts }: { counts: RealCounts }) {
             <section
               key={beat.phase}
               data-beat-phase={beat.phase}
-              // pointer-events-none (G1f .beat): the full-height beat sits over
-              // the fixed cockpit, so it must let clicks through to the scan
-              // card underneath. Scroll + IntersectionObserver are unaffected.
-              className="pointer-events-none flex min-h-screen items-end px-11 pb-[16vh]"
+              // pointer-events-none (G1f .beat): the beat sits over the fixed
+              // cockpit, so it must let clicks through to the scan card
+              // underneath (the text re-enables pointer-events in BeatInner).
+              // min-h-[80vh] (not full screen) so each phase isn't preceded by
+              // an empty screen. Scroll + IntersectionObserver are unaffected.
+              className="pointer-events-none flex min-h-[80vh] items-end px-11 pb-[16vh]"
             >
               <BeatInner beat={beat} active={phase === beat.phase} />
             </section>
@@ -294,7 +296,7 @@ export function SonarLanding({ counts }: { counts: RealCounts }) {
               <div
                 key={beat.phase}
                 data-beat-phase={beat.phase}
-                className="flex min-h-[82vh] items-center px-5"
+                className="flex min-h-[80vh] items-center px-5"
               >
                 <BeatInner beat={beat} active={phase === beat.phase} mobile />
               </div>
@@ -324,7 +326,9 @@ function BeatInner({
 }) {
   return (
     <div
-      className={`max-w-[560px] transition-all duration-500 ${
+      // Re-enable pointer events for the text itself (the parent section is
+      // pointer-events-none); the text sits bottom-left, clear of the card.
+      className={`pointer-events-auto max-w-[560px] transition-all duration-500 ${
         active ? "opacity-100 translate-y-0" : "opacity-20 translate-y-4"
       }`}
     >
