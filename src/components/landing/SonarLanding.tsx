@@ -216,10 +216,11 @@ export function SonarLanding({ counts }: { counts: RealCounts }) {
   const activeDesktopStat = dBeats.find((b) => b.phase === phase)?.stat ?? dBeats[0].stat
 
   return (
-    // Sticky-footer-via-flex: the story content fills the column, the footer
-    // sits at the bottom of the flow (never fixed, never over the radar/beats).
-    <div ref={rootRef} className="flex min-h-screen flex-col">
-      <div className="flex-1">
+    // Natural document flow: the page follows its content height and the
+    // footer sits directly after the last section (no flex push, no fixed
+    // overlay) — so there's no dead band when content is shorter than the
+    // viewport.
+    <div ref={rootRef}>
       {/* ── Desktop cockpit ─────────────────────────────────────────────── */}
       <div className="hidden lg:block">
         {/* Fixed overlay: radar always left, scan card + stats always right. */}
@@ -243,7 +244,10 @@ export function SonarLanding({ counts }: { counts: RealCounts }) {
             <section
               key={beat.phase}
               data-beat-phase={beat.phase}
-              className="flex min-h-screen items-end px-11 pb-[16vh]"
+              // pointer-events-none (G1f .beat): the full-height beat sits over
+              // the fixed cockpit, so it must let clicks through to the scan
+              // card underneath. Scroll + IntersectionObserver are unaffected.
+              className="pointer-events-none flex min-h-screen items-end px-11 pb-[16vh]"
             >
               <BeatInner beat={beat} active={phase === beat.phase} />
             </section>
@@ -298,9 +302,8 @@ export function SonarLanding({ counts }: { counts: RealCounts }) {
           </div>
         </section>
       </div>
-      </div>
 
-      {/* Shared footer: in normal flow at the bottom of the flex column.
+      {/* Shared footer: in normal flow, directly after the last section.
           Opaque (bg-abyss) so on desktop it cleanly covers the fixed cockpit
           at the end of the scroll instead of the radar bleeding through. */}
       <div className="relative z-10 bg-abyss">
