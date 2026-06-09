@@ -60,6 +60,16 @@ describe("SonarLanding — scan-card reachability (regression: overlay must not 
     beats.forEach((b) => expect(b.parentElement).toBe(wrapper))
   })
 
+  it("the fixed cockpit reserves bottom clearance so the footer can't clip the card", () => {
+    render(<SonarLanding counts={{ contracts: 1, detectorRuns: 2, scans: 3 }} />)
+    // The fixed, vertically-centered cockpit must reserve bottom space (≈ footer
+    // height) so the taller card (with the $1.1B+ stat) never centers down into
+    // the normal-flow footer's strip at full scroll.
+    const cockpit = document.querySelector(".fixed.inset-0")
+    expect(cockpit).not.toBeNull()
+    expect(cockpit!.className).toContain("pb-44")
+  })
+
   it("beat text re-enables pointer events (selectable) without blocking the card", () => {
     render(<SonarLanding counts={{ contracts: 1, detectorRuns: 2, scans: 3 }} />)
     // Every beat headline lives in a pointer-events-auto wrapper.

@@ -233,8 +233,16 @@ export function SonarLanding({ counts }: { counts: RealCounts }) {
     <div ref={rootRef}>
       {/* ── Desktop cockpit ─────────────────────────────────────────────── */}
       <div className="hidden lg:block">
-        {/* Fixed overlay: radar always left, scan card + stats always right. */}
-        <div className="pointer-events-none fixed inset-0 z-[5] grid grid-cols-[1.15fr_0.85fr] items-center gap-8 px-11 pb-10 pt-20">
+        {/* Fixed overlay: radar always left, scan card + stats always right.
+            The card is vertically centered, but the footer is a normal-flow
+            element at the document bottom — at full scroll it rests at
+            (viewportH − footerH). A taller card (the $1.1B+ stat made it ~530px)
+            would otherwise center down into that strip and the footer would
+            clip its bottom. pb-44 reserves bottom clearance (~footer height +
+            breathing room) so the whole card, stat label included, always sits
+            free above the footer. This is independent of beat height — beat
+            height can't move where a normal-flow footer rests at full scroll. */}
+        <div className="pointer-events-none fixed inset-0 z-[5] grid grid-cols-[1.15fr_0.85fr] items-center gap-8 px-11 pb-44 pt-20">
           <div className="flex h-full items-center justify-center">
             <Radar graph={exampleGraph} phase={phase} healPhase={HEAL_PHASE} size="lg" />
           </div>
