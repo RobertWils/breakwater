@@ -34,7 +34,7 @@ export interface RealCounts {
 interface Stat {
   value: string
   label: string
-  tone: "" | "danger"
+  tone: "" | "warn" | "danger"
   placeholder: boolean
 }
 
@@ -50,13 +50,13 @@ interface Beat {
 const fmt = (n: number | null): string | null =>
   n == null ? null : n.toLocaleString("en-US")
 
-function realStat(value: string | null, label: string, tone: "" | "danger" = ""): Stat {
+function realStat(value: string | null, label: string, tone: "" | "warn" | "danger" = ""): Stat {
   return value == null
     ? { value: "—", label: `${label} · syncing`, tone, placeholder: true }
     : { value, label, tone, placeholder: false }
 }
 
-function placeholderStat(label: string, tone: "" | "danger" = ""): Stat {
+function placeholderStat(label: string, tone: "" | "warn" | "danger" = ""): Stat {
   return { value: "—", label: `${label} · coming soon`, tone, placeholder: true }
 }
 
@@ -66,6 +66,16 @@ const speedStat: Stat = {
   value: "< 60s",
   label: "to a full protocol read",
   tone: "",
+  placeholder: false,
+}
+
+// Sourced external figure — rolling-12-month DeFi hack losses, ≈$1.1B per
+// OpenZeppelin / CoinDesk (27 May 2026). A cited external number, not an
+// invented metric; do NOT inflate it. Amber (loss/warning) tone.
+const lossStat: Stat = {
+  value: "$1.1B+",
+  label: "lost to DeFi hacks · past 12 months",
+  tone: "warn",
   placeholder: false,
 }
 
@@ -129,7 +139,7 @@ function desktopBeats(c: RealCounts): Beat[] {
         </>
       ),
       body: "Breakwater scans your whole graph, scores every connection, and clears what's dangerous — before it ever reaches you.",
-      stat: speedStat,
+      stat: lossStat,
     },
   ]
 }
@@ -230,10 +240,16 @@ export function SonarLanding({ counts }: { counts: RealCounts }) {
           </div>
           <div className="pointer-events-auto flex items-center">
             <div className="w-full max-w-[380px]">
-              <ScanForm idPrefix="d-" />
-              <div className="mt-5 min-h-[74px] border-t border-sonar/15 pt-5">
-                <StatLine stat={activeDesktopStat} phaseKey={phase} />
-              </div>
+              {/* G1f: the rotating stat lives INSIDE the card (after the foot
+                  line), not as a loose block under it. */}
+              <ScanForm
+                idPrefix="d-"
+                statSlot={
+                  <div className="mt-5 min-h-[74px] border-t border-[rgba(30,224,176,0.15)] pt-5">
+                    <StatLine stat={activeDesktopStat} phaseKey={phase} />
+                  </div>
+                }
+              />
             </div>
           </div>
         </div>
@@ -245,20 +261,32 @@ export function SonarLanding({ counts }: { counts: RealCounts }) {
             already pointer-events-none. The beat text re-enables pointer events
             on its own wrapper (descendant auto overrides ancestor none). */}
         <div className="pointer-events-none relative z-10">
-          {dBeats.map((beat) => (
-            <section
-              key={beat.phase}
-              data-beat-phase={beat.phase}
-              // pointer-events-none (G1f .beat): the beat sits over the fixed
-              // cockpit, so it must let clicks through to the scan card
-              // underneath (the text re-enables pointer-events in BeatInner).
-              // min-h-[80vh] (not full screen) so each phase isn't preceded by
-              // an empty screen. Scroll + IntersectionObserver are unaffected.
-              className="pointer-events-none flex min-h-[80vh] items-end px-11 pb-[16vh]"
-            >
-              <BeatInner beat={beat} active={phase === beat.phase} />
-            </section>
-          ))}
+          {dBeats.map((beat, i) => {
+            // The last beat gets a compact, centered treatment: a shorter
+            // min-height and items-center (vs items-end + pb-[16vh]) so its
+            // text doesn't float at the bottom of a mostly-empty 80vh band
+            // right above the footer — which read as a big black bar over the
+            // card. Middle beats keep the tall bottom-aligned treatment.
+            const isLast = i === dBeats.length - 1
+            return (
+              <section
+                key={beat.phase}
+                data-beat-phase={beat.phase}
+                // pointer-events-none (G1f .beat): the beat sits over the fixed
+                // cockpit, so it must let clicks through to the scan card
+                // underneath (the text re-enables pointer-events in BeatInner).
+                // min-h not full screen so each phase isn't preceded by an
+                // empty screen. Scroll + IntersectionObserver are unaffected.
+                className={
+                  isLast
+                    ? "pointer-events-none flex min-h-[60vh] items-center px-11"
+                    : "pointer-events-none flex min-h-[80vh] items-end px-11 pb-[16vh]"
+                }
+              >
+                <BeatInner beat={beat} active={phase === beat.phase} />
+              </section>
+            )
+          })}
         </div>
       </div>
 
@@ -376,7 +404,9 @@ function StatLine({
     ? "text-sonar-muted/50"
     : stat.tone === "danger"
       ? "text-red"
-      : "text-sonar"
+      : stat.tone === "warn"
+        ? "text-amber"
+        : "text-sonar"
 
   if (inline) {
     return (
@@ -389,10 +419,12 @@ function StatLine({
 
   return (
     <div key={phaseKey} className="stat-fade">
-      <div className={`font-display text-3xl font-bold leading-none ${valueColour}`}>
+      {/* G1f: number = Chakra Petch bold 30px (tone-coloured); label = IBM
+          Plex Mono 10.5px uppercase muted. */}
+      <div className={`font-display text-[30px] font-bold leading-none ${valueColour}`}>
         {stat.value}
       </div>
-      <div className="label-mono mt-2">{stat.label}</div>
+      <div className="label-mono mt-2 text-[10.5px]">{stat.label}</div>
     </div>
   )
 }

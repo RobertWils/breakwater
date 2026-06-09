@@ -24,10 +24,10 @@ beforeAll(() => {
 afterEach(() => cleanup())
 
 function desktopBeats(): HTMLElement[] {
-  // Desktop cockpit beats use items-end; mobile beats use items-center.
+  // Desktop cockpit beats are <section>; mobile beats are <div>.
   return Array.from(
     document.querySelectorAll<HTMLElement>("[data-beat-phase]"),
-  ).filter((el) => el.className.includes("items-end"))
+  ).filter((el) => el.tagName === "SECTION")
 }
 
 describe("SonarLanding — scan-card reachability (regression: overlay must not block input)", () => {
@@ -67,11 +67,18 @@ describe("SonarLanding — scan-card reachability (regression: overlay must not 
     expect(textWrappers.length).toBeGreaterThan(0)
   })
 
-  it("scroll-phase sections use min-h-[80vh] (no empty screen above each phase)", () => {
+  it("scroll-phase sections avoid min-h-screen; the last beat is compact (60vh)", () => {
     render(<SonarLanding counts={{ contracts: 1, detectorRuns: 2, scans: 3 }} />)
-    desktopBeats().forEach((el) => {
+    const beats = desktopBeats()
+    beats.forEach((el) => expect(el.className).not.toContain("min-h-screen"))
+    // Middle beats: tall + bottom-aligned. Last beat: compact + centered, so
+    // its text doesn't float above a big empty band before the footer.
+    beats.slice(0, -1).forEach((el) => {
       expect(el.className).toContain("min-h-[80vh]")
-      expect(el.className).not.toContain("min-h-screen")
+      expect(el.className).toContain("items-end")
     })
+    const last = beats[beats.length - 1]
+    expect(last.className).toContain("min-h-[60vh]")
+    expect(last.className).toContain("items-center")
   })
 })

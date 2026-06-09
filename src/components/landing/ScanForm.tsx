@@ -2,7 +2,7 @@
 
 import { useState } from "react"
 import { useRouter } from "next/navigation"
-import type { FormEvent } from "react"
+import type { FormEvent, ReactNode } from "react"
 
 type Chain = "ETHEREUM" | "SOLANA"
 type FormState =
@@ -14,8 +14,14 @@ type FormState =
  * `idPrefix` keeps element ids unique when the form is rendered more than
  * once on a page (e.g. the desktop cockpit + the mobile layout both mount it).
  * Defaults to "" so existing single-instance usage + tests are unchanged.
+ *
+ * `statSlot` renders extra content INSIDE the card after the foot line (G1f's
+ * rotating stat block lives in the card, not as a loose block beneath it).
  */
-export function ScanForm({ idPrefix = "" }: { idPrefix?: string } = {}) {
+export function ScanForm({
+  idPrefix = "",
+  statSlot,
+}: { idPrefix?: string; statSlot?: ReactNode } = {}) {
   const router = useRouter()
   const [chain, setChain] = useState<Chain>("ETHEREUM")
   const [address, setAddress] = useState("")
@@ -152,6 +158,8 @@ export function ScanForm({ idPrefix = "" }: { idPrefix?: string } = {}) {
         <p className="font-data text-center text-[10.5px] text-sonar-muted/75">
           No signup · Results in &lt; 60 seconds
         </p>
+
+        {statSlot}
       </form>
     </div>
   )
