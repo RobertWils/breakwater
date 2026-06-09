@@ -66,4 +66,40 @@
     border: 1px solid var(--border-teal);
     border-radius: 12px;
   }
+
+  /* ── Plan 04 Sonar shell + typography (spec §1) ──────────────────────────
+     Scoped theme wrapper: surfaces that opt into the Sonar system wrap their
+     content in `.sonar-theme`. It sets the display font + foam text so the
+     rest of the page inherits it, WITHOUT changing global defaults (legacy
+     pages keep Geist / their existing palette). */
+  .sonar-theme {
+    font-family: var(--font-chakra-petch), system-ui, sans-serif;
+    color: var(--foam);
+  }
+  /* Headings inside the Sonar theme: display font + foam (override the global
+     h1-h6 color rule, which is otherwise more specific than inheritance). */
+  .sonar-theme :is(h1, h2, h3, h4, h5, h6) {
+    font-family: var(--font-chakra-petch), system-ui, sans-serif;
+    color: var(--foam);
+  }
+
+  /* Typography scale primitives reused across later phases. */
+  .label-mono {
+    font-family: var(--font-ibm-plex-mono), monospace;
+    font-size: 0.6875rem; /* 11px */
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--sonar-muted);
+  }
+  .data-mono {
+    font-family: var(--font-ibm-plex-mono), monospace;
+  }
+  /* The recurring "eyebrow" / step label: mono, tracked, sonar-coloured. */
+  .sonar-eyebrow {
+    font-family: var(--font-ibm-plex-mono), monospace;
+    font-size: 0.6875rem; /* 11px */
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--sonar);
+  }
 }

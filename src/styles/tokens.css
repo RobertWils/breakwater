@@ -31,4 +31,31 @@
   --grade-c:         #F59E0B;
   --grade-d:         #F97316;
   --grade-f:         #EF4444;
+
+  /* ── Plan 04 "Sonar" design system (spec §1) ──────────────────────────────
+     Token values are copied EXACTLY from the approved mockups
+     (docs/superpowers/specs/G1f-with-stats.html + mobile-radar-story.html).
+
+     BRAND-PRIMARY RECONCILIATION: the mockups use --sonar #1ee0b0 as the brand
+     primary; the app previously used --accent-teal #14B8A6 (favicon + Plan 01-03
+     surfaces). Decision: --sonar #1ee0b0 is the brand primary going forward.
+     --accent-teal #14B8A6 is RETAINED as a legacy token so the not-yet-restyled
+     surfaces (scan-result page, scan form, grade-a, focus/selection) keep
+     working unchanged; they migrate to --sonar in later phases (and the favicon
+     should be re-reconciled to --sonar then). Two teals coexist intentionally
+     and transitionally — this comment is the record. */
+  --abyss:           #020a0e; /* deepest background */
+  --deep:            #04161c; /* background gradient end */
+  --sonar:           #1ee0b0; /* brand primary / safe score */
+  --sonar-d:         #0e7a60; /* sonar gradient end (button) */
+  --amber:           #ffcf5c; /* moderate / warning score */
+  --red:             #ff5a6e; /* unsafe / breached score */
+  --foam:            #dcfff5; /* sonar body text */
+  --sonar-muted:     #6a9b92; /* sonar secondary text (mockup --muted) */
+
+  /* Sonar layered background (desktop radial origin); the AbyssBackground
+     component owns the mobile radial variant. */
+  --sonar-bg:
+    radial-gradient(circle at 30% 45%, rgba(30, 224, 176, 0.08), transparent 55%),
+    linear-gradient(160deg, var(--abyss), var(--deep));
 }

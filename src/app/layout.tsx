@@ -1,8 +1,26 @@
 import type { Metadata } from "next"
 import { GeistSans } from "geist/font/sans"
 import { GeistMono } from "geist/font/mono"
+import { Chakra_Petch, IBM_Plex_Mono } from "next/font/google"
 import "./globals.css"
 import "../styles/tokens.css"
+
+// Plan 04 Sonar typography (spec §1). Loaded app-wide so the CSS variables
+// are available everywhere; surfaces opt in via the `font-display` / `font-data`
+// Tailwind families (or the `.sonar-theme` wrapper). Legacy pages keep Geist.
+const chakraPetch = Chakra_Petch({
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-chakra-petch",
+  display: "swap",
+})
+
+const ibmPlexMono = IBM_Plex_Mono({
+  subsets: ["latin"],
+  weight: ["400", "500"],
+  variable: "--font-ibm-plex-mono",
+  display: "swap",
+})
 
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "https://breakwater.vercel.app"
 
@@ -53,7 +71,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${GeistSans.variable} ${GeistMono.variable}`}
+      className={`${GeistSans.variable} ${GeistMono.variable} ${chakraPetch.variable} ${ibmPlexMono.variable}`}
     >
       <body>{children}</body>
     </html>
