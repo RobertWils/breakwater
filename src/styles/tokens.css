@@ -26,7 +26,7 @@
   --sev-info:        #94A3B8;
 
   /* Grade scale */
-  --grade-a:         #14B8A6;
+  --grade-a:         #1ee0b0; /* = --sonar; migrated off legacy teal so the safe/A grade matches the brand */
   --grade-b:         #38BDF8;
   --grade-c:         #F59E0B;
   --grade-d:         #F97316;
@@ -39,11 +39,11 @@
      BRAND-PRIMARY RECONCILIATION: the mockups use --sonar #1ee0b0 as the brand
      primary; the app previously used --accent-teal #14B8A6 (favicon + Plan 01-03
      surfaces). Decision: --sonar #1ee0b0 is the brand primary going forward.
-     --accent-teal #14B8A6 is RETAINED as a legacy token so the not-yet-restyled
-     surfaces (scan-result page, scan form, grade-a, focus/selection) keep
-     working unchanged; they migrate to --sonar in later phases (and the favicon
-     should be re-reconciled to --sonar then). Two teals coexist intentionally
-     and transitionally — this comment is the record. */
+     --accent-teal #14B8A6 is RETAINED as a legacy token for the surfaces still
+     on it (the favicon — deliberately deferred — plus focus/selection). The
+     safe/A grade colour (--grade-a) has now been migrated to --sonar so the
+     score green matches the brand. Two teals coexist intentionally and
+     transitionally — this comment is the record. */
   --abyss:           #020a0e; /* deepest background */
   --deep:            #04161c; /* background gradient end */
   --sonar:           #1ee0b0; /* brand primary / safe score */

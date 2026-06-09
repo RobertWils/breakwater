@@ -216,7 +216,10 @@ export function SonarLanding({ counts }: { counts: RealCounts }) {
   const activeDesktopStat = dBeats.find((b) => b.phase === phase)?.stat ?? dBeats[0].stat
 
   return (
-    <div ref={rootRef}>
+    // Sticky-footer-via-flex: the story content fills the column, the footer
+    // sits at the bottom of the flow (never fixed, never over the radar/beats).
+    <div ref={rootRef} className="flex min-h-screen flex-col">
+      <div className="flex-1">
       {/* ── Desktop cockpit ─────────────────────────────────────────────── */}
       <div className="hidden lg:block">
         {/* Fixed overlay: radar always left, scan card + stats always right. */}
@@ -245,9 +248,6 @@ export function SonarLanding({ counts }: { counts: RealCounts }) {
               <BeatInner beat={beat} active={phase === beat.phase} />
             </section>
           ))}
-        </div>
-        <div className="relative z-10">
-          <Footer />
         </div>
       </div>
 
@@ -297,9 +297,14 @@ export function SonarLanding({ counts }: { counts: RealCounts }) {
             ))}
           </div>
         </section>
-        <div className="relative z-10">
-          <Footer />
-        </div>
+      </div>
+      </div>
+
+      {/* Shared footer: in normal flow at the bottom of the flex column.
+          Opaque (bg-abyss) so on desktop it cleanly covers the fixed cockpit
+          at the end of the scroll instead of the radar bleeding through. */}
+      <div className="relative z-10 bg-abyss">
+        <Footer />
       </div>
     </div>
   )
