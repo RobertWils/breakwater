@@ -73,6 +73,11 @@ export function Radar({ graph, phase, healPhase, size = "lg", className = "" }: 
   const nodeById = new Map(graph.nodes.map((node) => [node.id, node]))
   const showShield =
     healed && graph.nodes.some((node) => node.isPrimary && visibleIds.has(node.id))
+  // Order the neutralized nodes so they lock/kill in a staggered cadence at
+  // the heal phase (mockup ~160ms apart), instead of all at once.
+  const neutralizedOrder = graph.nodes
+    .filter((node) => neutralized.has(node.id))
+    .map((node) => node.id)
 
   return (
     <div className={`radar radar--${size} ${className}`.trim()} data-phase={phase ?? ""}>
@@ -130,7 +135,11 @@ export function Radar({ graph, phase, healPhase, size = "lg", className = "" }: 
             shown={visibleIds.has(node.id)}
             colour={neutralized.has(node.id) ? "" : colourClass(resolved.get(node.id) ?? null)}
             neutralized={neutralized.has(node.id)}
-            showLabel={size === "lg"}
+            killDelayMs={neutralized.has(node.id) ? neutralizedOrder.indexOf(node.id) * 160 : 0}
+            // Desktop labels every node; mobile keeps only the primary's tag
+            // (matches the mobile mockup) and drops sublabels for compactness.
+            showLabel={size === "lg" || !!node.isPrimary}
+            showSublabel={size === "lg"}
           />
         ))}
       </div>
@@ -144,12 +153,16 @@ function Blip({
   colour,
   neutralized,
   showLabel,
+  showSublabel,
+  killDelayMs,
 }: {
   node: RadarNode
   shown: boolean
   colour: string
   neutralized: boolean
   showLabel: boolean
+  showSublabel: boolean
+  killDelayMs: number
 }) {
   const classes = [
     "radar-blip",
@@ -166,7 +179,11 @@ function Blip({
     <div
       className={classes}
       data-node-id={node.id}
-      style={{ left: `${node.position.x}%`, top: `${node.position.y}%` }}
+      style={{
+        left: `${node.position.x}%`,
+        top: `${node.position.y}%`,
+        ...(killDelayMs > 0 ? { transitionDelay: `${killDelayMs}ms` } : {}),
+      }}
     >
       <span className="radar-blip-dot">
         <span className="radar-blip-pulse animate-blip" />
@@ -175,7 +192,7 @@ function Blip({
       {showLabel && node.label && (
         <span className="radar-blip-label">
           <b>{node.label}</b>
-          {node.sublabel && <span>{node.sublabel}</span>}
+          {showSublabel && node.sublabel && <span>{node.sublabel}</span>}
         </span>
       )}
     </div>

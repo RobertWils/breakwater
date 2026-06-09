@@ -44,14 +44,18 @@ describe("Radar — resolver ↔ visual wiring (spec §1 + §2)", () => {
     expect(container.querySelector(".radar-shield--show")).not.toBeNull()
   })
 
-  it("size variant: mobile (sm) omits ATC labels, desktop (lg) shows them", () => {
+  it("size variant: desktop labels every node; mobile keeps only the primary's tag", () => {
     const { container: lg } = render(<Radar graph={exampleGraph} phase={4} size="lg" />)
     expect(lg.querySelector(".radar--lg")).not.toBeNull()
-    expect(lg.querySelector(".radar-blip-label")).not.toBeNull()
+    // Desktop labels the non-primary heads too (e.g. TIMELOCK on `tr`).
+    expect(lg.querySelector('[data-node-id="tr"] .radar-blip-label')).not.toBeNull()
 
     const { container: sm } = render(<Radar graph={exampleGraph} phase={4} size="sm" />)
     expect(sm.querySelector(".radar--sm")).not.toBeNull()
-    expect(sm.querySelector(".radar-blip-label")).toBeNull()
+    // Mobile keeps the primary's tag…
+    expect(sm.querySelector('[data-node-id="core"] .radar-blip-label')).not.toBeNull()
+    // …but drops the non-primary labels.
+    expect(sm.querySelector('[data-node-id="tr"] .radar-blip-label')).toBeNull()
   })
 
   it("no phase prop: renders the whole graph fully resolved (all shown, core unsafe)", () => {

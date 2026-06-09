@@ -10,11 +10,18 @@ type FormState =
   | { kind: "submitting" }
   | { kind: "error"; code: string; message: string; retryAfterSec?: number; demoUrl?: string }
 
-export function ScanForm() {
+/**
+ * `idPrefix` keeps element ids unique when the form is rendered more than
+ * once on a page (e.g. the desktop cockpit + the mobile layout both mount it).
+ * Defaults to "" so existing single-instance usage + tests are unchanged.
+ */
+export function ScanForm({ idPrefix = "" }: { idPrefix?: string } = {}) {
   const router = useRouter()
   const [chain, setChain] = useState<Chain>("ETHEREUM")
   const [address, setAddress] = useState("")
   const [state, setState] = useState<FormState>({ kind: "idle" })
+  const chainId = `${idPrefix}chain`
+  const addressId = `${idPrefix}address`
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
@@ -72,17 +79,24 @@ export function ScanForm() {
 
   return (
     <div>
-      <form onSubmit={handleSubmit} autoComplete="off" className="glass-card-teal p-8 space-y-5">
-        <h2 className="text-2xl font-semibold">Free scan</h2>
+      <form onSubmit={handleSubmit} autoComplete="off" className="sonar-card p-7 space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="font-display text-xl font-semibold text-foam">Scan a protocol</h3>
+          <span className="sonar-badge">Free scan</span>
+        </div>
+        <p className="font-data flex items-center gap-2 text-[11px] text-sonar">
+          <span className="inline-block h-[7px] w-[7px] rounded-full bg-sonar animate-pulse" />
+          sonar active · listening
+        </p>
 
         <div className="space-y-2">
-          <label htmlFor="chain" className="block text-sm font-medium text-muted">Chain</label>
+          <label htmlFor={chainId} className="label-mono block">Chain</label>
           <select
-            id="chain"
+            id={chainId}
             value={chain}
             onChange={(e) => setChain(e.target.value as Chain)}
             disabled={state.kind === "submitting"}
-            className="w-full px-4 py-3 bg-[#0C1C3A] border border-subtle rounded-lg text-primary focus:border-teal focus:outline-none disabled:opacity-50 appearance-none"
+            className="sonar-input w-full appearance-none rounded-lg px-4 py-3 text-sm disabled:opacity-50"
           >
             <option value="ETHEREUM">Ethereum</option>
             <option value="SOLANA">Solana</option>
@@ -90,14 +104,9 @@ export function ScanForm() {
         </div>
 
         <div className="space-y-1.5">
-          <label htmlFor="address" className="block text-sm font-medium text-muted">Protocol address</label>
-          <p className="text-xs text-muted/80">
-            {chain === "ETHEREUM"
-              ? "The smart contract where users interact with your protocol — e.g. the Pool (Aave), Router (Uniswap), or Vault. Not a user wallet or token address."
-              : "The program address of your protocol — e.g. the main program that handles deposits, trades, or governance. Not a user wallet or token mint."}
-          </p>
+          <label htmlFor={addressId} className="label-mono block">Protocol address</label>
           <input
-            id="address"
+            id={addressId}
             type="text"
             name="contract-address"
             autoComplete="off"
@@ -107,20 +116,25 @@ export function ScanForm() {
             placeholder={chain === "ETHEREUM" ? "0x..." : "Solana address"}
             disabled={state.kind === "submitting"}
             required
-            className="w-full px-4 py-3 bg-[#0C1C3A] border border-subtle rounded-lg text-primary placeholder:text-muted font-mono focus:border-teal focus:outline-none disabled:opacity-50 appearance-none"
+            className="sonar-input w-full appearance-none rounded-lg px-4 py-3 text-sm disabled:opacity-50"
           />
+          <p className="text-xs text-sonar-muted/80 leading-relaxed">
+            {chain === "ETHEREUM"
+              ? "The core contract users interact with — Pool, Router, or Vault. Not a user wallet or token address."
+              : "The program address of your protocol — the main program handling deposits, trades, or governance. Not a wallet or token mint."}
+          </p>
         </div>
 
         {state.kind === "error" && (
-          <div role="alert" className="p-4 bg-sev-critical/10 border border-sev-critical/30 rounded-lg space-y-2">
-            <p className="text-sm text-sev-critical font-medium">{state.message}</p>
+          <div role="alert" className="p-4 bg-red/10 border border-red/30 rounded-lg space-y-2">
+            <p className="text-sm text-red font-medium">{state.message}</p>
             {state.retryAfterSec !== undefined && (
-              <p className="text-xs text-muted">
+              <p className="text-xs text-sonar-muted">
                 Try again in {Math.ceil(state.retryAfterSec / 60)} minute(s).
               </p>
             )}
             {state.demoUrl && (
-              <a href={state.demoUrl} className="inline-block text-sm text-sky hover:underline">
+              <a href={state.demoUrl} className="inline-block text-sm text-sonar hover:underline">
                 View cached demo results →
               </a>
             )}
@@ -130,15 +144,15 @@ export function ScanForm() {
         <button
           type="submit"
           disabled={state.kind === "submitting" || !address.trim()}
-          className="w-full px-6 py-4 bg-teal text-[#0C1C3A] font-semibold rounded-lg hover:bg-teal/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="sonar-btn w-full rounded-lg px-6 py-3.5 text-[15px] font-bold"
         >
-          {state.kind === "submitting" ? "Scanning..." : "Scan for free"}
+          {state.kind === "submitting" ? "Scanning..." : "Scan for free →"}
         </button>
-      </form>
 
-      <p className="text-xs text-muted text-center mt-4">
-        Free scan · No signup required · Results in under 60 seconds
-      </p>
+        <p className="font-data text-center text-[10.5px] text-sonar-muted/75">
+          No signup · Results in &lt; 60 seconds
+        </p>
+      </form>
     </div>
   )
 }

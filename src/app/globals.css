@@ -103,6 +103,60 @@
     color: var(--sonar);
   }
 
+  /* ── Plan 04 Phase C — scan card chrome (G1f .card / .btn / .field) ───────
+     The functional <ScanForm> wears this; matches the mockup's glassy depth,
+     teal glow, and sonar-gradient button. */
+  .sonar-card {
+    background: linear-gradient(160deg, rgba(4, 22, 28, 0.92), rgba(2, 10, 14, 0.96));
+    border: 1px solid rgba(30, 224, 176, 0.25);
+    border-radius: 14px;
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    box-shadow: 0 30px 70px -20px rgba(0, 0, 0, 0.7);
+  }
+  .sonar-input {
+    background: rgba(2, 10, 14, 0.8);
+    border: 1px solid rgba(106, 155, 146, 0.3);
+    color: var(--foam);
+    font-family: var(--font-ibm-plex-mono), monospace;
+  }
+  .sonar-input:focus {
+    outline: none;
+    border-color: var(--sonar);
+  }
+  .sonar-input::placeholder {
+    color: rgba(106, 155, 146, 0.5);
+  }
+  .sonar-btn {
+    background: linear-gradient(135deg, var(--sonar), var(--sonar-d));
+    color: var(--abyss);
+    font-family: var(--font-chakra-petch), system-ui, sans-serif;
+    box-shadow: 0 12px 28px -8px rgba(30, 224, 176, 0.5);
+    transition: transform 0.2s;
+  }
+  .sonar-btn:hover:not(:disabled) {
+    transform: translateY(-2px);
+  }
+  .sonar-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  /* "Free scan" badge pill. */
+  .sonar-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-ibm-plex-mono), monospace;
+    font-size: 0.625rem; /* 10px */
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--sonar);
+    background: rgba(30, 224, 176, 0.1);
+    border: 1px solid rgba(30, 224, 176, 0.3);
+    border-radius: 999px;
+    padding: 3px 10px;
+  }
+
   /* ── Plan 04 Phase B — sonar radar (spec §1) ─────────────────────────────
      Structural styling for the data-driven <Radar> component. Reuses the
      Sonar tokens + Phase A motion utilities (animate-sweep / animate-blip);
@@ -279,9 +333,19 @@
   }
   .radar-blip-label b { display: block; font-weight: 500; }
   .radar-blip-label span { color: var(--sonar-muted); font-size: 8px; }
+  .radar--sm .radar-blip-label { font-size: 8px; left: 15px; }
 }
 
 /* Radar-specific edge dash drift (the only motion not shared with Phase A). */
 @keyframes radar-dash {
   to { stroke-dashoffset: -10; }
+}
+
+/* Rotating-stat fade (the stat block swaps content per scroll phase). */
+@keyframes stat-fade {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+.stat-fade {
+  animation: stat-fade 0.5s ease both;
 }

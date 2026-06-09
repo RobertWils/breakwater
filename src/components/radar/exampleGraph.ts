@@ -40,3 +40,29 @@ export const exampleGraph: RadarGraph = {
     { from: "tl", to: "tlx1", minPhase: 4 },
   ],
 }
+
+/**
+ * The mobile radar (mobile-radar-story.html) is a PURPOSE-BUILT, simplified
+ * graph — fewer nodes, 4 beats not 5 — per the responsive strategy (the radar
+ * degrades gracefully, it is not the desktop graph shrunk). Same component +
+ * same resolver; only the data + heal phase differ.
+ */
+export const HEAL_PHASE_MOBILE = 4
+
+export const exampleGraphMobile: RadarGraph = {
+  nodes: [
+    { id: "core", label: "YOUR PROTOCOL", sublabel: "PRIMARY", score: "safe", isPrimary: true, position: { x: 50, y: 50 }, minPhase: 1 },
+    { id: "tl", score: "safe", position: { x: 28, y: 29 }, minPhase: 2 },
+    { id: "tr", score: "safe", position: { x: 73, y: 32 }, minPhase: 2 },
+    { id: "bl", score: "safe", position: { x: 30, y: 74 }, minPhase: 2 },
+    { id: "trx1", score: "moderate", small: true, external: true, position: { x: 92, y: 17 }, minPhase: 3 },
+    { id: "trx2", score: "unsafe", small: true, external: true, position: { x: 95, y: 38 }, minPhase: 3 },
+  ],
+  edges: [
+    { from: "core", to: "tl", minPhase: 2 },
+    { from: "core", to: "tr", minPhase: 2 },
+    { from: "core", to: "bl", minPhase: 2 },
+    { from: "tr", to: "trx1", minPhase: 3 },
+    { from: "tr", to: "trx2", minPhase: 3 },
+  ],
+}

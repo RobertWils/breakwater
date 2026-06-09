@@ -13,7 +13,7 @@ export function ShoreWater({ height = "18vh" }: { height?: string }) {
   return (
     <div
       aria-hidden
-      className="pointer-events-none fixed bottom-0 left-0 z-[1] w-full"
+      className="pointer-events-none fixed bottom-0 left-0 z-[1] w-full overflow-hidden"
       style={{ height }}
     >
       <svg

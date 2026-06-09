@@ -1,37 +1,40 @@
+import { prisma } from "@/lib/prisma"
 import { AbyssBackground } from "@/components/shell/AbyssBackground"
 import { ShoreWater } from "@/components/shell/ShoreWater"
 import { SonarHeader } from "@/components/shell/SonarHeader"
-import { HeroSection } from "@/components/landing/HeroSection"
-import { StatsSection } from "@/components/landing/StatsSection"
-import { VectorSection } from "@/components/landing/VectorSection"
-import { DemoProtocolsSection } from "@/components/landing/DemoProtocolsSection"
-import { HowItWorksSection } from "@/components/landing/HowItWorksSection"
-import { Footer } from "@/components/landing/Footer"
-import { FloatingScanCTA } from "@/components/landing/FloatingScanCTA"
+import { SonarLanding, type RealCounts } from "@/components/landing/SonarLanding"
 
 /**
- * Plan 04 Phase A, Step 3: the home page adopts the Sonar shell — abyss
- * background + shore-water + sonar header + sonar typography (chrome only).
- * The existing landing sections still render as-is; the scroll-driven radar
- * story that replaces them is Phase B/C.
+ * Plan 04 Phase C — the home page is the full sonar/contagion landing page.
+ * Server component: it loads the REAL platform counts for the rotating stats
+ * and hands them to the client composition. ISR (revalidate) keeps the page
+ * mostly static while the counts refresh periodically.
  */
-export default function HomePage() {
+export const revalidate = 600
+
+async function getCounts(): Promise<RealCounts> {
+  try {
+    const [contracts, detectorRuns, scans] = await Promise.all([
+      prisma.contract.count(),
+      prisma.moduleRun.count(),
+      prisma.scan.count(),
+    ])
+    return { contracts, detectorRuns, scans }
+  } catch {
+    // DB unavailable (e.g. at build with no connection): the affected stats
+    // render as marked placeholders rather than failing the page.
+    return { contracts: null, detectorRuns: null, scans: null }
+  }
+}
+
+export default async function HomePage() {
+  const counts = await getCounts()
   return (
-    <div className="sonar-theme relative min-h-screen">
+    <div className="sonar-theme relative min-h-screen overflow-x-hidden">
       <AbyssBackground />
       <ShoreWater />
       <SonarHeader />
-      {/* z-10 lifts content above the abyss/shore layers; pt offsets the
-          fixed header so the first section isn't hidden beneath it. */}
-      <main className="relative z-10 pt-20">
-        <HeroSection />
-        <StatsSection />
-        <VectorSection />
-        <DemoProtocolsSection />
-        <HowItWorksSection />
-        <Footer />
-      </main>
-      <FloatingScanCTA />
+      <SonarLanding counts={counts} />
     </div>
   )
 }
