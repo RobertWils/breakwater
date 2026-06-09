@@ -238,8 +238,13 @@ export function SonarLanding({ counts }: { counts: RealCounts }) {
           </div>
         </div>
 
-        {/* Narrative beats drive the phase as they scroll past. */}
-        <div className="relative z-10">
+        {/* Narrative beats drive the phase as they scroll past. This
+            full-width wrapper sits above the fixed cockpit (z-10 > z-5), so it
+            must itself be pointer-events-none — otherwise its empty area catches
+            clicks meant for the scan card even though the sections inside are
+            already pointer-events-none. The beat text re-enables pointer events
+            on its own wrapper (descendant auto overrides ancestor none). */}
+        <div className="pointer-events-none relative z-10">
           {dBeats.map((beat) => (
             <section
               key={beat.phase}

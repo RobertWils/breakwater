@@ -44,6 +44,22 @@ describe("SonarLanding — scan-card reachability (regression: overlay must not 
     expect(screen.getAllByLabelText("Protocol address").length).toBeGreaterThan(0)
   })
 
+  it("the full-width wrapper above the cockpit is pointer-events-none (no auto layer over the card)", () => {
+    render(<SonarLanding counts={{ contracts: 1, detectorRuns: 2, scans: 3 }} />)
+    const beats = desktopBeats()
+    expect(beats).toHaveLength(5)
+    // The shared parent wrapper of the beat sections spans full width and sits
+    // above the fixed cockpit (z-10 > z-5). If it were pointer-events-auto its
+    // empty area would catch clicks meant for the scan card — so it must be
+    // pointer-events-none even though the sections inside already are.
+    const wrapper = beats[0].parentElement
+    expect(wrapper).not.toBeNull()
+    expect(wrapper!.className).toContain("pointer-events-none")
+    expect(wrapper!.className).toContain("z-10")
+    // All beats share that one wrapper.
+    beats.forEach((b) => expect(b.parentElement).toBe(wrapper))
+  })
+
   it("beat text re-enables pointer events (selectable) without blocking the card", () => {
     render(<SonarLanding counts={{ contracts: 1, detectorRuns: 2, scans: 3 }} />)
     // Every beat headline lives in a pointer-events-auto wrapper.
