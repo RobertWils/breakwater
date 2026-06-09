@@ -5,26 +5,27 @@ import { SonarHeader } from "@/components/shell/SonarHeader"
 import { SonarLanding, type RealCounts } from "@/components/landing/SonarLanding"
 
 /**
- * Plan 04 Phase C — the home page is the full sonar/contagion landing page.
+ * Plan 04 — the home page is the full sonar/contagion landing page.
  * Server component: it loads the REAL platform counts for the rotating stats
- * and hands them to the client composition. ISR (revalidate) keeps the page
- * mostly static while the counts refresh periodically.
+ * and hands them to the client composition.
+ *
+ * Fully STATIC: the page is rendered once at build time, so the Prisma counts
+ * are fetched at build and frozen until the next deploy (no per-request query,
+ * no ISR revalidation). It uses no dynamic request APIs, so force-static is
+ * safe; the build needs the database (Railway PostgreSQL) reachable to read
+ * the counts. There is intentionally NO fallback — if the build can't read the
+ * counts, getCounts throws and the build fails loudly rather than freezing a
+ * fabricated/placeholder number into a static page.
  */
-export const revalidate = 600
+export const dynamic = "force-static"
 
 async function getCounts(): Promise<RealCounts> {
-  try {
-    const [contracts, detectorRuns, scans] = await Promise.all([
-      prisma.contract.count(),
-      prisma.moduleRun.count(),
-      prisma.scan.count(),
-    ])
-    return { contracts, detectorRuns, scans }
-  } catch {
-    // DB unavailable (e.g. at build with no connection): the affected stats
-    // render as marked placeholders rather than failing the page.
-    return { contracts: null, detectorRuns: null, scans: null }
-  }
+  const [contracts, detectorRuns, scans] = await Promise.all([
+    prisma.contract.count(),
+    prisma.moduleRun.count(),
+    prisma.scan.count(),
+  ])
+  return { contracts, detectorRuns, scans }
 }
 
 export default async function HomePage() {
