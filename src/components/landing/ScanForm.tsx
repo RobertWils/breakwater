@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { useState } from "react"
 import { useRouter } from "next/navigation"
 import type { FormEvent, ReactNode } from "react"
@@ -161,6 +162,20 @@ export function ScanForm({
 
         {statSlot}
       </form>
+
+      {/* Secondary entry to the multi-contract scan. Carries the entered core
+          address to /scan/new as the primary, so it isn't re-typed. Subtle,
+          not competing with the primary "Scan for free" button. */}
+      <Link
+        href={
+          address.trim()
+            ? `/scan/new?address=${encodeURIComponent(address.trim())}`
+            : "/scan/new"
+        }
+        className="font-data mt-3 block text-center text-[11px] uppercase tracking-[0.08em] text-sonar-muted transition-colors hover:text-sonar"
+      >
+        Scanning a full protocol? →
+      </Link>
     </div>
   )
 }

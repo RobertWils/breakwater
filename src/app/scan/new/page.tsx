@@ -2,17 +2,17 @@ import type { Metadata } from "next"
 import { AbyssBackground } from "@/components/shell/AbyssBackground"
 import { ShoreWater } from "@/components/shell/ShoreWater"
 import { SonarHeader } from "@/components/shell/SonarHeader"
+import { Footer } from "@/components/landing/Footer"
 import { MultiContractForm } from "@/components/scan/MultiContractForm"
 
 /**
- * Plan 04 Phase D.1 — multi-contract scan input, route + page shell only.
+ * Plan 04 Phase D — the multi-contract scan input page.
  *
  * Sonar-styled standalone page (its own SonarHeader + abyss/shore shell, NOT
- * the shared Header). This is just the frame: a centered content column with a
- * placeholder .sonar-card where the multi-contract input goes in D.2. No
- * fields, no submission logic yet. Lives at /scan/new — the static segment
- * takes precedence over the dynamic /scan/[id] results route, and scan ids are
- * UUIDs so they never collide with "new".
+ * the shared Header). Lives at /scan/new — the static segment takes precedence
+ * over the dynamic /scan/[id] results route, and scan ids are UUIDs so they
+ * never collide with "new". Reading `searchParams.address` lets the landing
+ * card hand off its already-typed core address as the primary.
  */
 export const metadata: Metadata = {
   title: "Scan a protocol — Breakwater",
@@ -20,14 +20,21 @@ export const metadata: Metadata = {
     "Scan a protocol's whole graph — the core contract and the contracts it depends on — together.",
 }
 
-export default function ScanNewPage() {
+export default function ScanNewPage({
+  searchParams,
+}: {
+  searchParams?: { address?: string | string[] }
+}) {
+  const initialPrimary =
+    typeof searchParams?.address === "string" ? searchParams.address : ""
+
   return (
     <div className="sonar-theme relative min-h-screen overflow-x-hidden">
       <AbyssBackground />
       <ShoreWater />
       <SonarHeader />
 
-      {/* pt-20 clears the fixed SonarHeader (same offset as the home <main>). */}
+      {/* pt-28 clears the fixed SonarHeader (same offset as the home <main>). */}
       <main className="relative z-10 px-5 pb-28 pt-28">
         <div className="mx-auto max-w-2xl">
           <p className="sonar-eyebrow mb-3">Multi-contract scan</p>
@@ -40,11 +47,14 @@ export default function ScanNewPage() {
             Breakwater scores the whole graph together, worst-wins.
           </p>
 
-          {/* D.2: the multi-contract input (UI + client validation). D.3 wires
-              its onSubmit to POST /api/scan. */}
-          <MultiContractForm />
+          <MultiContractForm initialPrimary={initialPrimary} />
         </div>
       </main>
+
+      {/* Footer in normal flow, opaque, consistent with the landing. */}
+      <div className="relative z-10 bg-abyss">
+        <Footer />
+      </div>
     </div>
   )
 }

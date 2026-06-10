@@ -4,6 +4,8 @@ import ScanNewPage from "../page"
 
 // next/image (used by the brand Logo in SonarHeader) → render nothing in jsdom.
 vi.mock("next/image", () => ({ default: () => null }))
+// MultiContractForm uses useRouter.
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }))
 
 afterEach(() => cleanup())
 

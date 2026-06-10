@@ -1,5 +1,6 @@
 "use client"
 
+import { useRouter } from "next/navigation"
 import { useRef, useState, type FormEvent } from "react"
 import { MAX_RELATED_CONTRACTS } from "@/lib/config"
 import {
@@ -10,36 +11,47 @@ import {
   DEFAULT_RELATED_ROLE,
   RELATED_ROLE_ORDER,
   ROLE_LABELS,
-  type MultiContractSubmission,
   type RelatedRow,
 } from "./multi-contract"
 
 /**
- * Plan 04 Phase D.2 — the multi-contract scan input (UI + client validation).
- * Local state only; no network. `buildSubmission` produces the schema-shaped
- * { chain, primaryContractAddress, relatedContracts[] } that D.3 will POST to
- * /api/scan via `onSubmit`. Sonar styling mirrors the landing scan card.
+ * Plan 04 Phase D.2/D.3 — the multi-contract scan input (UI + client
+ * validation + submission). Mirrors the homepage ScanForm's submit flow
+ * exactly: POST /api/scan, then router.push(`/scan/${scanId}`) on success, with
+ * the same response/error handling — so single- and multi-contract scans
+ * behave identically. The payload is the schema-shaped buildSubmission output
+ * (with relatedContracts); no new payload shape.
  */
 
+// Mirrors ScanForm: the full module set (the server also defaults to these).
+const MODULES_ENABLED = ["GOVERNANCE", "ORACLE", "SIGNER", "FRONTEND"] as const
+
+type SubmitState =
+  | { kind: "idle" }
+  | { kind: "submitting" }
+  | { kind: "error"; message: string; retryAfterSec?: number; demoUrl?: string }
+
 interface MultiContractFormProps {
-  /** D.3 wires this to POST /api/scan. Absent in D.2 (validation-only). */
-  onSubmit?: (submission: MultiContractSubmission) => void
+  /** Prefill the primary address (e.g. carried over from the landing card). */
+  initialPrimary?: string
 }
 
 const ADDRESS_PLACEHOLDER = "0x…"
 
-export function MultiContractForm({ onSubmit }: MultiContractFormProps) {
-  const [primary, setPrimary] = useState("")
+export function MultiContractForm({ initialPrimary = "" }: MultiContractFormProps) {
+  const router = useRouter()
+  const [primary, setPrimary] = useState(initialPrimary)
   const [rows, setRows] = useState<RelatedRow[]>([
     { id: "row-1", address: "", role: DEFAULT_RELATED_ROLE },
   ])
   const [showPaste, setShowPaste] = useState(false)
   const [pasteText, setPasteText] = useState("")
   const [pasteFeedback, setPasteFeedback] = useState<string | null>(null)
-  const [submitError, setSubmitError] = useState<string | null>(null)
+  const [submit, setSubmit] = useState<SubmitState>({ kind: "idle" })
   const idRef = useRef(2)
   const makeId = () => `row-${idRef.current++}`
 
+  const submitting = submit.kind === "submitting"
   const remaining = MAX_RELATED_CONTRACTS - rows.length
   const atLimit = remaining <= 0
   const primaryValid = isValidEvmAddress(primary)
@@ -81,23 +93,66 @@ export function MultiContractForm({ onSubmit }: MultiContractFormProps) {
     }
   }
 
-  function handleSubmit(e: FormEvent) {
+  async function handleSubmit(e: FormEvent) {
     e.preventDefault()
-    const result = buildSubmission(primary, rows)
-    if (!result.ok) {
-      if (result.code === "invalid_primary") {
-        setSubmitError("Enter a valid 0x… protocol address.")
-      } else if (result.code === "invalid_related") {
-        setSubmitError("Some related addresses are invalid — use 0x + 40 hex characters.")
+    if (submitting) return
+
+    // Client-side validation first (the server is still the source of truth).
+    const built = buildSubmission(primary, rows)
+    if (!built.ok) {
+      if (built.code === "invalid_primary") {
+        setSubmit({ kind: "error", message: "Enter a valid 0x… protocol address." })
+      } else if (built.code === "invalid_related") {
+        setSubmit({
+          kind: "error",
+          message: "Some related addresses are invalid — use 0x + 40 hex characters.",
+        })
       } else {
-        setSubmitError(
-          `The primary address can't also be added as a ${ROLE_LABELS[result.role]} contract.`,
-        )
+        setSubmit({
+          kind: "error",
+          message: `The primary address can't also be added as a ${ROLE_LABELS[built.role]} contract.`,
+        })
       }
       return
     }
-    setSubmitError(null)
-    onSubmit?.(result.submission) // D.3 wires the POST; no-op in D.2
+
+    setSubmit({ kind: "submitting" })
+    try {
+      const res = await fetch("/api/scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...built.submission, modulesEnabled: MODULES_ENABLED }),
+      })
+      const data = await res.json().catch(() => ({}))
+
+      if (res.status === 202 || res.status === 200) {
+        router.push(`/scan/${data.scanId}`)
+        return
+      }
+      if (res.status === 400) {
+        setSubmit({ kind: "error", message: messageFor(data, "Invalid submission.") })
+        return
+      }
+      if (res.status === 409) {
+        setSubmit({
+          kind: "error",
+          message: data.message ?? "This protocol is a Breakwater demo. Cached results available.",
+          demoUrl: typeof data.demoUrl === "string" ? data.demoUrl : undefined,
+        })
+        return
+      }
+      if (res.status === 429) {
+        setSubmit({
+          kind: "error",
+          message: data.message ?? "Too many requests. Try again later.",
+          retryAfterSec: typeof data.retryAfterSec === "number" ? data.retryAfterSec : undefined,
+        })
+        return
+      }
+      setSubmit({ kind: "error", message: messageFor(data, "Something went wrong. Please try again.") })
+    } catch {
+      setSubmit({ kind: "error", message: "Network error. Check your connection and try again." })
+    }
   }
 
   return (
@@ -131,8 +186,9 @@ export function MultiContractForm({ onSubmit }: MultiContractFormProps) {
             value={primary}
             onChange={(e) => setPrimary(e.target.value)}
             placeholder={ADDRESS_PLACEHOLDER}
+            disabled={submitting}
             aria-invalid={primaryShowError}
-            className="sonar-input w-full appearance-none rounded-lg px-4 py-3 text-sm"
+            className="sonar-input w-full appearance-none rounded-lg px-4 py-3 text-sm disabled:opacity-[0.85]"
           />
           {primaryShowError && (
             <p className="font-data text-[11px] text-red">
@@ -172,15 +228,17 @@ export function MultiContractForm({ onSubmit }: MultiContractFormProps) {
                     value={r.address}
                     onChange={(e) => updateAddress(r.id, e.target.value)}
                     placeholder={ADDRESS_PLACEHOLDER}
+                    disabled={submitting}
                     aria-label="Related contract address"
                     aria-invalid={showInvalid || isDup}
-                    className="sonar-input min-w-0 flex-1 appearance-none rounded-lg px-3 py-2.5 text-sm"
+                    className="sonar-input min-w-0 flex-1 appearance-none rounded-lg px-3 py-2.5 text-sm disabled:opacity-[0.85]"
                   />
                   <select
                     value={r.role}
                     onChange={(e) => updateRole(r.id, e.target.value as RelatedRow["role"])}
+                    disabled={submitting}
                     aria-label="Related contract role"
-                    className="sonar-input w-[116px] shrink-0 appearance-none rounded-lg px-2.5 py-2.5 text-xs text-sonar-muted"
+                    className="sonar-input w-[116px] shrink-0 appearance-none rounded-lg px-2.5 py-2.5 text-xs text-sonar-muted disabled:opacity-[0.85]"
                   >
                     {RELATED_ROLE_ORDER.map((role) => (
                       <option key={role} value={role}>
@@ -191,8 +249,9 @@ export function MultiContractForm({ onSubmit }: MultiContractFormProps) {
                   <button
                     type="button"
                     onClick={() => removeRow(r.id)}
+                    disabled={submitting}
                     aria-label="Remove contract"
-                    className="shrink-0 rounded-md px-2 py-2 text-sonar-muted transition-colors hover:text-red"
+                    className="shrink-0 rounded-md px-2 py-2 text-sonar-muted transition-colors hover:text-red disabled:opacity-40"
                   >
                     ✕
                   </button>
@@ -214,7 +273,7 @@ export function MultiContractForm({ onSubmit }: MultiContractFormProps) {
           <button
             type="button"
             onClick={addRow}
-            disabled={atLimit}
+            disabled={atLimit || submitting}
             className="font-data text-[12px] uppercase tracking-[0.08em] text-sonar transition-colors hover:text-foam disabled:cursor-not-allowed disabled:text-sonar-muted/40"
           >
             + add contract
@@ -222,7 +281,8 @@ export function MultiContractForm({ onSubmit }: MultiContractFormProps) {
           <button
             type="button"
             onClick={() => setShowPaste((v) => !v)}
-            className="font-data text-[12px] uppercase tracking-[0.08em] text-sonar-muted transition-colors hover:text-sonar"
+            disabled={submitting}
+            className="font-data text-[12px] uppercase tracking-[0.08em] text-sonar-muted transition-colors hover:text-sonar disabled:opacity-40"
           >
             {showPaste ? "− close paste" : "⊕ paste multiple"}
           </button>
@@ -261,21 +321,50 @@ export function MultiContractForm({ onSubmit }: MultiContractFormProps) {
       </div>
 
       {/* ── Submit ───────────────────────────────────────────────────────── */}
-      {submitError && (
-        <div role="alert" className="rounded-lg border border-red/30 bg-red/10 p-3">
-          <p className="text-sm font-medium text-red">{submitError}</p>
+      {submit.kind === "error" && (
+        <div role="alert" className="space-y-2 rounded-lg border border-red/30 bg-red/10 p-3">
+          <p className="text-sm font-medium text-red">{submit.message}</p>
+          {submit.retryAfterSec !== undefined && (
+            <p className="text-xs text-sonar-muted">
+              Try again in {Math.ceil(submit.retryAfterSec / 60)} minute(s).
+            </p>
+          )}
+          {submit.demoUrl && (
+            <a href={submit.demoUrl} className="inline-block text-sm text-sonar hover:underline">
+              View cached demo results →
+            </a>
+          )}
         </div>
       )}
       <button
         type="submit"
-        disabled={!primaryValid}
+        disabled={!primaryValid || submitting}
         className="sonar-btn w-full rounded-lg px-6 py-3.5 text-[15px] font-bold"
       >
-        Scan protocol →
+        {submitting ? "Scanning..." : "Scan protocol →"}
       </button>
       <p className="font-data text-center text-[10.5px] text-sonar-muted/75">
         No signup · Results in &lt; 60 seconds
       </p>
     </form>
   )
+}
+
+/** Readable fallback for a server error payload (never raw JSON). */
+function messageFor(data: { error?: string; message?: string }, generic: string): string {
+  if (typeof data.message === "string" && data.message.length > 0) return data.message
+  switch (data.error) {
+    case "unsupported_chain_for_plan_03":
+      return "Multi-contract scans are Ethereum-only for now."
+    case "validation_error":
+      return "Some inputs are invalid — check the addresses and roles."
+    case "too_many_related_contracts":
+      return `You can add at most ${MAX_RELATED_CONTRACTS} related contracts.`
+    case "primary_address_in_related":
+      return "The primary address can't also be listed as a related contract with a role."
+    case "invalid_json":
+      return "Invalid submission."
+    default:
+      return generic
+  }
 }
