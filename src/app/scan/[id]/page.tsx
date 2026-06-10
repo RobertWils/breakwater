@@ -4,8 +4,10 @@ import type { Metadata } from "next"
 import { authOptions } from "@/lib/auth"
 import { getScan } from "@/lib/scan-response"
 import { UUID_REGEX } from "@/lib/uuid"
-import { Header } from "@/components/landing/Header"
 import { Footer } from "@/components/landing/Footer"
+import { AbyssBackground } from "@/components/shell/AbyssBackground"
+import { ShoreWater } from "@/components/shell/ShoreWater"
+import { SonarHeader } from "@/components/shell/SonarHeader"
 import { ScanShell } from "@/components/scan/ScanShell"
 
 interface PageProps {
@@ -30,15 +32,20 @@ export default async function ScanPage({ params }: PageProps) {
   }
 
   return (
-    <>
-      <Header />
-      <main className="min-h-screen py-12 md:py-16">
-        <div className="container mx-auto px-6 max-w-5xl">
+    <div className="sonar-theme relative min-h-screen overflow-x-hidden">
+      <AbyssBackground />
+      <ShoreWater />
+      <SonarHeader />
+      {/* pt-28 clears the fixed SonarHeader (same offset as home / /scan/new). */}
+      <main className="relative z-10 px-5 pb-20 pt-28">
+        <div className="container mx-auto max-w-5xl">
           <ScanShell scan={scan} tier={tier} />
         </div>
       </main>
-      <Footer />
-    </>
+      <div className="relative z-10 bg-abyss">
+        <Footer />
+      </div>
+    </div>
   )
 }
 

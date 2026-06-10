@@ -38,17 +38,17 @@ export function ContractCard({ contract }: ContractCardProps) {
   return (
     <article
       aria-labelledby={headingId}
-      className="glass-card p-6 space-y-4"
+      className="sonar-card p-6 space-y-4"
     >
       <header className="flex items-start justify-between gap-4">
         <div className="flex-1 min-w-0">
           <h3
             id={headingId}
-            className="text-base font-semibold text-primary"
+            className="font-display text-base font-semibold text-foam"
           >
             {contract.label ?? roleLabel}
           </h3>
-          <p className="text-xs font-mono text-muted/70 mt-1">
+          <p className="text-xs font-data text-sonar-muted/70 mt-1">
             <span className="uppercase tracking-wider">{roleLabel}</span>
             <span aria-hidden="true"> · </span>
             <span title={contract.address}>{truncateAddress(contract.address)}</span>
@@ -57,14 +57,14 @@ export function ContractCard({ contract }: ContractCardProps) {
         {hasGrade && (
           <div className="flex items-baseline gap-2 shrink-0">
             <span
-              className="text-3xl font-semibold [letter-spacing:-0.02em]"
+              className="font-display text-3xl font-semibold [letter-spacing:-0.02em]"
               style={{ color: `var(--grade-${contract.compositeGrade!.toLowerCase()})` }}
               aria-label={`Grade ${contract.compositeGrade}`}
             >
               {contract.compositeGrade}
             </span>
             {contract.compositeScore !== null && (
-              <span className="font-mono text-xs text-muted">
+              <span className="font-data text-xs text-sonar-muted">
                 {contract.compositeScore}/100
               </span>
             )}
@@ -82,15 +82,15 @@ export function ContractCard({ contract }: ContractCardProps) {
         <aside
           role="note"
           aria-label="Proxy implementation detected"
-          className="rounded-md border border-subtle border-l-4 border-l-sky bg-elevated/30 px-3 py-2 text-xs text-muted"
+          className="rounded-md border border-sonar/15 border-l-4 border-l-sonar bg-sonar/5 px-3 py-2 text-xs text-sonar-muted"
         >
           Proxy implementation detected at{" "}
-          <span className="font-mono">
+          <span className="font-data">
             {truncateAddress(contract.proxyImplementationWarning.detectedAddress)}
           </span>
           {" "}— included in this contract&apos;s snapshot but not graded as a separate
           Contract. Resubmit with the implementation as a{" "}
-          <code className="font-mono">PROXY_IMPLEMENTATION</code> related
+          <code className="font-data">PROXY_IMPLEMENTATION</code> related
           contract to get a separate grade.
         </aside>
       )}
@@ -113,7 +113,7 @@ export function ContractCard({ contract }: ContractCardProps) {
           aria-label={`${roleLabel} modules — ${
             contract.label ?? truncateAddress(contract.address)
           }`}
-          className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3 border-t border-subtle"
+          className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3 border-t border-sonar/15"
         >
           {contract.modules.map((m) => (
             <ModuleCard key={m.id} module={m} />
@@ -121,7 +121,7 @@ export function ContractCard({ contract }: ContractCardProps) {
         </div>
       )}
 
-      <p className="text-xs text-muted/70 font-mono">{findingsLabel} on this contract</p>
+      <p className="text-xs text-sonar-muted/70 font-data">{findingsLabel} on this contract</p>
     </article>
   )
 }

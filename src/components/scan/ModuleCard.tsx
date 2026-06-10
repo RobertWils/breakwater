@@ -14,28 +14,28 @@ const MODULE_LABELS: Record<string, string> = {
 const STATUS_STYLES: Record<string, { label: string; color: string; bg: string }> = {
   QUEUED: {
     label: "Queued",
-    color: "var(--text-muted)",
-    bg: "rgba(165, 180, 205, 0.1)",
+    color: "var(--sonar-muted)",
+    bg: "rgba(106, 155, 146, 0.12)",
   },
   RUNNING: {
     label: "Running",
-    color: "var(--accent-sky)",
-    bg: "rgba(56, 189, 248, 0.1)",
+    color: "var(--sonar)",
+    bg: "rgba(30, 224, 176, 0.12)",
   },
   COMPLETE: {
     label: "Complete",
-    color: "var(--accent-teal)",
-    bg: "rgba(20, 184, 166, 0.1)",
+    color: "var(--sonar)",
+    bg: "rgba(30, 224, 176, 0.12)",
   },
   FAILED: {
     label: "Failed",
-    color: "var(--sev-critical)",
-    bg: "rgba(239, 68, 68, 0.1)",
+    color: "var(--red)",
+    bg: "rgba(255, 90, 110, 0.12)",
   },
   SKIPPED: {
     label: "Skipped",
-    color: "var(--text-muted)",
-    bg: "rgba(165, 180, 205, 0.05)",
+    color: "var(--sonar-muted)",
+    bg: "rgba(106, 155, 146, 0.06)",
   },
 }
 
@@ -46,9 +46,9 @@ export function ModuleCard({ module }: ModuleCardProps) {
   const isRunning = module.status === "RUNNING"
 
   return (
-    <article className="glass-card p-6 space-y-4">
+    <article className="sonar-card p-6 space-y-4">
       <div className="flex items-start justify-between">
-        <h3 className="text-lg font-semibold text-primary">
+        <h3 className="font-display text-lg font-semibold text-foam">
           {label}
         </h3>
         <div className="flex items-center gap-2">
@@ -59,11 +59,11 @@ export function ModuleCard({ module }: ModuleCardProps) {
               role="status"
               aria-live="polite"
               aria-label={`${label} module is running`}
-              className="h-2 w-2 rounded-full bg-sky animate-pulse motion-reduce:animate-none"
+              className="h-2 w-2 rounded-full bg-sonar animate-pulse motion-reduce:animate-none"
             />
           )}
           <span
-            className="text-xs font-mono uppercase tracking-wider px-2 py-1 rounded"
+            className="text-xs font-data uppercase tracking-wider px-2 py-1 rounded"
             style={{ color: status.color, backgroundColor: status.bg }}
           >
             {status.label}
@@ -74,13 +74,13 @@ export function ModuleCard({ module }: ModuleCardProps) {
       {hasGrade ? (
         <div className="flex items-baseline gap-4 pt-2">
           <span
-            className="text-5xl font-semibold [letter-spacing:-0.02em]"
+            className="font-display text-5xl font-semibold [letter-spacing:-0.02em]"
             style={{ color: `var(--grade-${module.grade!.toLowerCase()})` }}
           >
             {module.grade}
           </span>
           {module.score !== null && (
-            <span className="font-mono text-sm text-muted">
+            <span className="font-data text-sm text-sonar-muted">
               {module.score}/100
             </span>
           )}
@@ -94,17 +94,17 @@ export function ModuleCard({ module }: ModuleCardProps) {
             QUEUED/RUNNING before the persist tx writes the count.
           */}
           {module.findingsCount !== null && (
-            <span className="text-sm text-muted ml-auto">
+            <span className="text-sm text-sonar-muted ml-auto">
               {module.findingsCount} finding{module.findingsCount !== 1 ? "s" : ""}
             </span>
           )}
         </div>
       ) : module.status === "SKIPPED" ? (
-        <p className="text-sm text-muted">
+        <p className="text-sm text-sonar-muted">
           Not included in this scan
         </p>
       ) : (
-        <p className="text-sm text-muted">
+        <p className="text-sm text-sonar-muted">
           Awaiting detection
         </p>
       )}
@@ -124,7 +124,7 @@ export function ModuleCard({ module }: ModuleCardProps) {
         <p
           role="alert"
           className="text-xs p-3 rounded"
-          style={{ color: "var(--sev-critical)", backgroundColor: "rgba(239, 68, 68, 0.1)" }}
+          style={{ color: "var(--red)", backgroundColor: "rgba(255, 90, 110, 0.12)" }}
         >
           {module.errorMessage}
         </p>

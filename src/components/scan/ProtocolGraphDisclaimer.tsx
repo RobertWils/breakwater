@@ -30,7 +30,7 @@ export function ProtocolGraphDisclaimer({ contractCount }: ProtocolGraphDisclaim
     <aside
       role="note"
       aria-label="Scan scope notice"
-      className="rounded-lg border border-subtle border-l-4 border-l-sky bg-elevated/30 px-4 py-3 text-sm text-muted"
+      className="rounded-lg border border-sonar/15 border-l-4 border-l-sonar bg-sonar/5 px-4 py-3 text-sm text-sonar-muted"
     >
       {isMulti ? (
         <>

@@ -102,7 +102,7 @@ export function ScanShell({ scan, tier }: ScanShellProps) {
         <p
           role="status"
           aria-live="polite"
-          className="text-center text-xs font-mono text-sev-medium"
+          className="text-center text-xs font-data text-amber"
         >
           Connection issues detected. Retrying…
         </p>

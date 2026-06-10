@@ -31,7 +31,7 @@ export function ScanRadar({ contracts }: { contracts: ContractResponse[] }) {
       <div className="flex w-full justify-center lg:hidden">
         <Radar graph={graph} size="sm" />
       </div>
-      <p className="mt-2 text-center font-mono text-xs text-muted">
+      <p className="mt-2 text-center font-data text-xs text-sonar-muted">
         Your submitted contracts — each scored on its own. Your primary inherits the worst.
       </p>
     </section>

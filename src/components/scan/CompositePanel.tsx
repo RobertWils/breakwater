@@ -17,32 +17,32 @@ const STATUS_COPY: Record<string, { label: string; description: string; color: s
   QUEUED: {
     label: "Queued",
     description: "Your scan is in queue. Detection begins when our modules go live.",
-    color: "var(--text-muted)",
+    color: "var(--sonar-muted)",
   },
   RUNNING: {
     label: "Running",
     description: "Detectors are analyzing your protocol.",
-    color: "var(--accent-sky)",
+    color: "var(--sonar)",
   },
   PARTIAL_COMPLETE: {
     label: "Partial results",
     description: "Some modules completed. Others are still running.",
-    color: "var(--accent-sky)",
+    color: "var(--sonar)",
   },
   COMPLETE: {
     label: "Complete",
     description: "All modules finished. Review your findings below.",
-    color: "var(--accent-teal)",
+    color: "var(--sonar)",
   },
   FAILED: {
     label: "Failed",
     description: "One or more modules encountered errors.",
-    color: "var(--sev-critical)",
+    color: "var(--red)",
   },
   EXPIRED: {
     label: "Expired",
     description: "This scan is older than 30 days. Submit a new scan for current results.",
-    color: "var(--text-muted)",
+    color: "var(--sonar-muted)",
   },
 }
 
@@ -76,7 +76,7 @@ export function CompositePanel({ scan, currentStatus }: CompositePanelProps) {
   return (
     <section
       aria-labelledby="composite-heading"
-      className="glass-card p-8 md:p-12 text-center"
+      className="sonar-card p-8 md:p-12 text-center"
     >
       <h2 id="composite-heading" className="sr-only">
         Protocol composite scan result
@@ -84,11 +84,9 @@ export function CompositePanel({ scan, currentStatus }: CompositePanelProps) {
 
       {hasGrade ? (
         <div>
-          <p className="font-mono text-xs uppercase tracking-wider text-muted mb-3">
-            Protocol grade
-          </p>
+          <p className="label-mono mb-3">Protocol grade</p>
           <p
-            className="text-8xl md:text-9xl font-semibold [letter-spacing:-0.04em]"
+            className="font-display text-8xl md:text-9xl font-semibold [letter-spacing:-0.04em]"
             style={{ color: `var(--grade-${scan.compositeGrade!.toLowerCase()})` }}
           >
             {scan.compositeGrade}
@@ -100,10 +98,8 @@ export function CompositePanel({ scan, currentStatus }: CompositePanelProps) {
           {scan.worstContractScore != null && (
             <dl className="mt-6 max-w-md mx-auto text-left">
               <div>
-                <dt className="font-mono text-xs uppercase tracking-wider text-muted">
-                  Protocol score
-                </dt>
-                <dd className="font-mono text-sm text-primary">
+                <dt className="label-mono">Protocol score</dt>
+                <dd className="font-data text-sm text-foam">
                   {scan.worstContractScore}/100
                 </dd>
               </div>
@@ -111,7 +107,7 @@ export function CompositePanel({ scan, currentStatus }: CompositePanelProps) {
           )}
           {partialReason && (
             <p
-              className="text-xs text-sev-medium mt-4"
+              className="text-xs text-amber mt-4"
               title={partialReason.tooltip}
             >
               {partialReason.label}
@@ -121,12 +117,12 @@ export function CompositePanel({ scan, currentStatus }: CompositePanelProps) {
       ) : (
         <div className="py-8">
           <p
-            className="font-mono text-sm uppercase tracking-wider mb-3"
+            className="font-data text-sm uppercase tracking-wider mb-3"
             style={{ color: statusInfo.color }}
           >
             {statusInfo.label}
           </p>
-          <p className="text-2xl md:text-3xl font-semibold text-primary max-w-2xl mx-auto">
+          <p className="font-display text-2xl md:text-3xl font-semibold text-foam max-w-2xl mx-auto">
             {statusInfo.description}
           </p>
         </div>

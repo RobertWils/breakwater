@@ -25,12 +25,17 @@
   --sev-low:         #60A5FA;
   --sev-info:        #94A3B8;
 
-  /* Grade scale */
-  --grade-a:         #1ee0b0; /* = --sonar; migrated off legacy teal so the safe/A grade matches the brand */
-  --grade-b:         #38BDF8;
-  --grade-c:         #F59E0B;
-  --grade-d:         #F97316;
-  --grade-f:         #EF4444;
+  /* Grade scale — aligned to the radar's grade→score buckets (Plan 04 E.3) so a
+     per-contract grade chip matches that contract's radar-node colour exactly:
+     A,B → sonar (safe), C,D → amber (moderate), F → red (unsafe). The letter
+     still distinguishes A from B / C from D; only the colour buckets, as on the
+     radar. (Phase A had migrated only --grade-a; b/c/d/f were still the legacy
+     5-colour ramp, which would not have matched the 3-bucket radar.) */
+  --grade-a:         #1ee0b0; /* sonar — safe */
+  --grade-b:         #1ee0b0; /* sonar — safe */
+  --grade-c:         #ffcf5c; /* amber — moderate */
+  --grade-d:         #ffcf5c; /* amber — moderate */
+  --grade-f:         #ff5a6e; /* red — unsafe */
 
   /* ── Plan 04 "Sonar" design system (spec §1) ──────────────────────────────
      Token values are copied EXACTLY from the approved mockups
