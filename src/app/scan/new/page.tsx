@@ -2,6 +2,7 @@ import type { Metadata } from "next"
 import { AbyssBackground } from "@/components/shell/AbyssBackground"
 import { ShoreWater } from "@/components/shell/ShoreWater"
 import { SonarHeader } from "@/components/shell/SonarHeader"
+import { MultiContractForm } from "@/components/scan/MultiContractForm"
 
 /**
  * Plan 04 Phase D.1 — multi-contract scan input, route + page shell only.
@@ -39,13 +40,9 @@ export default function ScanNewPage() {
             Breakwater scores the whole graph together, worst-wins.
           </p>
 
-          {/* Placeholder input container — the multi-contract form mounts here
-              in D.2. Empty by design for now. */}
-          <div className="sonar-card flex min-h-[280px] items-center justify-center p-8 text-center">
-            <p className="label-mono text-sonar-muted">
-              Multi-contract input · coming next
-            </p>
-          </div>
+          {/* D.2: the multi-contract input (UI + client validation). D.3 wires
+              its onSubmit to POST /api/scan. */}
+          <MultiContractForm />
         </div>
       </main>
     </div>

@@ -16,8 +16,9 @@ describe("/scan/new — multi-contract input shell", () => {
     ).toBeInTheDocument()
     expect(screen.getByText(/multi-contract scan/i)).toBeInTheDocument()
     expect(screen.getByText(/scores the whole graph together/i)).toBeInTheDocument()
-    // Placeholder input container (filled in D.2).
-    expect(screen.getByText(/coming next/i)).toBeInTheDocument()
+    // D.2 multi-contract form is mounted in the card.
+    expect(screen.getByLabelText(/protocol address/i)).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /scan protocol/i })).toBeInTheDocument()
 
     // Sonar shell + card frame present.
     expect(container.querySelector(".sonar-theme")).not.toBeNull()
