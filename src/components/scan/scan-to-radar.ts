@@ -1,5 +1,6 @@
 import type { RadarGraph, RadarNode, RadarScore } from "@/components/radar/types"
 import type { ContractResponse } from "@/lib/scan-response"
+import { isGradedContract } from "@/lib/scoring/protocol-rollup"
 
 /**
  * Plan 04 Phase E.1 — map a real ScanResponse to the radar's RadarGraph as a
@@ -40,6 +41,17 @@ export function gradeToRadarScore(grade: string | null | undefined): RadarScore 
   }
 }
 
+/**
+ * A contract's radar score, gated by the SAME eligibility rule the protocol
+ * rollup uses (`isGradedContract`): a colour (safe/moderate/unsafe) only when
+ * both grade AND score are non-null; otherwise null (neutral). This keeps the
+ * radar's eligibility set identical to rollupProtocolComposite's, so the
+ * star-contagion can never show a worse colour than the scoring concludes.
+ */
+function contractRadarScore(c: ContractResponse): RadarScore {
+  return isGradedContract(c) ? gradeToRadarScore(c.compositeGrade) : null
+}
+
 function shortAddress(address: string): string {
   return address.length > 12 ? `${address.slice(0, 6)}…${address.slice(-4)}` : address
 }
@@ -68,7 +80,7 @@ export function buildStarGraph(scan: { contracts: ContractResponse[] }): RadarGr
     label: shortAddress(primary.address),
     sublabel: primary.role,
     role: primary.role,
-    score: gradeToRadarScore(primary.compositeGrade),
+    score: contractRadarScore(primary),
     position: { x: 50, y: 50 },
     isPrimary: true,
   })
@@ -81,7 +93,7 @@ export function buildStarGraph(scan: { contracts: ContractResponse[] }): RadarGr
     nodes.push({
       id: c.id,
       role: c.role,
-      score: gradeToRadarScore(c.compositeGrade),
+      score: contractRadarScore(c),
       position: ringPosition(i, related.length),
       small: true,
     })

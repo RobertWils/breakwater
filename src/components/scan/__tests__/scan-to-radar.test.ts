@@ -17,7 +17,12 @@ const SCORE_FOR: Record<Grade, number> = { A: 95, B: 80, C: 65, D: 45, F: 10 }
 function contract(
   id: string,
   grade: Grade | null,
-  opts: { isPrimary?: boolean; role?: ContractResponse["role"] } = {},
+  opts: {
+    isPrimary?: boolean
+    role?: ContractResponse["role"]
+    /** Override the score (e.g. null while grade is set — the eligibility-mismatch case). */
+    score?: number | null
+  } = {},
 ): ContractResponse {
   return {
     id,
@@ -25,7 +30,7 @@ function contract(
     role: opts.role ?? (opts.isPrimary ? "PRIMARY" : "RELATED"),
     label: null,
     isPrimary: !!opts.isPrimary,
-    compositeScore: grade ? SCORE_FOR[grade] : null,
+    compositeScore: opts.score !== undefined ? opts.score : grade ? SCORE_FOR[grade] : null,
     compositeGrade: grade,
     isPartialGrade: false,
     crossChainTwins: [],
@@ -187,5 +192,47 @@ describe("star-contagion ≡ worst-wins (the equivalence check)", () => {
       contract("r", null),
     ])
     expect(expected).toBeNull()
+  })
+
+  // ── Codex HIGH finding: eligibility-set mismatch (grade set, score null) ──
+  it("Codex counterexample: primary A/95 + related F/score-null → safe (NOT unsafe)", () => {
+    const contracts = [
+      contract("p", "A", { isPrimary: true }), // A / 95
+      contract("bad", "F", { score: null }), // grade F but score null → excluded by rollup
+    ]
+    const { expected, resolved } = assertStarEqualsWorstWins(contracts)
+    // Rollup ignores the score-null contract → worst-wins is A → safe.
+    expect(expected).toBe("safe")
+    // The radar must agree: the excluded contract is neutral (null), not unsafe.
+    expect(resolved.get("p")).toBe("safe")
+    expect(resolved.get("bad")).toBeNull()
+  })
+
+  it("mirror: primary F/score-null + related A/95 → safe (primary excluded by rollup)", () => {
+    const contracts = [
+      contract("p", "F", { isPrimary: true, score: null }), // grade F but score null → excluded
+      contract("r", "A"), // A / 95
+    ]
+    const { expected, resolved } = assertStarEqualsWorstWins(contracts)
+    expect(expected).toBe("safe")
+    expect(resolved.get("p")).toBe("safe")
+  })
+
+  it("mixed null-score: A/95 + F/score-null (excluded) + C/65 → moderate", () => {
+    const { expected } = assertStarEqualsWorstWins([
+      contract("p", "A", { isPrimary: true }),
+      contract("x", "F", { score: null }), // excluded
+      contract("c", "C"), // C / 65
+    ])
+    expect(expected).toBe("moderate")
+  })
+
+  it("grade-null but score-present is also excluded (both must be non-null)", () => {
+    const { expected, resolved } = assertStarEqualsWorstWins([
+      contract("p", "A", { isPrimary: true }),
+      contract("weird", null, { score: 10 }), // grade null but score set → excluded
+    ])
+    expect(expected).toBe("safe")
+    expect(resolved.get("weird")).toBeNull()
   })
 })
