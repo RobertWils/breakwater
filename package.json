@@ -22,6 +22,7 @@
     "db:seed": "prisma db seed",
     "db:backfill-plan-03-contracts": "tsx scripts/backfill-plan-03-contracts.ts",
     "db:populate-curated-demos": "tsx scripts/populate-curated-demos.ts",
+    "db:backfill-synthetic-star-edges": "tsx scripts/backfill-synthetic-star-edges.ts",
     "generate-favicons": "node scripts/generate-favicons.mjs",
     "generate-og": "node scripts/generate-og-image.mjs"
   },

@@ -117,6 +117,50 @@ enum ContractRole {
   RELATED
 }
 
+// ── Plan 05 Fase 1.1 — auto-discovery foundations (purely additive) ──
+// These enums + the ContractEdge / DiscoveredContractCache tables + the
+// Contract provenance columns below are NOT read by any scan / scoring /
+// UI code yet. They land ahead of the discovery pipeline (later scopes)
+// so Fase 1 is a pure schema + synthetic-star-backfill change.
+
+// The kind of contract-to-contract relationship an edge expresses.
+// Fase 1 only ever creates DEPENDS_ON; more kinds (e.g. ADMINS, UPGRADES)
+// arrive with the discovery pipeline.
+enum EdgeKind {
+  DEPENDS_ON
+}
+
+// How sure we are an edge is real. STRUCTURAL = read from on-chain
+// structure (e.g. an EIP-1967 slot) or the synthetic star; CANDIDATE =
+// a heuristic guess pending confirmation.
+enum EdgeConfidence {
+  STRUCTURAL
+  STRUCTURAL_UNVERIFIED
+  CANDIDATE
+}
+
+// Lifecycle of an edge across re-discovery runs.
+enum EdgeStatus {
+  ACTIVE
+  STALE
+  REMOVED
+}
+
+// Whether a Contract entered the graph via a human submission (MANUAL)
+// or the discovery pipeline (AUTO). Existing rows backfill to MANUAL via
+// the column DEFAULT.
+enum DiscoverySource {
+  MANUAL
+  AUTO
+}
+
+// Whether a Contract's role was assigned by a human (MANUAL) or inferred
+// by role-detection (AUTO).
+enum RoleSource {
+  MANUAL
+  AUTO
+}
+
 model Organization {
   id            String           @id @default(cuid())
   name          String
@@ -168,6 +212,9 @@ model Protocol {
   latestDemoScan         Scan?           @relation("ProtocolLatestDemoScan", fields: [latestDemoScanId], references: [id])
   scans                  Scan[]          @relation("ProtocolScans")
   claims                 ProtocolClaim[]
+  // Plan 05 Fase 1.1 — discovery graph edges grouped per protocol (additive,
+  // not read yet).
+  contractEdges          ContractEdge[]
   createdAt              DateTime        @default(now())
   updatedAt              DateTime        @updatedAt
 
@@ -188,17 +235,17 @@ model ProtocolClaim {
 }
 
 model Scan {
-  id                    String              @id @default(uuid())
+  id                    String               @id @default(uuid())
   protocolId            String
-  protocol              Protocol            @relation("ProtocolScans", fields: [protocolId], references: [id])
-  latestDemoForProtocol Protocol[]          @relation("ProtocolLatestDemoScan")
+  protocol              Protocol             @relation("ProtocolScans", fields: [protocolId], references: [id])
+  latestDemoForProtocol Protocol[]           @relation("ProtocolLatestDemoScan")
   submittedByUserId     String?
-  submittedByUser       User?               @relation(fields: [submittedByUserId], references: [id])
+  submittedByUser       User?                @relation(fields: [submittedByUserId], references: [id])
   submittedEmail        String?
   submittedEmailHash    String?
   ipHash                String
   userAgent             String
-  status                ScanStatus          @default(QUEUED)
+  status                ScanStatus           @default(QUEUED)
   // Plan 03 §3.3: protocol-composite fields restructured.
   // `compositeGrade` widens to "worst contributing contract's grade" (§6.2).
   compositeGrade        Grade?
@@ -210,13 +257,13 @@ model Scan {
   worstContractScore    Int?
   // Plan 02 I.1 FIX 3 semantic carryover — detector-error degradation clause.
   // Aggregates across all Contracts in the scan in Plan 03 (§6.3).
-  isPartialGrade        Boolean             @default(false)
+  isPartialGrade        Boolean              @default(false)
   // Plan 03 §6.3 extension — graph-coverage clause. True when ≥1 graded
   // Contract coexists with ≥1 FAILED Contract. Implementation choice per
   // Plan 03 plan §20: two booleans rather than a partialReasons enum array.
-  isPartialCoverage     Boolean             @default(false)
+  isPartialCoverage     Boolean              @default(false)
   expiresAt             DateTime
-  createdAt             DateTime            @default(now())
+  createdAt             DateTime             @default(now())
   completedAt           DateTime?
   modules               ModuleRun[]
   contracts             Contract[]
@@ -347,13 +394,13 @@ model Finding {
 }
 
 model GovernanceSnapshot {
-  id     String  @id @default(cuid())
+  id         String   @id @default(cuid())
   // Plan 03 §3.5 PR 1: relaxed to nullable + @unique dropped. PR 2 does NOT
   // re-tighten this column — it stays nullable as a legacy backward-compat
   // column for historical rows (spec §3.5 "Legacy columns kept"). The new
   // unique constraint in PR 2 lands on contractId instead.
-  scanId String?
-  scan   Scan?   @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  scanId     String?
+  scan       Scan?    @relation(fields: [scanId], references: [id], onDelete: Cascade)
   // Plan 03 §3.5 PR 2: tightened to NOT NULL + @unique (1:1 with Contract)
   // now that the backfill populated contractId on every row. With @unique
   // in place, the Contract.governanceSnapshot side narrows from an array
@@ -361,8 +408,8 @@ model GovernanceSnapshot {
   // an atomic contractId-keyed upsert.
   // Explicit referential actions match the hand-written SQL — see the
   // matching note on `ModuleRun.contract` (Codex Review #1 IMPORTANT 1).
-  contractId String    @unique
-  contract   Contract  @relation(fields: [contractId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  contractId String   @unique
+  contract   Contract @relation(fields: [contractId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   blockNumber BigInt
   capturedAt  DateTime @default(now())
@@ -373,7 +420,7 @@ model GovernanceSnapshot {
   governorType    GovernorType?
   governorVersion String?
 
-  hasTimelock             Boolean @default(false)
+  hasTimelock             Boolean  @default(false)
   timelockAddress         String?
   timelockMinDelay        Int?
   timelockAdmin           String?
@@ -413,37 +460,111 @@ model GovernanceSnapshot {
 // window it was modelled as an array because the @unique did not yet
 // exist.
 model Contract {
-  id              String        @id @default(cuid())
+  id              String       @id @default(cuid())
   scanId          String
   // Explicit `onUpdate: NoAction` added (Codex Review #1 IMPORTANT 1) to
   // match the hand-written SQL (`ON DELETE CASCADE` only, no ON UPDATE
   // clause = Postgres default NO ACTION). Without this Prisma's default
   // `Cascade` for ON UPDATE drifts from the DB.
-  scan            Scan          @relation(fields: [scanId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  scan            Scan         @relation(fields: [scanId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   address         String
   chain           Chain
   role            ContractRole
   label           String?
-  crossChainTwins Json          @default("[]")
-  isPrimary       Boolean       @default(false)
-  createdAt       DateTime      @default(now())
+  crossChainTwins Json         @default("[]")
+  isPrimary       Boolean      @default(false)
+  createdAt       DateTime     @default(now())
 
   // Per-Contract composite — computed by markComplete (Plan 03 §4.5) using
   // the Plan 02 spec §5.3 composite algorithm applied to this Contract's
   // findings only. Null until the Contract's ModuleRuns finalise.
-  compositeScore  Int?
-  compositeGrade  Grade?
+  compositeScore Int?
+  compositeGrade Grade?
   // Per-Contract isPartialGrade — Plan 02 I.1 FIX 3 semantic scoped per
   // Contract. True when at least one of this Contract's COMPLETE ModuleRuns
   // had `errorDetectorCount > 0`.
-  isPartialGrade  Boolean       @default(false)
+  isPartialGrade Boolean @default(false)
 
   governanceSnapshot GovernanceSnapshot?
   moduleRuns         ModuleRun[]
   findings           Finding[]
 
+  // ── Plan 05 Fase 1.1 — discovery provenance (purely additive) ──
+  // Not read yet. discoverySource / roleSource backfill to MANUAL on
+  // existing rows via the column DEFAULT; the discovery pipeline (later
+  // scopes) writes AUTO. discoveredAs holds optional discovery metadata
+  // (e.g. the slot/source a node was found through).
+  discoverySource DiscoverySource @default(MANUAL)
+  roleSource      RoleSource      @default(MANUAL)
+  discoveredAs    Json?
+
+  // Back-relations for ContractEdge (a node may be the `from` / `to` of
+  // many edges). Virtual — no column; required Prisma plumbing for the
+  // two named FKs on ContractEdge.
+  outgoingEdges ContractEdge[] @relation("ContractEdgeFrom")
+  incomingEdges ContractEdge[] @relation("ContractEdgeTo")
+
   @@unique([scanId, address])
   @@index([scanId])
+}
+
+// Plan 05 Fase 1.1 — a directed contract-to-contract edge (additive, not
+// read yet). Direction: `from` depends on `to` (matches the radar's
+// contagion convention `to → from` and buildStarGraph's synthetic star).
+// The endpoints are scan-scoped Contract rows, so an edge is implicitly
+// scoped to one scan; `protocolId` denormalises the owning protocol for
+// fleet-wide queries. Fase 1 writes ONLY synthetic-star edges
+// (provenance.source = "SYNTHETIC_STAR"); real discovered edges arrive in
+// Fase 2.
+model ContractEdge {
+  id              String         @id @default(cuid())
+  protocolId      String
+  protocol        Protocol       @relation(fields: [protocolId], references: [id])
+  fromContractId  String
+  // NoAction matches the contractId-FK convention used by ModuleRun /
+  // Finding / GovernanceSnapshot (no cascade path; ordered cleanup if a
+  // contract-delete path is ever added — see NOTES.md Plan 02 entry).
+  fromContract    Contract       @relation("ContractEdgeFrom", fields: [fromContractId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  toContractId    String
+  toContract      Contract       @relation("ContractEdgeTo", fields: [toContractId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  edgeKind        EdgeKind       @default(DEPENDS_ON)
+  confidence      EdgeConfidence
+  // Free-form { source, detail } — e.g. { source: "SYNTHETIC_STAR", ... }
+  // or, later, { source: "EIP_1967_SLOT", detail: { slot, block } }.
+  provenance      Json
+  observedActive  Boolean        @default(false)
+  discoveredAt    DateTime       @default(now())
+  lastConfirmedAt DateTime?
+  status          EdgeStatus     @default(ACTIVE)
+
+  // One logical edge per (from, to, kind) — the idempotency key the
+  // synthetic-star backfill relies on (createMany skipDuplicates).
+  @@unique([fromContractId, toContractId, edgeKind])
+  @@index([protocolId])
+  @@index([toContractId])
+}
+
+// Plan 05 Fase 1.1 — global (NOT per-protocol) cache of per-address
+// discovery facts, keyed by (chain, address) to match the repo's identity
+// tuple. Additive, not read yet; the discovery pipeline (later scopes)
+// populates + reads it to avoid re-fetching bytecode/ABI per scan.
+model DiscoveredContractCache {
+  id            String   @id @default(cuid())
+  chain         Chain
+  address       String
+  bytecodeHash  String?
+  // Tri-state: null = unknown / not yet checked, false = unverified,
+  // true = source-verified (e.g. Etherscan).
+  verified      Boolean?
+  // ABI text, or a pointer/URI to it. Nullable until fetched.
+  abi           String?
+  // Role-detection output (free-form until the detector shape settles).
+  roleDetection Json?
+  // Tri-state allowlist status: null = not evaluated.
+  allowlisted   Boolean?
+  fetchedAt     DateTime @default(now())
+
+  @@unique([chain, address])
 }
 
 model Subscription {
