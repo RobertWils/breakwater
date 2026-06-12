@@ -42,6 +42,9 @@ function contract(
 
 function toRollup(c: ContractResponse): ProtocolRollupContract {
   return {
+    id: c.id,
+    address: c.address,
+    isPrimary: c.isPrimary,
     compositeScore: c.compositeScore,
     compositeGrade: c.compositeGrade as Grade | null,
     isPartialGrade: c.isPartialGrade,

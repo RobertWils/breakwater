@@ -1,6 +1,7 @@
 import type { RadarGraph, RadarNode, RadarScore } from "@/components/radar/types"
 import type { ContractResponse } from "@/lib/scan-response"
 import { isGradedContract } from "@/lib/scoring/protocol-rollup"
+import { isKnownInfra } from "@/lib/scoring/known-infra"
 
 /**
  * Plan 04 Phase E.1 — map a real ScanResponse to the radar's RadarGraph as a
@@ -49,6 +50,11 @@ export function gradeToRadarScore(grade: string | null | undefined): RadarScore 
  * star-contagion can never show a worse colour than the scoring concludes.
  */
 function contractRadarScore(c: ContractResponse): RadarScore {
+  // Plan 05 Fase 1.2 — KNOWN_INFRA nodes contribute no own-score to the
+  // contagion fold (the SAME `isKnownInfra` hook the rollup uses, so the
+  // radar and the persisted scorer exclude exactly the same nodes). Empty
+  // allowlist today ⇒ no-op ⇒ unchanged radar.
+  if (isKnownInfra(c.address)) return null
   return isGradedContract(c) ? gradeToRadarScore(c.compositeGrade) : null
 }
 

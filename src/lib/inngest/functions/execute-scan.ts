@@ -117,7 +117,7 @@ export type MarkCompleteResult =
  *   - COMPLETE: no FAILED ModuleRuns, at least one COMPLETE. The
  *     Contract yields a grade from its findings.
  */
-function deriveContractStatus(
+export function deriveContractStatus(
   moduleRuns: ReadonlyArray<{ status: string }>,
 ): "COMPLETE" | "FAILED" | "SKIPPED" {
   if (moduleRuns.length === 0) return "SKIPPED";
@@ -188,7 +188,17 @@ export async function markComplete(
     const isPartialGrade = c.moduleRuns.some(
       (m) => m.status === "COMPLETE" && (m.errorDetectorCount ?? 0) > 0,
     );
-    return { id: c.id, status, compositeScore, compositeGrade, isPartialGrade };
+    return {
+      id: c.id,
+      // Plan 05 Fase 1.2: address + isPrimary feed the reachability-aware
+      // rollup (the KNOWN_INFRA hook + the reachability root).
+      address: c.address,
+      isPrimary: c.isPrimary,
+      status,
+      compositeScore,
+      compositeGrade,
+      isPartialGrade,
+    };
   });
 
   // Persist per-Contract grades. These are deterministic over the
@@ -216,11 +226,17 @@ export async function markComplete(
   // zero-graded-Contracts guard (§6.2 extension of Plan 02 H.9
   // BLOCKER Layer C from executor to graph layer).
   const rollupContracts: ProtocolRollupContract[] = perContract.map((c) => ({
+    id: c.id,
+    address: c.address,
+    isPrimary: c.isPrimary,
     compositeScore: c.compositeScore,
     compositeGrade: c.compositeGrade,
     isPartialGrade: c.isPartialGrade,
     status: c.status,
   }));
+  // No edges passed ⇒ the rollup synthesises the star (no persisted
+  // ContractEdge rows exist at finalisation in Fase 1.2). Bit-identical to
+  // the prior flat fold; Fase 2 will pass real discovered edges.
   const rollup = rollupProtocolComposite(rollupContracts);
 
   // Plan 03 §6.2 zero-graded-Contracts guard → FAILED. When at least

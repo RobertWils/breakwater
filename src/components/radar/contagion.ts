@@ -1,3 +1,5 @@
+import { reachableFrom } from "@/lib/graph/reachability"
+
 import type { RadarGraph, RadarScore } from "./types"
 
 /**
@@ -34,41 +36,26 @@ function rankOf(score: RadarScore): number {
 }
 
 export function resolveContagion(graph: RadarGraph): Map<string, RadarScore> {
+  // Reachability is delegated to the SHARED `reachableFrom` (Plan 05 Fase
+  // 1.2) — the SAME function rollupProtocolComposite uses — so the radar and
+  // the persisted scorer can never disagree about which nodes contaminate a
+  // node. Each node's displayed score = the worst own-rank over its reachable
+  // closure (inclusive of itself). Edge direction + the "ignore edges to
+  // absent nodes" filter live in reachableFrom; this is behaviour-identical
+  // to the prior inline DFS (regression-locked by contagion.test.ts).
+  const ids = graph.nodes.map((n) => n.id)
   const ownRank = new Map<string, number>()
   for (const node of graph.nodes) ownRank.set(node.id, rankOf(node.score))
 
-  // Dependencies: edge `from` depends on `to`, so worst flows to → from.
-  const deps = new Map<string, string[]>()
-  for (const node of graph.nodes) deps.set(node.id, [])
-  for (const edge of graph.edges) {
-    // Ignore edges that reference nodes not in the graph (e.g. a leaf hidden
-    // at the current phase) so callers can pass a filtered subgraph.
-    if (deps.has(edge.from) && ownRank.has(edge.to)) {
-      deps.get(edge.from)!.push(edge.to)
-    }
-  }
-
-  const resolved = new Map<string, number>()
-  const inProgress = new Set<string>()
-
-  function worstRank(id: string): number {
-    const cached = resolved.get(id)
-    if (cached !== undefined) return cached
-    // Cycle guard: a node already on the stack contributes only its own rank
-    // back up the chain; its dependencies are resolved by the outer call.
-    if (inProgress.has(id)) return ownRank.get(id) ?? RANK.none
-
-    inProgress.add(id)
-    let worst = ownRank.get(id) ?? RANK.none
-    for (const depId of deps.get(id) ?? []) {
-      worst = Math.max(worst, worstRank(depId))
-    }
-    inProgress.delete(id)
-    resolved.set(id, worst)
-    return worst
-  }
-
   const out = new Map<string, RadarScore>()
-  for (const node of graph.nodes) out.set(node.id, BY_RANK[worstRank(node.id)])
+  for (const node of graph.nodes) {
+    let worst = RANK.none
+    // Set.forEach (not for-of) — the project's TS target predates ES2015
+    // iteration; forEach avoids the downlevelIteration requirement.
+    reachableFrom(ids, graph.edges, node.id).forEach((id) => {
+      worst = Math.max(worst, ownRank.get(id) ?? RANK.none)
+    })
+    out.set(node.id, BY_RANK[worst])
+  }
   return out
 }
