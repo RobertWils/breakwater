@@ -65,6 +65,24 @@ describe("reachableFrom", () => {
     );
   });
 
+  it("computes the FULL closure through a cycle (the case the old memoized resolver got wrong)", () => {
+    // b↔c cycle, and b→d. From c, d is reachable via c→b→d. The pre-
+    // extraction resolver could cache c without d (in-progress shortcut);
+    // reachableFrom must include d.
+    const edges: GraphEdge[] = [
+      { from: "b", to: "c" },
+      { from: "c", to: "b" },
+      { from: "b", to: "d" },
+    ];
+    const all = ids("b", "c", "d");
+    expect(new Set(reachableFrom(all, edges, "c"))).toEqual(
+      new Set(["c", "b", "d"]),
+    );
+    expect(new Set(reachableFrom(all, edges, "b"))).toEqual(
+      new Set(["b", "c", "d"]),
+    );
+  });
+
   it("ignores edges that reference nodes outside the node set", () => {
     const edges: GraphEdge[] = [
       { from: "root", to: "a" },

@@ -44,9 +44,6 @@ const prisma = new PrismaClient();
 
 const BATCH_SIZE = 100;
 
-// Only scans that markComplete actually finalised carry computed grades.
-const FINALISED = ["COMPLETE", "PARTIAL_COMPLETE", "FAILED"] as const;
-
 interface Summary {
   scansChecked: number;
   scansMatched: number;
@@ -63,7 +60,16 @@ async function run(): Promise<Summary> {
   let cursor: string | undefined;
   for (;;) {
     const batch = await prisma.scan.findMany({
-      where: { status: { in: [...FINALISED] } },
+      // "Carries persisted grades" ⟺ completedAt IS NOT NULL. markComplete is
+      // the ONLY path that writes the five Scan grade fields, and it
+      // co-writes completedAt in the same update — so this is the exact,
+      // STATUS-AGNOSTIC marker (Codex finding 2). A status list would
+      // silently skip any class the app considers terminal-with-grades that
+      // isn't listed (e.g. a future EXPIRED that preserves grades), and would
+      // wrongly include never-graded states. Keying on completedAt checks
+      // every finalised scan regardless of status and excludes in-progress
+      // ones (QUEUED/RUNNING/never-written-PARTIAL_COMPLETE) that have none.
+      where: { completedAt: { not: null } },
       select: {
         id: true,
         compositeGrade: true,
@@ -148,6 +154,16 @@ async function main() {
   console.log("[verify-scorer-noop] read-only bit-identical check (Plan 05 §5.4)");
   const summary = await run();
   console.log(`[verify-scorer-noop] ${JSON.stringify(summary, null, 2)}`);
+
+  // Sanity gate (Codex finding 2): zero scans checked is NOT a pass. An empty
+  // fleet or a too-narrow filter must surface loudly, never read as a green
+  // tick. "all 0 scans bit-identical" is meaningless.
+  if (summary.scansChecked === 0) {
+    console.error(
+      "[verify-scorer-noop] checked 0 scans — nothing was verified (empty DB, or no scans carry persisted grades). This is NOT a pass.",
+    );
+    process.exit(1);
+  }
 
   if (summary.scansMismatched > 0) {
     console.error(

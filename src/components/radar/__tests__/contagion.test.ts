@@ -176,3 +176,87 @@ describe("resolveContagion — the G1f example graph (spec §1 phase 4 / §2)", 
     expect(r.br).toBe("safe")
   })
 })
+
+// Plan 05 Fase 1.2 — cyclic-graph correctness (Codex finding 1).
+//
+// The pre-extraction inline resolver had an ORDER-DEPENDENT memoization bug:
+// a node resolved while a cycle-mate was still on the stack cached an
+// incomplete score (the in-progress shortcut returned only the mate's OWN
+// rank, not its closure). Delegating to the shared `reachableFrom` (which
+// builds the full reachable closure) FIXES this. These cases lock the
+// correct behaviour; the prior 12 tests passed only because none used a
+// cycle where a worse node was reachable THROUGH the cycle.
+//
+// No production impact today: every scan is a star (acyclic). This matters
+// in Fase 2 when real discovered edges can form cycles.
+describe("resolveContagion — cyclic graphs (Plan 05 Fase 1.2)", () => {
+  it("B↔C, both safe → both safe", () => {
+    const r = resolve({
+      nodes: [n("B", "safe"), n("C", "safe")],
+      edges: [
+        { from: "B", to: "C" },
+        { from: "C", to: "B" },
+      ],
+    })
+    expect(r).toEqual({ B: "safe", C: "safe" })
+  })
+
+  it("B↔C with C unsafe → both unsafe (each reaches the other)", () => {
+    const r = resolve({
+      nodes: [n("B", "safe"), n("C", "unsafe")],
+      edges: [
+        { from: "B", to: "C" },
+        { from: "C", to: "B" },
+      ],
+    })
+    expect(r).toEqual({ B: "unsafe", C: "unsafe" })
+  })
+
+  it("longer cycle A→B→C→A with one unsafe node → all unsafe", () => {
+    const r = resolve({
+      nodes: [n("A", "safe"), n("B", "safe"), n("C", "unsafe")],
+      edges: [
+        { from: "A", to: "B" },
+        { from: "B", to: "C" },
+        { from: "C", to: "A" },
+      ],
+    })
+    expect(r).toEqual({ A: "unsafe", B: "unsafe", C: "unsafe" })
+  })
+
+  it("cycle + disconnected branch: the cycle stays safe, the disconnected unsafe node does not leak in", () => {
+    const r = resolve({
+      nodes: [n("A", "safe"), n("B", "safe"), n("D", "unsafe")],
+      edges: [
+        { from: "A", to: "B" },
+        { from: "B", to: "A" },
+        // D has no edges — unreachable from the A↔B cycle.
+      ],
+    })
+    expect(r.A).toBe("safe")
+    expect(r.B).toBe("safe")
+    expect(r.D).toBe("unsafe")
+  })
+
+  it("the order-dependent bug case: B↔C cycle + B→D(unsafe) — C is unsafe via C→B→D regardless of node order", () => {
+    const edges = [
+      { from: "B", to: "C" },
+      { from: "C", to: "B" },
+      { from: "B", to: "D" },
+    ]
+    // Node order [B, C, D] is the order the old memoized resolver cached C
+    // with B's incomplete in-progress value (→ C: safe, WRONG).
+    const r1 = resolve({
+      nodes: [n("B", "safe"), n("C", "safe"), n("D", "unsafe")],
+      edges,
+    })
+    expect(r1).toEqual({ B: "unsafe", C: "unsafe", D: "unsafe" })
+
+    // The reverse order must give the same correct result.
+    const r2 = resolve({
+      nodes: [n("D", "unsafe"), n("C", "safe"), n("B", "safe")],
+      edges,
+    })
+    expect(r2).toEqual({ B: "unsafe", C: "unsafe", D: "unsafe" })
+  })
+})
