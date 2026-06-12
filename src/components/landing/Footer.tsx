@@ -12,7 +12,7 @@ export function Footer() {
                 href="https://singularityventurehub.ai"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-teal hover:underline"
+                className="text-sonar hover:underline"
               >
                 Singularity Venture Hub
               </a>{" "}

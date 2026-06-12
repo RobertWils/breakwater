@@ -222,3 +222,10 @@ These were intentionally **not** removed at close-out — they're a clean future
 
 - **Vercel Preview shares the production `DATABASE_URL`, and the build script runs `prisma migrate deploy`** (`"build": "prisma generate && prisma migrate deploy && next build"`). Consequence: a new migration applies to the **production** database on **any** branch push that triggers a preview build — not only on merge to `main`. Be deliberate about pushing branches that carry an unreviewed migration; treat a migration-bearing branch with the same care as a prod deploy.
 - **Two duplicate Vercel plugins are enabled** (`vercel@claude-plugins-official` and `vercel-plugin@vercel-vercel-plugin`) — harmless (the duplicate MCP server is de-duped) but cleanup is deferred.
+
+## Plan 04 — Scope F (curated demos) — known gaps
+
+`scripts/populate-curated-demos.ts` ships the populate machinery (decision + DI-orchestration logic in `populate-curated-demos.logic.ts`, unit-tested; live wiring in the script). Two gaps remain after this commit:
+
+- **The `--execute` run has NOT been performed — the demos are not actually populated yet.** Population is a live-environment operation: it needs a target `DATABASE_URL`, an active Inngest runtime processing `scan.queued` events (Inngest Cloud ↔ deployed app, or `inngest dev` ↔ `next dev`), and ideally `ETHERSCAN_API_KEY` (without it GOV-002 / proxy-ABI coverage degrades — real but thin). The script defaults to dry-run; run `pnpm db:populate-curated-demos -- --execute` against the demo-serving environment to actually create + publish the demo scans. Until then `Protocol.latestDemoScanId` stays null for Aave V3 / Uniswap V3.
+- **`/demo/[slug]/page.tsx` still renders the "Full scan results coming soon" placeholder.** It reads only `Protocol` metadata, not the linked demo scan. Even after a successful `--execute` run, the demo page stays a placeholder until a UI wire surfaces the populated exposure graph + star-radar (the Phase E components) from `latestDemoScanId`. Separate task — deliberately out of Scope F (no UI changes).

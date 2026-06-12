@@ -53,13 +53,13 @@ export function UnlockCTA({ scanId }: UnlockCTAProps) {
         aria-labelledby="unlock-sent"
         role="status"
         aria-live="polite"
-        className="glass-card-teal p-8 text-center space-y-3"
+        className="sonar-card p-8 text-center space-y-3"
       >
-        <h2 id="unlock-sent" className="text-xl font-semibold text-teal">
+        <h2 id="unlock-sent" className="font-display text-xl font-semibold text-sonar">
           Check your email
         </h2>
-        <p className="text-muted">
-          We sent a magic link to <span className="text-primary font-mono">{state.email}</span>.
+        <p className="text-sonar-muted">
+          We sent a magic link to <span className="text-foam font-data">{state.email}</span>.
           Click the link to unlock your scan findings.
         </p>
       </section>
@@ -69,13 +69,13 @@ export function UnlockCTA({ scanId }: UnlockCTAProps) {
   return (
     <section
       aria-labelledby="unlock-heading"
-      className="glass-card-teal p-8 space-y-4"
+      className="sonar-card p-8 space-y-4"
     >
       <div>
-        <h2 id="unlock-heading" className="text-xl font-semibold text-primary">
+        <h2 id="unlock-heading" className="font-display text-xl font-semibold text-foam">
           Get notified when detection completes
         </h2>
-        <p className="text-sm text-muted mt-2">
+        <p className="text-sm text-sonar-muted mt-2">
           Enter your email to unlock full scan findings when our detectors go live.
           No signup friction — one magic link, always free.
         </p>
@@ -94,19 +94,19 @@ export function UnlockCTA({ scanId }: UnlockCTAProps) {
           required
           disabled={state.kind === "submitting"}
           autoComplete="email"
-          className="flex-1 px-4 py-3 bg-[#0C1C3A] border border-subtle rounded-lg text-primary placeholder:text-muted font-mono focus:border-teal focus:outline-none disabled:opacity-50"
+          className="sonar-input flex-1 appearance-none rounded-lg px-4 py-3 text-sm disabled:opacity-[0.85]"
         />
         <button
           type="submit"
           disabled={state.kind === "submitting" || !email.trim()}
-          className="px-6 py-3 bg-teal text-[#0C1C3A] font-semibold rounded-lg hover:bg-teal/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+          className="sonar-btn rounded-lg px-6 py-3 font-bold whitespace-nowrap"
         >
           {state.kind === "submitting" ? "Sending..." : "Send magic link"}
         </button>
       </form>
 
       {state.kind === "error" && (
-        <p role="alert" className="text-sm text-sev-critical">
+        <p role="alert" className="text-sm text-red">
           {state.message}
         </p>
       )}

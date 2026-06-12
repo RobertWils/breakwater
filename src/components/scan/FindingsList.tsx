@@ -97,12 +97,12 @@ export function FindingsList({
     return (
       <section
         aria-labelledby="findings-heading"
-        className="glass-card p-8 text-center"
+        className="sonar-card p-8 text-center"
       >
-        <h2 id="findings-heading" className="text-lg font-semibold text-primary mb-2">
+        <h2 id="findings-heading" className="font-display text-lg font-semibold text-foam mb-2">
           Findings
         </h2>
-        <p className="text-muted text-sm">{emptyStateMessage(status)}</p>
+        <p className="text-sonar-muted text-sm">{emptyStateMessage(status)}</p>
       </section>
     )
   }
@@ -151,11 +151,11 @@ export function FindingsList({
       className="space-y-4"
     >
       <div className="flex items-baseline justify-between gap-4">
-        <h2 id="findings-heading" className="text-lg font-semibold text-primary">
+        <h2 id="findings-heading" className="font-display text-lg font-semibold text-foam">
           Findings ({findings.length})
         </h2>
         {tier === "unauth" && hasAnyHiddenFindings && (
-          <p className="text-xs text-muted font-mono">
+          <p className="text-xs text-sonar-muted font-data">
             Showing top finding per module. Enter email below to unlock all.
           </p>
         )}
@@ -196,15 +196,15 @@ function FindingSection({
       aria-labelledby={headingId}
       className="space-y-3"
     >
-      <header className="pb-2 border-b border-subtle">
+      <header className="pb-2 border-b border-sonar/15">
         <h3
           id={headingId}
-          className="text-sm font-semibold text-primary"
+          className="font-display text-sm font-semibold text-foam"
         >
           {contract?.label ?? roleLabel ?? "Other findings"}
         </h3>
         {contract && (
-          <p className="text-xs font-mono text-muted/70 mt-1">
+          <p className="text-xs font-data text-sonar-muted/70 mt-1">
             <span className="uppercase tracking-wider">{roleLabel}</span>
             <span aria-hidden="true"> · </span>
             <span title={contract.address}>{truncateAddress(contract.address)}</span>
@@ -220,21 +220,21 @@ function FindingSection({
         return (
           <article
             key={key}
-            className="glass-card p-6 space-y-3"
+            className="sonar-card p-6 space-y-3"
           >
             <div className="flex items-start justify-between gap-4">
               <div className="flex-1">
-                <h4 className="text-base font-semibold text-primary">
+                <h4 className="font-display text-base font-semibold text-foam">
                   {finding.publicTitle}
                 </h4>
                 {fullShape && (
-                  <p className="text-xs font-mono text-muted/60 uppercase tracking-wider mt-1">
+                  <p className="text-xs font-data text-sonar-muted/60 uppercase tracking-wider mt-1">
                     {finding.module} · {finding.detectorId}
                   </p>
                 )}
               </div>
               <span
-                className="text-xs font-mono uppercase tracking-wider px-2 py-1 rounded shrink-0"
+                className="text-xs font-data uppercase tracking-wider px-2 py-1 rounded shrink-0"
                 style={{ color: severityInfo.color, backgroundColor: severityInfo.bg }}
               >
                 {severityInfo.label}
@@ -242,12 +242,12 @@ function FindingSection({
             </div>
 
             {fullShape && finding.description && (
-              <div className="pt-3 border-t border-subtle space-y-2">
-                <p className="text-sm text-muted leading-relaxed">
+              <div className="pt-3 border-t border-sonar/15 space-y-2">
+                <p className="text-sm text-sonar-muted leading-relaxed">
                   {finding.description}
                 </p>
                 {finding.evidence !== null && finding.evidence !== undefined && (
-                  <div className="p-3 bg-elevated/30 rounded text-xs font-mono text-muted overflow-x-auto">
+                  <div className="p-3 bg-sonar/5 rounded text-xs font-data text-sonar-muted overflow-x-auto">
                     {typeof finding.evidence === "string"
                       ? finding.evidence
                       : JSON.stringify(finding.evidence, null, 2)}
@@ -257,11 +257,11 @@ function FindingSection({
             )}
 
             {finding.remediationHint && (
-              <div className="pt-3 border-t border-subtle">
-                <p className="text-xs text-muted/60 uppercase tracking-wider font-mono mb-2">
+              <div className="pt-3 border-t border-sonar/15">
+                <p className="text-xs text-sonar-muted/60 uppercase tracking-wider font-data mb-2">
                   Remediation
                 </p>
-                <p className="text-sm text-muted leading-relaxed">
+                <p className="text-sm text-sonar-muted leading-relaxed">
                   {finding.remediationHint}
                 </p>
               </div>

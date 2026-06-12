@@ -27,7 +27,7 @@ export function ContractList({ contracts }: ContractListProps) {
     >
       <h2
         id="contracts-heading"
-        className="text-lg font-semibold text-primary"
+        className="font-display text-lg font-semibold text-foam"
       >
         Contracts ({contracts.length})
       </h2>

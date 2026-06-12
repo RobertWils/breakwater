@@ -66,4 +66,300 @@
     border: 1px solid var(--border-teal);
     border-radius: 12px;
   }
+
+  /* ── Plan 04 Sonar shell + typography (spec §1) ──────────────────────────
+     Scoped theme wrapper: surfaces that opt into the Sonar system wrap their
+     content in `.sonar-theme`. It sets the display font + foam text so the
+     rest of the page inherits it, WITHOUT changing global defaults (legacy
+     pages keep Geist / their existing palette). */
+  .sonar-theme {
+    font-family: var(--font-chakra-petch), system-ui, sans-serif;
+    color: var(--foam);
+  }
+  /* Headings inside the Sonar theme: display font + foam (override the global
+     h1-h6 color rule, which is otherwise more specific than inheritance). */
+  .sonar-theme :is(h1, h2, h3, h4, h5, h6) {
+    font-family: var(--font-chakra-petch), system-ui, sans-serif;
+    color: var(--foam);
+  }
+
+  /* Typography scale primitives reused across later phases. */
+  .label-mono {
+    font-family: var(--font-ibm-plex-mono), monospace;
+    font-size: 0.6875rem; /* 11px */
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--sonar-muted);
+  }
+  .data-mono {
+    font-family: var(--font-ibm-plex-mono), monospace;
+  }
+  /* The recurring "eyebrow" / step label: mono, tracked, sonar-coloured. */
+  .sonar-eyebrow {
+    font-family: var(--font-ibm-plex-mono), monospace;
+    font-size: 0.6875rem; /* 11px */
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--sonar);
+  }
+
+  /* ── Plan 04 Phase C — scan card chrome (G1f .card / .btn / .field) ───────
+     The functional <ScanForm> wears this; matches the mockup's glassy depth,
+     teal glow, and sonar-gradient button. */
+  .sonar-card {
+    background: linear-gradient(160deg, rgba(4, 22, 28, 0.92), rgba(2, 10, 14, 0.96));
+    border: 1px solid rgba(30, 224, 176, 0.25);
+    border-radius: 14px;
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    box-shadow: 0 30px 70px -20px rgba(0, 0, 0, 0.7);
+  }
+  .sonar-input {
+    background: rgba(2, 10, 14, 0.8);
+    border: 1px solid rgba(106, 155, 146, 0.3);
+    color: var(--foam);
+    font-family: var(--font-ibm-plex-mono), monospace;
+  }
+  .sonar-input:focus {
+    outline: none;
+    border-color: var(--sonar);
+  }
+  .sonar-input::placeholder {
+    color: rgba(106, 155, 146, 0.5);
+  }
+  .sonar-btn {
+    background: linear-gradient(135deg, var(--sonar), var(--sonar-d));
+    color: var(--abyss);
+    font-family: var(--font-chakra-petch), system-ui, sans-serif;
+    /* Base / disabled glow — modest, no contour ring. */
+    box-shadow: 0 12px 28px -8px rgba(30, 224, 176, 0.5);
+    /* box-shadow in the transition so disabled→enabled lights up smoothly. */
+    transition: transform 0.2s, box-shadow 0.2s;
+  }
+  /* Armed (enabled): a bright --sonar contour ring + a stronger, wider glow,
+     so a valid-looking address makes the button visibly "light up" / read as
+     ready to scan. Inset ring (not a real border) avoids any layout shift. */
+  .sonar-btn:not(:disabled) {
+    box-shadow:
+      inset 0 0 0 1.5px var(--sonar),
+      0 12px 30px -8px rgba(30, 224, 176, 0.7),
+      0 0 24px -4px rgba(30, 224, 176, 0.45);
+  }
+  .sonar-btn:hover:not(:disabled) {
+    transform: translateY(-2px);
+  }
+  /* Disabled (empty address / submitting): keep the bright G1f gradient +
+     glow, only a subtle 0.85 dim as the disabled cue — not the old greyed-out
+     0.5. Still functionally disabled (cursor + the disabled attribute). */
+  .sonar-btn:disabled {
+    opacity: 0.85;
+    cursor: not-allowed;
+  }
+  /* "Free scan" badge pill. */
+  .sonar-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-ibm-plex-mono), monospace;
+    font-size: 0.625rem; /* 10px */
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--sonar);
+    background: rgba(30, 224, 176, 0.1);
+    border: 1px solid rgba(30, 224, 176, 0.3);
+    border-radius: 999px;
+    padding: 3px 10px;
+  }
+
+  /* ── Plan 04 Phase B — sonar radar (spec §1) ─────────────────────────────
+     Structural styling for the data-driven <Radar> component. Reuses the
+     Sonar tokens + Phase A motion utilities (animate-sweep / animate-blip);
+     the only radar-specific motion is the edge dash (keyframe below). Score
+     states ride on `currentColor` set on the blip (.is-moderate/.is-unsafe),
+     so dot / pulse / label all tint together. */
+  .radar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .radar-scope {
+    position: relative;
+  }
+  .radar--lg .radar-scope {
+    width: min(64vh, 600px);
+    height: min(64vh, 600px);
+  }
+  .radar--sm .radar-scope {
+    width: min(72vw, 300px);
+    height: min(72vw, 300px);
+  }
+
+  .radar-ring {
+    position: absolute;
+    inset: 0;
+    border: 1px solid rgba(30, 224, 176, 0.16);
+    border-radius: 50%;
+  }
+  .radar--lg .radar-ring:nth-child(2) { inset: 13%; }
+  .radar--lg .radar-ring:nth-child(3) { inset: 26%; }
+  .radar--lg .radar-ring:nth-child(4) { inset: 39%; }
+  .radar--sm .radar-ring:nth-child(2) { inset: 16%; }
+  .radar--sm .radar-ring:nth-child(3) { inset: 32%; }
+  .radar--sm .radar-ring:nth-child(4) { display: none; }
+
+  .radar-cross {
+    position: absolute;
+    background: rgba(30, 224, 176, 0.12);
+  }
+  .radar-cross--h { top: 50%; left: 0; width: 100%; height: 1px; }
+  .radar-cross--v { left: 50%; top: 0; height: 100%; width: 1px; }
+
+  .radar-sweep {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background: conic-gradient(
+      from 0deg,
+      rgba(30, 224, 176, 0.28),
+      rgba(30, 224, 176, 0.04) 22%,
+      transparent 38%
+    );
+  }
+  .radar-sweep-line {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 50%;
+    height: 2px;
+    background: linear-gradient(90deg, var(--sonar), transparent);
+    transform-origin: left center;
+  }
+
+  .radar-shield {
+    position: absolute;
+    inset: 30%;
+    border-radius: 50%;
+    border: 2px solid var(--sonar);
+    opacity: 0;
+    box-shadow: 0 0 30px rgba(30, 224, 176, 0.4), inset 0 0 30px rgba(30, 224, 176, 0.2);
+    transition: opacity 0.8s;
+  }
+  .radar--sm .radar-shield {
+    inset: 32%;
+    box-shadow: 0 0 24px rgba(30, 224, 176, 0.4), inset 0 0 18px rgba(30, 224, 176, 0.2);
+  }
+  .radar-shield--show { opacity: 0.9; }
+
+  .radar-edges {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+    z-index: 2;
+    pointer-events: none;
+  }
+  .radar-edge {
+    stroke: var(--sonar);
+    stroke-width: 1.4;
+    stroke-dasharray: 5 5;
+    opacity: 0;
+    transition: opacity 0.6s, stroke 0.6s;
+    animation: radar-dash 1.2s linear infinite;
+  }
+  .radar-edge.is-shown { opacity: 0.38; }
+  .radar-edge.is-shown.is-moderate { stroke: var(--amber); opacity: 0.55; }
+  .radar-edge.is-shown.is-unsafe { stroke: var(--red); opacity: 0.55; }
+  .radar-edge.is-killed { opacity: 0; }
+
+  .radar-blip {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    z-index: 4;
+    color: var(--sonar);
+    opacity: 0;
+    transition: opacity 0.5s, transform 0.5s, color 0.6s;
+  }
+  .radar-blip.is-shown { opacity: 1; }
+  .radar-blip.is-moderate { color: var(--amber); }
+  .radar-blip.is-unsafe { color: var(--red); }
+  .radar-blip.is-killed {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0);
+  }
+
+  .radar-blip-dot {
+    display: block;
+    position: relative;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: currentColor;
+    box-shadow: 0 0 13px currentColor;
+    transition: background 0.6s, box-shadow 0.6s;
+  }
+  .radar-blip.is-core .radar-blip-dot { width: 15px; height: 15px; }
+  .radar-blip.is-small .radar-blip-dot { width: 9px; height: 9px; }
+  .radar--sm .radar-blip-dot { width: 11px; height: 11px; }
+  .radar--sm .radar-blip.is-core .radar-blip-dot { width: 14px; height: 14px; }
+
+  .radar-blip-pulse {
+    position: absolute;
+    inset: -5px;
+    border: 1px solid currentColor;
+    border-radius: 50%;
+    opacity: 0;
+  }
+
+  .radar-blip-lock {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 22px;
+    height: 22px;
+    transform: translate(-50%, -50%);
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+  .radar-blip-lock::before,
+  .radar-blip-lock::after {
+    content: "";
+    position: absolute;
+    width: 6px;
+    height: 6px;
+    border: 2px solid var(--sonar);
+  }
+  .radar-blip-lock::before { top: 0; left: 0; border-right: none; border-bottom: none; }
+  .radar-blip-lock::after { bottom: 0; right: 0; border-left: none; border-top: none; }
+  .radar-blip.is-locking .radar-blip-lock { opacity: 1; }
+
+  .radar-blip-label {
+    position: absolute;
+    left: 18px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-family: var(--font-ibm-plex-mono), monospace;
+    font-size: 9.5px;
+    color: currentColor;
+    white-space: nowrap;
+    letter-spacing: 0.04em;
+    line-height: 1.3;
+  }
+  .radar-blip-label b { display: block; font-weight: 500; }
+  .radar-blip-label span { color: var(--sonar-muted); font-size: 8px; }
+  .radar--sm .radar-blip-label { font-size: 8px; left: 15px; }
+}
+
+/* Radar-specific edge dash drift (the only motion not shared with Phase A). */
+@keyframes radar-dash {
+  to { stroke-dashoffset: -10; }
+}
+
+/* Rotating-stat fade (the stat block swaps content per scroll phase). */
+@keyframes stat-fade {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+.stat-fade {
+  animation: stat-fade 0.5s ease both;
 }

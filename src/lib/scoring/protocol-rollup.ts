@@ -73,12 +73,27 @@ function minGrade(grades: ReadonlyArray<Grade>): Grade {
   );
 }
 
+/**
+ * §6.2 eligibility rule — a Contract contributes to the protocol composite
+ * only when it has BOTH a non-null `compositeGrade` AND a non-null
+ * `compositeScore` (FAILED / SKIPPED Contracts have null and are excluded).
+ *
+ * Exported as the single source of truth so other consumers (e.g. the Phase E
+ * radar mapper) mirror the exact same rule and the two can't drift.
+ */
+export function isGradedContract(c: {
+  compositeScore: number | null;
+  compositeGrade: string | null;
+}): boolean {
+  return c.compositeGrade !== null && c.compositeScore !== null;
+}
+
 export function rollupProtocolComposite(
   contracts: ReadonlyArray<ProtocolRollupContract>,
 ): ProtocolRollupResult {
   const graded = contracts.filter(
     (c): c is ProtocolRollupContract & { compositeGrade: Grade; compositeScore: number } =>
-      c.compositeGrade !== null && c.compositeScore !== null,
+      isGradedContract(c),
   );
 
   if (graded.length === 0) {

@@ -14,6 +14,7 @@ import {
 } from "@/hooks/useScanPolling"
 
 import { ScanHero } from "./ScanHero"
+import { ScanRadar } from "./ScanRadar"
 import { ProtocolGraphDisclaimer } from "./ProtocolGraphDisclaimer"
 import { CompositePanel } from "./CompositePanel"
 import { ContractList } from "./ContractList"
@@ -75,6 +76,10 @@ export function ScanShell({ scan, tier }: ScanShellProps) {
     <div className="space-y-6">
       <ScanHero scan={scan} />
 
+      {/* Phase E.2: star-radar of the submitted contracts, above the composite.
+          Static (no scroll phases). The disclaimer below keeps the scope honest. */}
+      <ScanRadar contracts={mergedContracts} />
+
       <ProtocolGraphDisclaimer contractCount={mergedContracts.length} />
 
       <CompositePanel scan={scan} currentStatus={currentStatus} />
@@ -97,7 +102,7 @@ export function ScanShell({ scan, tier }: ScanShellProps) {
         <p
           role="status"
           aria-live="polite"
-          className="text-center text-xs font-mono text-sev-medium"
+          className="text-center text-xs font-data text-amber"
         >
           Connection issues detected. Retrying…
         </p>

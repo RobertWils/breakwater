@@ -2,8 +2,10 @@
 
 import { useEffect } from "react"
 import Link from "next/link"
-import { Header } from "@/components/landing/Header"
 import { Footer } from "@/components/landing/Footer"
+import { AbyssBackground } from "@/components/shell/AbyssBackground"
+import { ShoreWater } from "@/components/shell/ShoreWater"
+import { SonarHeader } from "@/components/shell/SonarHeader"
 
 export default function ScanError({
   error,
@@ -17,30 +19,32 @@ export default function ScanError({
   }, [error])
 
   return (
-    <>
-      <Header />
-      <main className="min-h-screen py-24">
-        <div className="container mx-auto px-6 max-w-2xl text-center">
-          <div className="glass-card p-12 space-y-6">
-            <p className="font-mono text-sm text-sev-critical uppercase tracking-wider">
+    <div className="sonar-theme relative min-h-screen overflow-x-hidden">
+      <AbyssBackground />
+      <ShoreWater />
+      <SonarHeader />
+      <main className="relative z-10 px-5 pb-20 pt-28">
+        <div className="container mx-auto max-w-2xl text-center">
+          <div className="sonar-card p-12 space-y-6">
+            <p className="font-data text-sm text-red uppercase tracking-wider">
               Error loading scan
             </p>
-            <h1 className="text-3xl font-semibold text-primary">
+            <h1 className="font-display text-3xl font-semibold text-foam">
               Something went wrong
             </h1>
-            <p className="text-muted">
+            <p className="text-sonar-muted">
               We couldn&apos;t load this scan. This may be a temporary issue.
             </p>
             <div className="flex gap-4 justify-center">
               <button
                 onClick={reset}
-                className="px-6 py-3 bg-teal text-[#0C1C3A] font-semibold rounded-lg hover:bg-teal/90 transition-colors"
+                className="sonar-btn rounded-lg px-6 py-3 font-bold"
               >
                 Try again
               </button>
               <Link
                 href="/"
-                className="px-6 py-3 bg-elevated/50 text-primary border border-subtle rounded-lg hover:bg-elevated transition-colors"
+                className="rounded-lg border border-sonar/30 px-6 py-3 font-data text-sm uppercase tracking-[0.08em] text-sonar-muted transition-colors hover:text-sonar"
               >
                 Back to home
               </Link>
@@ -48,7 +52,9 @@ export default function ScanError({
           </div>
         </div>
       </main>
-      <Footer />
-    </>
+      <div className="relative z-10 bg-abyss">
+        <Footer />
+      </div>
+    </div>
   )
 }
