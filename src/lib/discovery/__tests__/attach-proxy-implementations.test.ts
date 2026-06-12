@@ -191,6 +191,32 @@ describe("isContractScanAddressUniqueViolation (narrow P2002 scoping)", () => {
     ).toBe(true);
   });
 
+  it("matches regardless of field order (set equality, not positional)", () => {
+    expect(isContractScanAddressUniqueViolation(p2002(["address", "scanId"]))).toBe(true);
+  });
+
+  // Codex point 1 — the substring trap. EXACT match must reject these:
+  it("does NOT match a target with EXTRA fields beyond scanId+address", () => {
+    expect(
+      isContractScanAddressUniqueViolation(p2002(["scanId", "address", "other"])),
+    ).toBe(false);
+  });
+
+  it("does NOT match a different constraint NAME that merely contains both words", () => {
+    expect(
+      isContractScanAddressUniqueViolation(p2002("SomeOther_scanId_address_extra_key")),
+    ).toBe(false);
+  });
+
+  it("does NOT match unexpected target shapes (empty array, undefined)", () => {
+    expect(isContractScanAddressUniqueViolation(p2002([]))).toBe(false);
+    const noTarget = new Prisma.PrismaClientKnownRequestError("Unique failed", {
+      code: "P2002",
+      clientVersion: "5.22.0",
+    });
+    expect(isContractScanAddressUniqueViolation(noTarget)).toBe(false);
+  });
+
   it("does NOT match P2002 on a DIFFERENT unique (idempotencyKey)", () => {
     expect(isContractScanAddressUniqueViolation(p2002(["idempotencyKey"]))).toBe(false);
   });

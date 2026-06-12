@@ -205,24 +205,43 @@ export async function discoverAndAttach(
 
 // ─── Race-safe attach ─────────────────────────────────────────────────────────
 
+/** Exact field set of Contract's @@unique([scanId, address]). */
+const SCAN_ADDRESS_FIELDS = ["scanId", "address"] as const;
+/** The constraint name Prisma generates for that compound unique. */
+const SCAN_ADDRESS_CONSTRAINT = "Contract_scanId_address_key";
+
 /**
  * True ONLY for a Prisma P2002 unique-constraint violation on Contract's
- * `@@unique([scanId, address])`. NARROW BY DESIGN (Codex claim 5): a concurrent
- * race where the loser hits this constraint is benign (the row exists, the
- * attach effectively succeeded). Any OTHER P2002 (a different unique) or any
- * non-P2002 error is a real failure that must still trigger the degraded
- * fallback — so we match this one constraint, not "any unique violation".
+ * `@@unique([scanId, address])`. NARROW BY DESIGN (Codex claim 5 + point 1): a
+ * concurrent race where the loser hits THIS constraint is benign (the row
+ * exists, the attach effectively succeeded). Any OTHER P2002 (a different
+ * unique) or any non-P2002 error is a real failure that must still trigger the
+ * degraded fallback.
  *
  * `meta.target` is the field list (`["scanId","address"]`) or the constraint
- * name (`"Contract_scanId_address_key"`) depending on connector/version; both
- * name BOTH columns, and no other unique in the schema names both.
+ * name (`"Contract_scanId_address_key"`) depending on connector/version. The
+ * match is EXACT, not substring: the array must be precisely those two fields
+ * (any order, no extras), or the string must equal the constraint name. This
+ * closes the substring trap where a future constraint whose name merely
+ * CONTAINS both words (e.g. `SomeOther_scanId_address_extra_key`, or a target
+ * `["scanId","address","other"]`) would be wrongly swallowed. Unexpected
+ * shapes (undefined / empty / non-array-non-string) return false (propagate).
  */
 export function isContractScanAddressUniqueViolation(err: unknown): boolean {
   if (!(err instanceof Prisma.PrismaClientKnownRequestError)) return false;
   if (err.code !== "P2002") return false;
   const target = err.meta?.target;
-  const flat = Array.isArray(target) ? target.join(",") : String(target ?? "");
-  return flat.includes("scanId") && flat.includes("address");
+  if (Array.isArray(target)) {
+    // Exact set equality: exactly scanId + address, any order, NO extras.
+    return (
+      target.length === SCAN_ADDRESS_FIELDS.length &&
+      SCAN_ADDRESS_FIELDS.every((field) => target.includes(field))
+    );
+  }
+  if (typeof target === "string") {
+    return target === SCAN_ADDRESS_CONSTRAINT;
+  }
+  return false;
 }
 
 /**
