@@ -48,6 +48,22 @@ interface Summary {
   scansChecked: number;
   scansMatched: number;
   scansMismatched: number;
+  /**
+   * Rows where worstContractScore was EXCLUDED from the diff for the legacy
+   * reason (graded scan finalised before the column existed). Reported so an
+   * exclusion is visible, not a silently swallowed mismatch.
+   */
+  legacyFieldsSkipped: number;
+  // Coverage diagnostics (Plan 05 F1.2 point 4 — the 11-vs-26 question):
+  /** All scans, any status (to reconcile against the checked count). */
+  totalScans: number;
+  /**
+   * Graded scans (compositeGrade non-null) that have NO completedAt and so
+   * fall OUTSIDE the completedAt filter. markComplete writes grade +
+   * completedAt atomically, so this is expected to be 0; a positive value is
+   * a SECOND gap — scans-with-grades the harness would skip.
+   */
+  gradedButNotCompleted: number;
 }
 
 async function run(): Promise<Summary> {
@@ -55,7 +71,19 @@ async function run(): Promise<Summary> {
     scansChecked: 0,
     scansMatched: 0,
     scansMismatched: 0,
+    legacyFieldsSkipped: 0,
+    totalScans: 0,
+    gradedButNotCompleted: 0,
   };
+
+  // Coverage diagnostics first: does the completedAt filter drop any scan
+  // that actually carries a grade? (Reconciles the 26-backfilled vs
+  // 11-checked discrepancy: total − checked = scans without completedAt;
+  // gradedButNotCompleted isolates whether any of those have grades.)
+  summary.totalScans = await prisma.scan.count();
+  summary.gradedButNotCompleted = await prisma.scan.count({
+    where: { completedAt: null, compositeGrade: { not: null } },
+  });
 
   let cursor: string | undefined;
   for (;;) {
@@ -119,13 +147,20 @@ async function run(): Promise<Summary> {
         isPartialCoverage: scan.isPartialCoverage,
       };
 
-      const diffs = diffRollupVsPersisted(computed, persisted);
+      const { diffs, legacyWorstScoreSkipped } = diffRollupVsPersisted(
+        computed,
+        persisted,
+      );
+      if (legacyWorstScoreSkipped) summary.legacyFieldsSkipped += 1;
+
       if (diffs.length === 0) {
+        // A legacy row still counts as matched on its four comparable fields
+        // — the worstContractScore exclusion is reported via legacyFieldsSkipped.
         summary.scansMatched += 1;
       } else {
         summary.scansMismatched += 1;
         console.error(
-          `[verify-scorer-noop] MISMATCH scan ${scan.id}:\n` +
+          `[verify-scorer-noop] MISMATCH scan ${scan.id}${legacyWorstScoreSkipped ? " (legacy worstContractScore excluded)" : ""}:\n` +
             diffs
               .map(
                 (d) =>
@@ -165,6 +200,17 @@ async function main() {
     process.exit(1);
   }
 
+  // Second-gap gate (point 4): graded scans without completedAt carry grades
+  // but fall outside the filter. markComplete writes them atomically, so this
+  // should be 0; a positive value means the harness silently skips
+  // scans-with-grades and must be investigated before trusting an "OK".
+  if (summary.gradedButNotCompleted > 0) {
+    console.error(
+      `[verify-scorer-noop] SECOND GAP: ${summary.gradedButNotCompleted} graded scan(s) have no completedAt — they carry grades but the filter skips them. Investigate the persist path before trusting this run.`,
+    );
+    process.exit(1);
+  }
+
   if (summary.scansMismatched > 0) {
     console.error(
       `[verify-scorer-noop] ${summary.scansMismatched} scan(s) DIFFER — the reconciliation is NOT a no-op. Investigate before merge.`,
@@ -172,7 +218,11 @@ async function main() {
     process.exit(1);
   }
   console.log(
-    `[verify-scorer-noop] OK — all ${summary.scansMatched} finalised scans are bit-identical.`,
+    `[verify-scorer-noop] OK — ${summary.scansMatched} finalised scans bit-identical` +
+      (summary.legacyFieldsSkipped > 0
+        ? ` (${summary.legacyFieldsSkipped} legacy row(s) had worstContractScore excluded as a pre-field column — compared on the other four fields)`
+        : "") +
+      ".",
   );
 }
 
