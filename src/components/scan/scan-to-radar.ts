@@ -4,16 +4,23 @@ import { isGradedContract } from "@/lib/scoring/protocol-rollup"
 import { isKnownInfra } from "@/lib/scoring/known-infra"
 
 /**
- * Plan 04 Phase E.1 — map a real ScanResponse to the radar's RadarGraph as a
- * STAR: the primary contract at the centre, every other (related) contract on
- * a ring, with one synthetic edge primary → related each. Edge direction
- * follows the component convention (`from` leans on `to`; contagion flows
- * `to → from`), so the primary inherits the worst related score — exactly the
- * existing worst-wins protocol scoring (see scan-to-radar.test).
+ * Plan 04 Phase E.1 — map a real ScanResponse to the radar's RadarGraph: the
+ * primary contract at the centre, every other (related) contract on a ring.
+ * Edge direction follows the component convention (`from` leans on `to`;
+ * contagion flows `to → from`).
  *
- * Edges do not exist in the scan data (E.0 recon); this star is honest about
- * that — it shows only the user-supplied contracts and the primary depending
- * on them, NOT multi-hop dependency analysis.
+ * Plan 05 Fase 1.3 — edges are now READ from the scan's persisted ACTIVE
+ * depends-on edges (the synthetic-star rows Scope 1 backfilled, mapped 1-to-1:
+ * ContractEdge.fromContractId → RadarEdge.from, toContractId → to; RadarNode.id
+ * = Contract row id). The mapper no longer synthesises the star as its primary
+ * path — it reads the real graph, which resolveContagion already consumes.
+ *
+ * Fallback: when a scan has NO persisted ACTIVE edges (a scan created after the
+ * Scope-1 backfill — submitScan doesn't write edges until Fase 2 — or an N=1
+ * scan with no siblings) the mapper SYNTHESISES the star, exactly as before.
+ * The backfilled synthetic-star edges are byte-identical to that synthesis, so
+ * an existing scan renders the same nodes + edges + grade before and after the
+ * swap; the fallback guarantees correctness for scans that don't yet have edges.
  */
 
 const RING_RADIUS = 32 // percent of the scope, from the centre
@@ -72,14 +79,17 @@ function ringPosition(index: number, count: number): { x: number; y: number } {
   }
 }
 
-export function buildStarGraph(scan: { contracts: ContractResponse[] }): RadarGraph {
+export function buildStarGraph(scan: {
+  contracts: ContractResponse[]
+  /** Persisted ACTIVE depends-on edges (Contract.id → Contract.id). */
+  edges?: { from: string; to: string }[]
+}): RadarGraph {
   const contracts = scan.contracts
   const primary = contracts.find((c) => c.isPrimary) ?? contracts[0]
 
   const nodes: RadarNode[] = []
-  const edges: RadarGraph["edges"] = []
 
-  if (!primary) return { nodes, edges }
+  if (!primary) return { nodes, edges: [] }
 
   nodes.push({
     id: primary.id,
@@ -103,9 +113,17 @@ export function buildStarGraph(scan: { contracts: ContractResponse[] }): RadarGr
       position: ringPosition(i, related.length),
       small: true,
     })
-    // primary leans on each related → contagion flows related → primary.
-    edges.push({ from: primary.id, to: c.id })
   })
+
+  // Plan 05 Fase 1.3 — read the persisted ACTIVE edges (1-to-1 map); fall back
+  // to synthesising the star ONLY when none exist. The backfilled synthetic
+  // star is `primary → each related`, byte-identical to the fallback, so an
+  // existing scan is unchanged. resolveContagion ignores edges that reference
+  // ids outside the node set, so the mapping needs no extra filtering.
+  const edges: RadarGraph["edges"] =
+    scan.edges && scan.edges.length > 0
+      ? scan.edges.map((e) => ({ from: e.from, to: e.to }))
+      : related.map((c) => ({ from: primary.id, to: c.id }))
 
   return { nodes, edges }
 }

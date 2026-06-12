@@ -8,16 +8,24 @@ import type { ContractResponse } from "@/lib/scan-response"
  * phases — all nodes shown). Contagion up the star reproduces the worst-wins
  * protocol score: the primary inherits the worst related score.
  *
- * Honest about scope: it shows ONLY the submitted contracts and the primary
- * depending on them — no multi-hop dependency analysis (edges don't exist in
- * the data; the ProtocolGraphDisclaimer below says discovery is on the
- * roadmap, and this visualization must not contradict it).
+ * Plan 05 Fase 1.3 — the edge topology is the scan's persisted ACTIVE
+ * depends-on edges (passed in via `edges`), read by buildStarGraph instead of
+ * synthesised. Today those are the Scope-1 synthetic-star rows (primary →
+ * each related), so the picture is unchanged; it generalises to real multi-hop
+ * graphs once Fase 2 discovers edges. When a scan has no persisted edges,
+ * buildStarGraph falls back to synthesising the star.
  *
  * Responsive: a desktop-sized radar (lg) and a mobile-sized one (sm); only one
  * shows per breakpoint so the square scope never overflows a narrow viewport.
  */
-export function ScanRadar({ contracts }: { contracts: ContractResponse[] }) {
-  const graph = buildStarGraph({ contracts })
+export function ScanRadar({
+  contracts,
+  edges,
+}: {
+  contracts: ContractResponse[]
+  edges?: { from: string; to: string }[]
+}) {
+  const graph = buildStarGraph({ contracts, edges })
   if (graph.nodes.length === 0) return null
 
   return (

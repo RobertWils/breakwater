@@ -12,6 +12,16 @@ import type {
 
 export type VisibilityTier = "unauth" | "email" | "paid";
 
+/**
+ * Plan 05 Fase 1.3 — a directed depends-on edge between two Contract rows in
+ * the scan, mapped 1-to-1 from an ACTIVE ContractEdge row (fromContractId →
+ * from, toContractId → to). Both ids are Contract row ids (= RadarNode ids).
+ */
+export interface ContractEdgeResponse {
+  from: string;
+  to: string;
+}
+
 export interface ScanResponse {
   id: string;
   status: ScanStatus;
@@ -54,6 +64,14 @@ export interface ScanResponse {
    */
   contracts: ContractResponse[];
   findings: FindingResponse[];
+  /**
+   * Plan 05 Fase 1.3 — the scan's persisted ACTIVE depends-on edges, read by
+   * the radar (buildStarGraph) instead of synthesising a star. Optional: a
+   * scan with no persisted edges (created after the Scope-1 backfill, or N=1)
+   * omits it / sends `[]`, and the radar falls back to synthesising the star
+   * — byte-identical for those shapes.
+   */
+  edges?: ContractEdgeResponse[];
   // NO tier field
   // NO top-level hiddenFindingsCount (per-module in ModuleRunResponse)
 }
@@ -205,6 +223,24 @@ export async function getScan(params: {
     tier: params.tier,
   });
 
+  // Plan 05 Fase 1.3 — load this scan's ACTIVE depends-on edges (the
+  // synthetic-star rows Scope 1 backfilled; real discovered edges in Fase 2).
+  // Read-only — no edges are written here. Scoped to the scan via the
+  // fromContract relation (Contract.id is scan-specific). Empty for scans
+  // created after the backfill or N=1 scans; the radar falls back to the star.
+  const edgeRows = await prisma.contractEdge.findMany({
+    where: {
+      status: "ACTIVE",
+      edgeKind: "DEPENDS_ON",
+      fromContract: { scanId: scan.id },
+    },
+    select: { fromContractId: true, toContractId: true },
+  });
+  const edges: ContractEdgeResponse[] = edgeRows.map((e) => ({
+    from: e.fromContractId,
+    to: e.toContractId,
+  }));
+
   return {
     id: scan.id,
     status: scan.status,
@@ -228,6 +264,7 @@ export async function getScan(params: {
     },
     contracts,
     findings,
+    edges,
   };
 }
 

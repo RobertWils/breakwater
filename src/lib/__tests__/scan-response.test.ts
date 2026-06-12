@@ -13,6 +13,10 @@ vi.mock("@/lib/prisma", () => ({
     scan: {
       findUnique: vi.fn(),
     },
+    // Plan 05 Fase 1.3 — getScan now loads the scan's ACTIVE depends-on edges.
+    contractEdge: {
+      findMany: vi.fn(),
+    },
   },
 }));
 
@@ -28,9 +32,13 @@ import {
 import type { Finding, ModuleRun } from "@prisma/client";
 
 const mockFindUnique = prisma.scan.findUnique as ReturnType<typeof vi.fn>;
+const mockEdgeFindMany = prisma.contractEdge.findMany as ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default: no persisted edges (the radar falls back to the synthetic star).
+  // Tests that exercise edge-reading override this with mockResolvedValueOnce.
+  mockEdgeFindMany.mockResolvedValue([]);
 });
 
 // ── Fixture helpers ──────────────────────────────────────────────────────────
@@ -382,6 +390,42 @@ describe("getScan", () => {
     expect(result!.contracts).toHaveLength(1);
     expect(result!.contracts[0].modules).toHaveLength(1);
     expect(result!.findings).toHaveLength(1);
+  });
+
+  it("Plan 05 Fase 1.3: maps the scan's ACTIVE depends-on edges into response.edges", async () => {
+    const scanRow = makeScanRow({
+      contracts: [makeContractRow({ moduleRuns: [makeModuleRun()], findings: [] })],
+      findings: [],
+    });
+    mockFindUnique.mockResolvedValueOnce(scanRow);
+    mockEdgeFindMany.mockResolvedValueOnce([
+      { fromContractId: "c-primary", toContractId: "c-a" },
+      { fromContractId: "c-primary", toContractId: "c-b" },
+    ]);
+
+    const result = await getScan({ scanId: "scan-abc", tier: "email" });
+
+    expect(result!.edges).toEqual([
+      { from: "c-primary", to: "c-a" },
+      { from: "c-primary", to: "c-b" },
+    ]);
+    // Read-only, scoped to ACTIVE DEPENDS_ON edges for this scan.
+    expect(mockEdgeFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ status: "ACTIVE", edgeKind: "DEPENDS_ON" }),
+      }),
+    );
+  });
+
+  it("Plan 05 Fase 1.3: edges is [] when the scan has no persisted edges", async () => {
+    const scanRow = makeScanRow({
+      contracts: [makeContractRow({ moduleRuns: [makeModuleRun()], findings: [] })],
+      findings: [],
+    });
+    mockFindUnique.mockResolvedValueOnce(scanRow);
+    // mockEdgeFindMany defaults to [] (beforeEach)
+    const result = await getScan({ scanId: "scan-abc", tier: "email" });
+    expect(result!.edges).toEqual([]);
   });
 
   it("unauth tier: findings shaped as teaser, hiddenFindingsCount on per-Contract module (Phase G.6 — nested under contracts[i].modules)", async () => {

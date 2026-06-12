@@ -78,7 +78,7 @@ export function ScanShell({ scan, tier }: ScanShellProps) {
 
       {/* Phase E.2: star-radar of the submitted contracts, above the composite.
           Static (no scroll phases). The disclaimer below keeps the scope honest. */}
-      <ScanRadar contracts={mergedContracts} />
+      <ScanRadar contracts={mergedContracts} edges={scan.edges} />
 
       <ProtocolGraphDisclaimer contractCount={mergedContracts.length} />
 

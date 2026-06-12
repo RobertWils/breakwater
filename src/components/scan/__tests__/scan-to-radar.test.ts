@@ -239,3 +239,61 @@ describe("star-contagion ≡ worst-wins (the equivalence check)", () => {
     expect(resolved.get("weird")).toBeNull()
   })
 })
+
+describe("buildStarGraph — Fase 1.3 reads persisted edges (with synth fallback)", () => {
+  const contracts = [
+    contract("p", "A", { isPrimary: true }),
+    contract("a", "A"),
+    contract("b", "F"),
+  ]
+  // The synthetic-star edges Scope 1 backfilled: primary → each related, in
+  // related order.
+  const syntheticStar = [
+    { from: "p", to: "a" },
+    { from: "p", to: "b" },
+  ]
+
+  it("reading the backfilled synthetic-star edges produces the IDENTICAL graph as synthesising (the swap's safety property)", () => {
+    const synthesised = buildStarGraph({ contracts }) // no edges → fallback synth
+    const read = buildStarGraph({ contracts, edges: syntheticStar }) // read persisted
+    expect(read).toEqual(synthesised)
+    // identical graph ⇒ identical resolver output
+    expect(Object.fromEntries(resolveContagion(read))).toEqual(
+      Object.fromEntries(resolveContagion(synthesised)),
+    )
+  })
+
+  it("reads a real multi-hop topology (p→a→b) instead of synthesising a star", () => {
+    const graph = buildStarGraph({
+      contracts,
+      edges: [
+        { from: "p", to: "a" },
+        { from: "a", to: "b" }, // b reachable via a, NOT a direct primary edge
+      ],
+    })
+    expect(graph.edges).toEqual([
+      { from: "p", to: "a" },
+      { from: "a", to: "b" },
+    ])
+    // nodes are unchanged by the edge source
+    expect(graph.nodes.map((n) => n.id).sort()).toEqual(["a", "b", "p"])
+    // contagion still folds through the chain: b unsafe → primary unsafe
+    expect(resolveContagion(graph).get("p")).toBe("unsafe")
+  })
+
+  it("falls back to synthesis when edges is an empty array (scan created after the backfill)", () => {
+    const synthesised = buildStarGraph({ contracts })
+    const emptyEdges = buildStarGraph({ contracts, edges: [] })
+    expect(emptyEdges).toEqual(synthesised)
+    expect(emptyEdges.edges).toEqual([
+      { from: "p", to: "a" },
+      { from: "p", to: "b" },
+    ])
+  })
+
+  it("N=1 (primary only) yields no edges whether reading or synthesising", () => {
+    const single = [contract("solo", "A", { isPrimary: true })]
+    expect(buildStarGraph({ contracts: single }).edges).toEqual([])
+    expect(buildStarGraph({ contracts: single, edges: [] }).edges).toEqual([])
+  })
+})
