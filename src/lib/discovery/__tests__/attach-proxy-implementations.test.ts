@@ -9,16 +9,27 @@
  * + AUTO).
  */
 
+import { Prisma } from "@prisma/client";
 import { describe, expect, it } from "vitest";
 
 import {
+  attachWithRaceTolerance,
   buildAttachedContractData,
   buildModuleRunInputs,
   discoverAndAttach,
+  isContractScanAddressUniqueViolation,
   selectImplsToAttach,
   type ManualContract,
   type ProxyAttachDeps,
 } from "../attach-proxy-implementations";
+
+function p2002(target: string | string[]): Prisma.PrismaClientKnownRequestError {
+  return new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+    code: "P2002",
+    clientVersion: "5.22.0",
+    meta: { target },
+  });
+}
 
 describe("selectImplsToAttach (pure)", () => {
   it("returns new impls lowercased, dropping nulls", () => {
@@ -164,5 +175,84 @@ describe("discoverAndAttach (orchestrator)", () => {
     const res = await discoverAndAttach(w.deps, "s1");
     expect(res).toEqual({ probed: 0, attached: [] });
     expect(w.probed).toEqual([]);
+  });
+});
+
+// ─── Codex claim 5: race-safe idempotency ──────────────────────────────────
+
+describe("isContractScanAddressUniqueViolation (narrow P2002 scoping)", () => {
+  it("matches P2002 on the (scanId, address) field list", () => {
+    expect(isContractScanAddressUniqueViolation(p2002(["scanId", "address"]))).toBe(true);
+  });
+
+  it("matches P2002 on the named (scanId, address) constraint", () => {
+    expect(
+      isContractScanAddressUniqueViolation(p2002("Contract_scanId_address_key")),
+    ).toBe(true);
+  });
+
+  it("does NOT match P2002 on a DIFFERENT unique (idempotencyKey)", () => {
+    expect(isContractScanAddressUniqueViolation(p2002(["idempotencyKey"]))).toBe(false);
+  });
+
+  it("does NOT match P2002 on address alone (not the compound)", () => {
+    expect(isContractScanAddressUniqueViolation(p2002(["address"]))).toBe(false);
+  });
+
+  it("does NOT match a non-P2002 Prisma error", () => {
+    const e = new Prisma.PrismaClientKnownRequestError("Record not found", {
+      code: "P2025",
+      clientVersion: "5.22.0",
+    });
+    expect(isContractScanAddressUniqueViolation(e)).toBe(false);
+  });
+
+  it("does NOT match a generic error", () => {
+    expect(isContractScanAddressUniqueViolation(new Error("rpc down"))).toBe(false);
+  });
+});
+
+describe("attachWithRaceTolerance", () => {
+  it("returns attached:true when the attach succeeds", async () => {
+    expect(await attachWithRaceTolerance(async () => {})).toEqual({ attached: true });
+  });
+
+  it("swallows the benign (scanId,address) P2002 race as a no-op (no throw)", async () => {
+    const res = await attachWithRaceTolerance(async () => {
+      throw p2002(["scanId", "address"]);
+    });
+    expect(res).toEqual({ attached: false });
+  });
+
+  it("rethrows any OTHER error so the degraded-fallback still fires", async () => {
+    await expect(
+      attachWithRaceTolerance(async () => {
+        throw p2002(["idempotencyKey"]); // a different unique → real failure
+      }),
+    ).rejects.toBeInstanceOf(Prisma.PrismaClientKnownRequestError);
+    await expect(
+      attachWithRaceTolerance(async () => {
+        throw new Error("rpc down");
+      }),
+    ).rejects.toThrow("rpc down");
+  });
+
+  it("RACE NO-OP: two attach attempts for the same scan/impl → one row, no throw", async () => {
+    // In-memory store standing in for @@unique([scanId, address]): the second
+    // create for the same key raises P2002, exactly as the DB would.
+    const store = new Set<string>();
+    const key = "s1|0ximpl";
+    const create = async () => {
+      if (store.has(key)) throw p2002(["scanId", "address"]);
+      store.add(key);
+    };
+
+    const r1 = await attachWithRaceTolerance(create); // winner
+    const r2 = await attachWithRaceTolerance(create); // racing loser
+
+    expect(r1).toEqual({ attached: true });
+    expect(r2).toEqual({ attached: false }); // benign no-op
+    expect(store.size).toBe(1); // exactly one row
+    // No throw ⇒ executeScan's wrapper never sets discoveryDegraded.
   });
 });

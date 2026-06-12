@@ -203,6 +203,48 @@ export async function discoverAndAttach(
   return { probed: manual.length, attached: toAttach };
 }
 
+// ─── Race-safe attach ─────────────────────────────────────────────────────────
+
+/**
+ * True ONLY for a Prisma P2002 unique-constraint violation on Contract's
+ * `@@unique([scanId, address])`. NARROW BY DESIGN (Codex claim 5): a concurrent
+ * race where the loser hits this constraint is benign (the row exists, the
+ * attach effectively succeeded). Any OTHER P2002 (a different unique) or any
+ * non-P2002 error is a real failure that must still trigger the degraded
+ * fallback — so we match this one constraint, not "any unique violation".
+ *
+ * `meta.target` is the field list (`["scanId","address"]`) or the constraint
+ * name (`"Contract_scanId_address_key"`) depending on connector/version; both
+ * name BOTH columns, and no other unique in the schema names both.
+ */
+export function isContractScanAddressUniqueViolation(err: unknown): boolean {
+  if (!(err instanceof Prisma.PrismaClientKnownRequestError)) return false;
+  if (err.code !== "P2002") return false;
+  const target = err.meta?.target;
+  const flat = Array.isArray(target) ? target.join(",") : String(target ?? "");
+  return flat.includes("scanId") && flat.includes("address");
+}
+
+/**
+ * Run an attach, treating ONLY the benign `(scanId, address)` unique race as a
+ * clean no-op (another run/transaction already attached this impl — the
+ * constraint held, so there is no double row and nothing to do). Any other
+ * error propagates so the caller's degraded-fallback fires. This makes the
+ * implementation as strong as the idempotency claim: clean no-op on retry AND
+ * on a concurrent race, with no spurious `discoveryDegraded`.
+ */
+export async function attachWithRaceTolerance(
+  doAttach: () => Promise<void>,
+): Promise<{ attached: boolean }> {
+  try {
+    await doAttach();
+    return { attached: true };
+  } catch (err) {
+    if (isContractScanAddressUniqueViolation(err)) return { attached: false };
+    throw err;
+  }
+}
+
 // ─── Live wiring (detectProxy + Prisma) ───────────────────────────────────────
 
 /**
@@ -242,23 +284,26 @@ export async function discoverAndAttachProxyImplementations(
       return result.proxyImplementation;
     },
     async attachImplementation({ scanId, address, chain }) {
-      await prisma.$transaction(async (tx) => {
-        // Idempotency backstop on @@unique([scanId, address]): a concurrent /
-        // retried attach that finds the row already present is a no-op.
-        const existing = await tx.contract.findUnique({
-          where: { scanId_address: { scanId, address } },
-          select: { id: true },
-        });
-        if (existing) return;
+      // Sequential-retry fast-path (findUnique) + concurrent-race tolerance
+      // (P2002 on @@unique([scanId, address]) → no-op). Both yield a clean
+      // no-op with no degraded flag; only a REAL failure propagates.
+      await attachWithRaceTolerance(() =>
+        prisma.$transaction(async (tx) => {
+          const existing = await tx.contract.findUnique({
+            where: { scanId_address: { scanId, address } },
+            select: { id: true },
+          });
+          if (existing) return;
 
-        const contract = await tx.contract.create({
-          data: buildAttachedContractData({ scanId, address, chain }),
-          select: { id: true },
-        });
-        await tx.moduleRun.createMany({
-          data: buildModuleRunInputs(scanId, contract.id, params.modulesEnabled),
-        });
-      });
+          const contract = await tx.contract.create({
+            data: buildAttachedContractData({ scanId, address, chain }),
+            select: { id: true },
+          });
+          await tx.moduleRun.createMany({
+            data: buildModuleRunInputs(scanId, contract.id, params.modulesEnabled),
+          });
+        }),
+      );
     },
     log: (line) => console.log(`[execute-scan] ${line}`),
   };
