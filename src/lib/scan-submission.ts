@@ -6,7 +6,6 @@
  * Step 12: return { scanId } 202.
  */
 
-import { createHash } from "crypto";
 import { prisma } from "@/lib/prisma";
 import { normalizeAddress, isValidAddress } from "@/lib/addresses";
 import { hashEmail, hashPayload } from "@/lib/hash";
@@ -14,6 +13,12 @@ import { cooldownKey as buildCooldownKey } from "@/lib/cooldown";
 import { inngest } from "@/lib/inngest/client";
 import { log } from "@/lib/logging";
 import { checkIpRateLimit, DEDUPE_WINDOW_MS } from "@/lib/rate-limit";
+import {
+  IMPLEMENTED_MODULES,
+  computeSkipReason,
+  generateIdempotencyKey,
+  type SkipReason,
+} from "@/lib/scan-modules";
 import { createScanAttempt } from "@/lib/scan-attempt";
 import { ScanErrors, ScanSubmissionError } from "@/lib/scan-submission/errors";
 import {
@@ -32,108 +37,13 @@ const SENTINEL_PAYLOAD_MALFORMED_JSON = "invalid:json";
 const SENTINEL_PAYLOAD_SCHEMA = "invalid:schema";
 const SENTINEL_PAYLOAD_ADDRESS = "invalid:address";
 
-/**
- * Modules that have an Inngest handler registered in this build.
- *
- * Plan 02 ships only GOVERNANCE. ORACLE / SIGNER / FRONTEND are
- * scheduled for Plan 03+. ModuleRun rows for unimplemented modules
- * are created as SKIPPED with `errorMessage = "module_not_implemented"`
- * so the dispatcher's `markComplete` step doesn't hang waiting for a
- * handler that doesn't exist (Phase H manual smoke surfaced the hang).
- *
- * H.9 N1: typed as `ReadonlySet<ModuleName>` (was `<string>`) so the
- * compiler catches a typo or stale enum value at the source of truth
- * rather than after a runtime mismatch.
- *
- * When implementing a new module in a future plan:
- *   1. Add its Inngest function in `src/lib/inngest/functions/`.
- *   2. Register it in `src/app/api/inngest/route.ts`.
- *   3. Add the ModuleName enum value to this set.
- *   4. Update `scan-submission-integration.test.ts` assertions.
- *   5. Optionally update the ModuleCard SKIPPED copy to differentiate
- *      "Not included" vs "Coming soon" (see Phase G visual-polish
- *      backlog in NOTES.md).
- *
- * Exported so the completeness unit test in
- * `src/lib/__tests__/scan-submission-modules.test.ts` can assert that
- * every ModuleName enum value is either implemented or explicitly
- * acknowledged as a Plan 03+ placeholder.
- */
-export const IMPLEMENTED_MODULES: ReadonlySet<ModuleName> = new Set<ModuleName>(
-  [ModuleName.GOVERNANCE],
-);
-
-/**
- * Discriminator for why a ModuleRun ships SKIPPED. `null` means the
- * row will ship QUEUED (no skip condition triggered).
- *
- * Plan 03 §4.2 adds `role_not_applicable_to_module` between the
- * `module_not_implemented` and `domain_required` priority levels.
- */
-export type SkipReason =
-  | "module_disabled_by_user"
-  | "module_not_implemented"
-  | "role_not_applicable_to_module"
-  | "domain_required"
-  | null;
-
-/**
- * Plan 03 §4.2 — applicable Contract roles per module. The GOVERNANCE
- * module skips TOKEN_CONTRACT (ERC-20 surface, not governance) and
- * DECLARED_BRIDGE (deferred to Plan 04 GOV-007). Future modules will
- * add their own entries here.
- */
-const APPLICABLE_ROLES_BY_MODULE: Record<ModuleName, ReadonlySet<ContractRole>> = {
-  [ModuleName.GOVERNANCE]: new Set<ContractRole>([
-    ContractRole.PRIMARY,
-    ContractRole.PROXY_IMPLEMENTATION,
-    ContractRole.DECLARED_MULTISIG,
-    ContractRole.TIMELOCK,
-    ContractRole.RELATED,
-  ]),
-  // ORACLE / SIGNER / FRONTEND are not yet implemented; their entries
-  // here are placeholders so the type is exhaustive. The
-  // module_not_implemented gate fires before the role check for these.
-  [ModuleName.ORACLE]: new Set<ContractRole>(),
-  [ModuleName.SIGNER]: new Set<ContractRole>(),
-  [ModuleName.FRONTEND]: new Set<ContractRole>(),
-};
-
-/**
- * H.9 N2: pure, exported priority-resolution for the skip reason on
- * a ModuleRun row. Priority order (first match wins):
- *   1. `module_disabled_by_user` — user explicit opt-out beats other
- *      reasons because their intent is the most useful audit signal.
- *   2. `module_not_implemented` — no Inngest handler; beats role and
- *      domain checks because "we cannot run this module at all" is a
- *      more fundamental reason than "we'd need different input."
- *   3. `role_not_applicable_to_module` — Plan 03 §4.2. The module is
- *      implemented but doesn't apply to this Contract's role (e.g.,
- *      GOVERNANCE on a TOKEN_CONTRACT or DECLARED_BRIDGE).
- *   4. `domain_required` — the FRONTEND-needs-domain case.
- *
- * Returns `null` when none of the four conditions trigger — the
- * caller seeds the row as QUEUED with `errorMessage: null`.
- *
- * Pure function with no IO — unit-testable without the integration
- * fixture cost. See `scan-submission-modules.test.ts`.
- */
-export function computeSkipReason(params: {
-  module: ModuleName;
-  role: ContractRole;
-  enabled: boolean;
-  implemented: boolean;
-  requiresDomain: boolean;
-  hasDomain: boolean;
-}): SkipReason {
-  if (!params.enabled) return "module_disabled_by_user";
-  if (!params.implemented) return "module_not_implemented";
-  if (!APPLICABLE_ROLES_BY_MODULE[params.module].has(params.role)) {
-    return "role_not_applicable_to_module";
-  }
-  if (params.requiresDomain && !params.hasDomain) return "domain_required";
-  return null;
-}
+// Plan 05 Fase 1.4 — the module-planning primitives moved to `scan-modules.ts`
+// (a light module with no zod/config/Inngest deps) so detect-and-attach can
+// reuse them without dragging the submission graph into executeScan. Re-exported
+// here (imported at the top) so existing importers of `@/lib/scan-submission`
+// are unaffected.
+export { IMPLEMENTED_MODULES, computeSkipReason, generateIdempotencyKey };
+export type { SkipReason };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -157,16 +67,6 @@ export function generateSlug(
   return `${chain.toLowerCase()}-${shortAddr}`.toLowerCase();
 }
 
-function generateIdempotencyKey(
-  scanId: string,
-  module: string,
-  contractId: string,
-): string {
-  const hourBucket = Math.floor(Date.now() / (60 * 60 * 1000));
-  return createHash("sha256")
-    .update(`${scanId}:${module}:${contractId}:${hourBucket}`)
-    .digest("hex");
-}
 
 // ─── Logging helpers (non-ACCEPTED outcomes) ──────────────────────────────────
 // Each writes one ScanAttempt row outside the main transaction.

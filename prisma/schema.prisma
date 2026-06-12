@@ -262,6 +262,12 @@ model Scan {
   // Contract coexists with ≥1 FAILED Contract. Implementation choice per
   // Plan 03 plan §20: two booleans rather than a partialReasons enum array.
   isPartialCoverage     Boolean              @default(false)
+  // Plan 05 Fase 1.4 — detect-and-attach degraded flag. Set true when the
+  // discovery/attach step hit a hard failure and the scan continued on the
+  // manual contracts only (one failing discovery must not sink a whole scan).
+  // A degraded scan must NOT imply full-coverage certainty; a later phase
+  // surfaces this as a UI badge. Additive, default false.
+  discoveryDegraded     Boolean              @default(false)
   expiresAt             DateTime
   createdAt             DateTime             @default(now())
   completedAt           DateTime?

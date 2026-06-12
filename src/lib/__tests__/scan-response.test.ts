@@ -664,6 +664,35 @@ describe("getScan — Phase G.1 multi-Contract path", () => {
     expect(primary.proxyImplementationWarning).toBeNull();
   });
 
+  it("proxyImplementationWarning: Plan 05 Fase 1.4 — an AUTO-attached PROXY_IMPLEMENTATION suppresses the nudge (detect-and-warn lapses)", async () => {
+    // detect-and-attach adds the impl as a PROXY_IMPLEMENTATION contract at the
+    // resolved address. deriveProxyImplementationWarning is data-driven on
+    // (address, role), so the nudge lapses for auto-attached impls exactly as
+    // it does for manually-submitted ones — no double "add it" prompt.
+    const scanRow = makeScanRow({
+      contracts: [
+        makeContractRow({
+          id: "c-primary",
+          address: "0xaaa",
+          role: "PRIMARY",
+          isPrimary: true,
+          governanceSnapshot: { proxyImplementation: "0xIMPL", scanId: "scan-abc" },
+        }),
+        makeContractRow({
+          id: "c-impl-auto",
+          address: "0ximpl", // the auto-attached sibling (normalised, lowercased)
+          role: "PROXY_IMPLEMENTATION",
+          isPrimary: false,
+        }),
+      ],
+    });
+    mockFindUnique.mockResolvedValueOnce(scanRow);
+
+    const result = await getScan({ scanId: "scan-abc", tier: "email" });
+    const primary = result!.contracts.find((c) => c.role === "PRIMARY")!;
+    expect(primary.proxyImplementationWarning).toBeNull();
+  });
+
   it("proxyImplementationWarning: non-proxy contract → warning null", async () => {
     const scanRow = makeScanRow({
       contracts: [

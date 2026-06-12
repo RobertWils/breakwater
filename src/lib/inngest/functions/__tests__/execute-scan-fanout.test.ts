@@ -52,6 +52,15 @@ vi.mock("@/lib/prisma", () => ({
   },
 }));
 
+// Plan 05 Fase 1.4 — executeScan now runs a detect-and-attach step before the
+// fan-out. These tests are about dispatch SHAPE, so stub discovery to a no-op
+// (its own behaviour is covered in attach-proxy-implementations.test.ts).
+vi.mock("@/lib/discovery/attach-proxy-implementations", () => ({
+  discoverAndAttachProxyImplementations: vi
+    .fn()
+    .mockResolvedValue({ probed: 0, attached: [] }),
+}));
+
 import { executeScan } from "../execute-scan";
 
 const SCAN_ID = "scan-fanout-1";

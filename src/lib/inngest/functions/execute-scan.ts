@@ -4,6 +4,7 @@ import {
   formatInngestDuration,
   getTimeoutPerModuleRunMs,
 } from "@/lib/config";
+import { discoverAndAttachProxyImplementations } from "@/lib/discovery/attach-proxy-implementations";
 import { isGovernanceModuleEnabled } from "@/lib/feature-flags";
 import { inngest } from "@/lib/inngest/client";
 import { prisma } from "@/lib/prisma";
@@ -310,6 +311,29 @@ export const executeScan = inngest.createFunction(
         status: "skipped",
         reason: markRunningResult.reason,
       } as const;
+    }
+
+    // Step 1.5 (Plan 05 Fase 1.4): detect-and-attach proxy implementations
+    // BEFORE the fan-out, so a discovered implementation is scanned in THIS
+    // scan, not the next (the timing bug we design out, not debug later). It
+    // adds the impl as a flat sibling Contract (+ a QUEUED GOVERNANCE
+    // ModuleRun) that the load-queued step below then picks up.
+    //
+    // Guarded (degraded-fallback): a hard failure marks the scan
+    // `discoveryDegraded` and continues on the manual contracts + existing
+    // detectors — one failing discovery must not sink a whole scan. The attach
+    // is idempotent, so an Inngest retry of the step never double-attaches.
+    try {
+      await step.run("discover-attach-proxy-implementations", () =>
+        discoverAndAttachProxyImplementations(prisma, { scanId, modulesEnabled }),
+      );
+    } catch {
+      await step.run("mark-discovery-degraded", () =>
+        prisma.scan.updateMany({
+          where: { id: scanId },
+          data: { discoveryDegraded: true },
+        }),
+      );
     }
 
     // Step 2: Decide whether the governance module dispatches at all.
