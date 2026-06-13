@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import type {
   Contract,
   ContractRole,
+  DiscoverySource,
   Finding,
   GovernanceSnapshot,
   ModuleRun,
@@ -65,6 +66,13 @@ export interface ScanResponse {
   contracts: ContractResponse[];
   findings: FindingResponse[];
   /**
+   * Plan 05 Fase 1.6 — true when a discovery source failed for this scan (it
+   * continued on what succeeded). Surfaced in the disclaimer so a degraded scan
+   * never implies full-coverage certainty. Optional for back-compat fixtures;
+   * `getScan` always populates it. Absent ⇒ not degraded.
+   */
+  discoveryDegraded?: boolean;
+  /**
    * Plan 05 Fase 1.3 — the scan's persisted ACTIVE depends-on edges, read by
    * the radar (buildStarGraph) instead of synthesising a star. Optional: a
    * scan with no persisted edges (created after the Scope-1 backfill, or N=1)
@@ -86,6 +94,13 @@ export interface ContractResponse {
   role: ContractRole;
   label: string | null;
   isPrimary: boolean;
+  /**
+   * Plan 05 Fase 1.6 — MANUAL (user-supplied) vs AUTO (auto-discovered). Drives
+   * the supplied-vs-discovered disclaimer copy + the radar's "discovered" hint.
+   * Optional only for back-compat with pre-discovery test fixtures; `getScan`
+   * always populates it. Absent ⇒ treated as supplied (MANUAL).
+   */
+  discoverySource?: DiscoverySource;
   compositeScore: number | null;
   compositeGrade: string | null;
   isPartialGrade: boolean;
@@ -252,6 +267,7 @@ export async function getScan(params: {
     compositeGrade: scan.compositeGrade,
     isPartialGrade: scan.isPartialGrade,
     isPartialCoverage: scan.isPartialCoverage,
+    discoveryDegraded: scan.discoveryDegraded,
     createdAt: scan.createdAt.toISOString(),
     completedAt: scan.completedAt?.toISOString() ?? null,
     expiresAt: scan.expiresAt.toISOString(),
@@ -469,6 +485,7 @@ function shapeContract(args: {
     role: contract.role,
     label: contract.label,
     isPrimary: contract.isPrimary,
+    discoverySource: contract.discoverySource,
     compositeScore: contract.compositeScore,
     compositeGrade: contract.compositeGrade,
     isPartialGrade: contract.isPartialGrade,

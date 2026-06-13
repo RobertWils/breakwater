@@ -1,49 +1,67 @@
+import type { ContractResponse } from "@/lib/scan-response"
+
 interface ProtocolGraphDisclaimerProps {
   /**
-   * Plan 03 §7.4 — drives the two-variant copy. >= 2 contracts
-   * renders the multi-Contract disclaimer ("Breakwater scanned N
-   * contract(s) you supplied … auto-discovery on the roadmap"); 0 or
-   * 1 renders the single-Contract nudge ("submit related contracts to
-   * expand the graph"). The graceful adapter synthesises a single
-   * contract for legacy scans, so contractCount is always >= 1 in
-   * practice; the 0-fallback is defensive.
+   * Plan 05 Fase 1.6 — the scan's contracts. Supplied vs auto-discovered is
+   * derived from each contract's `discoverySource` (AUTO = discovered), NOT
+   * hardcoded. Absent discoverySource is treated as supplied (MANUAL).
    */
-  contractCount: number
+  contracts: ReadonlyArray<Pick<ContractResponse, "discoverySource">>
+  /** True when a discovery source failed — surfaced so we never imply full coverage. */
+  discoveryDegraded?: boolean
 }
 
 /**
- * Plan 03 §7.4 — Protocol Graph disclaimer. Two-variant copy:
- *   - Multi-Contract (contractCount >= 2): explain that auto-discovery
- *     of related contracts (bridges, tokens, cross-chain twins) is on
- *     the roadmap.
- *   - Single-Contract (contractCount < 2): explain that the user can
- *     submit related contracts to expand the graph.
+ * Plan 05 Fase 1.6 — Protocol Graph disclaimer, rewritten for live discovery.
  *
- * Both variants stay non-alarming — subtle accent border, no icon —
- * since the message is informational. The component sits between
- * ScanHero and CompositePanel in ScanShell per spec.
+ * Honesty norm (security product): the old copy claimed "you supplied" for all
+ * contracts and "auto-discovery is on the roadmap" — both now false, since
+ * discovery runs and some contracts are auto-discovered. This states what was
+ * actually scanned (supplied + discovered, data-driven), what discovery does
+ * this phase (proxy implementations + direct structural dependencies, depth 1),
+ * what it does NOT yet do (transitive/multi-hop), and flags a degraded scan.
  */
-export function ProtocolGraphDisclaimer({ contractCount }: ProtocolGraphDisclaimerProps) {
-  const isMulti = contractCount >= 2
+export function ProtocolGraphDisclaimer({
+  contracts,
+  discoveryDegraded,
+}: ProtocolGraphDisclaimerProps) {
+  const discovered = contracts.filter((c) => c.discoverySource === "AUTO").length
+  const supplied = contracts.length - discovered
+
+  const suppliedPhrase = `${supplied} contract${supplied === 1 ? "" : "s"} you supplied`
+  const discoveredPhrase =
+    discovered > 0
+      ? ` plus ${discovered} automatically discovered ${
+          discovered === 1 ? "dependency" : "dependencies"
+        }`
+      : ""
 
   return (
     <aside
       role="note"
       aria-label="Scan scope notice"
-      className="rounded-lg border border-sonar/15 border-l-4 border-l-sonar bg-sonar/5 px-4 py-3 text-sm text-sonar-muted"
+      className="space-y-2 rounded-lg border border-sonar/15 border-l-4 border-l-sonar bg-sonar/5 px-4 py-3 text-sm text-sonar-muted"
     >
-      {isMulti ? (
-        <>
-          Breakwater scanned {contractCount} contracts you supplied for this
-          protocol. Automatic discovery of related contracts (bridges, token
-          contracts, cross-chain twins) is on the roadmap.
-        </>
-      ) : (
-        <>
-          Breakwater scans the submitted core contract address. Submit related
-          contracts (proxy implementations, multisigs, bridges) to expand the
-          graph.
-        </>
+      <p>
+        Breakwater scanned {suppliedPhrase}
+        {discoveredPhrase} for this protocol.
+      </p>
+      <p>
+        Automatic discovery follows proxy implementations and direct structural
+        dependencies (storage slots and on-chain getters), one level deep.
+        Transitive (multi-hop) dependency discovery is not yet included.
+      </p>
+      {discovered === 0 && (
+        <p>
+          Automatic discovery added no further contracts; you can also submit
+          related contracts manually to expand the graph.
+        </p>
+      )}
+      {discoveryDegraded && (
+        <p className="font-medium" style={{ color: "var(--amber)" }}>
+          A discovery source did not complete for this scan, so the dependency
+          set below may be incomplete.
+        </p>
       )}
     </aside>
   )

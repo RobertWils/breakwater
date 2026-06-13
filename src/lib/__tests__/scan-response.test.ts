@@ -428,6 +428,29 @@ describe("getScan", () => {
     expect(result!.edges).toEqual([]);
   });
 
+  it("Plan 05 Fase 1.6: surfaces per-contract discoverySource + scan.discoveryDegraded", async () => {
+    const scanRow = makeScanRow({
+      discoveryDegraded: true,
+      contracts: [
+        makeContractRow({ id: "c-primary", role: "PRIMARY", isPrimary: true, discoverySource: "MANUAL" }),
+        makeContractRow({
+          id: "c-auto",
+          role: "PROXY_IMPLEMENTATION",
+          isPrimary: false,
+          address: "0xauto",
+          discoverySource: "AUTO",
+        }),
+      ],
+    });
+    mockFindUnique.mockResolvedValueOnce(scanRow);
+
+    const result = await getScan({ scanId: "scan-abc", tier: "email" });
+
+    expect(result!.discoveryDegraded).toBe(true);
+    expect(result!.contracts.find((c) => c.id === "c-primary")!.discoverySource).toBe("MANUAL");
+    expect(result!.contracts.find((c) => c.id === "c-auto")!.discoverySource).toBe("AUTO");
+  });
+
   it("unauth tier: findings shaped as teaser, hiddenFindingsCount on per-Contract module (Phase G.6 — nested under contracts[i].modules)", async () => {
     const govFindings = [
       makeFinding({ id: "f1", module: "GOVERNANCE", publicRank: 1 }),

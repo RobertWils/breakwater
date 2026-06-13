@@ -297,3 +297,24 @@ describe("buildStarGraph — Fase 1.3 reads persisted edges (with synth fallback
     expect(buildStarGraph({ contracts: single, edges: [] }).edges).toEqual([])
   })
 })
+
+describe("buildStarGraph — Fase 1.6 node labels", () => {
+  it("labels related nodes (short address + role) and marks AUTO-discovered ones", () => {
+    const contracts: ContractResponse[] = [
+      contract("p", "A", { isPrimary: true }),
+      { ...contract("autoimpl", "C", { role: "PROXY_IMPLEMENTATION" }), discoverySource: "AUTO" },
+      { ...contract("manualtl", "B", { role: "TIMELOCK" }), discoverySource: "MANUAL" },
+    ]
+    const g = buildStarGraph({ contracts })
+    const byId = Object.fromEntries(g.nodes.map((n) => [n.id, n]))
+
+    // Related nodes are no longer bare dots: short-address label + role sublabel.
+    expect(byId.autoimpl!.label).toBeTruthy()
+    expect(byId.autoimpl!.sublabel).toBe("PROXY_IMPLEMENTATION · auto") // AUTO hint
+    expect(byId.manualtl!.label).toBeTruthy()
+    expect(byId.manualtl!.sublabel).toBe("TIMELOCK") // no auto hint for supplied
+    // primary unchanged
+    expect(byId.p!.isPrimary).toBe(true)
+    expect(byId.p!.label).toBeTruthy()
+  })
+})

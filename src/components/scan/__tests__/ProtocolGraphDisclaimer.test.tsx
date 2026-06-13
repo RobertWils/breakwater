@@ -2,54 +2,79 @@ import { afterEach, describe, expect, it } from "vitest"
 import { cleanup, render, screen } from "@testing-library/react"
 
 import { ProtocolGraphDisclaimer } from "../ProtocolGraphDisclaimer"
+import type { ContractResponse } from "@/lib/scan-response"
 
 afterEach(() => {
   cleanup()
 })
 
-describe("ProtocolGraphDisclaimer (Plan 03 §7.4 — two-variant copy)", () => {
-  it("renders with note role + aria-label for assistive tech", () => {
-    render(<ProtocolGraphDisclaimer contractCount={1} />)
-    const note = screen.getByRole("note")
-    expect(note).toBeInTheDocument()
-    expect(note).toHaveAttribute("aria-label", "Scan scope notice")
-  })
+type C = Pick<ContractResponse, "discoverySource">
+const supplied: C = { discoverySource: "MANUAL" }
+const discovered: C = { discoverySource: "AUTO" }
+const legacy: C = {} // no discoverySource → treated as supplied
 
-  it("uses semantic <aside> so screen-readers separate it from main content", () => {
-    const { container } = render(<ProtocolGraphDisclaimer contractCount={1} />)
+describe("ProtocolGraphDisclaimer (Plan 05 Fase 1.6 — supplied vs discovered)", () => {
+  it("renders with note role + aria-label + semantic <aside>", () => {
+    const { container } = render(<ProtocolGraphDisclaimer contracts={[supplied]} />)
+    const note = screen.getByRole("note")
+    expect(note).toHaveAttribute("aria-label", "Scan scope notice")
     expect(container.querySelector("aside")).not.toBeNull()
   })
 
-  describe("single-Contract variant (contractCount < 2)", () => {
-    it("nudges the user to submit related contracts", () => {
-      render(<ProtocolGraphDisclaimer contractCount={1} />)
-      const note = screen.getByRole("note")
-      expect(note.textContent).toMatch(/core contract address/i)
-      expect(note.textContent).toMatch(/submit related contracts/i)
-      expect(note.textContent).toMatch(/expand the graph/i)
-    })
-
-    it("uses single-Contract copy even with 0 contracts (defensive — should be rare)", () => {
-      render(<ProtocolGraphDisclaimer contractCount={0} />)
-      const note = screen.getByRole("note")
-      expect(note.textContent).toMatch(/core contract address/i)
-    })
+  it("NEVER claims discovery is on the roadmap (the old, now-false copy)", () => {
+    render(<ProtocolGraphDisclaimer contracts={[supplied, discovered]} />)
+    expect(screen.getByRole("note").textContent).not.toMatch(/roadmap/i)
   })
 
-  describe("multi-Contract variant (contractCount >= 2)", () => {
-    it("calls out the N contracts scanned + auto-discovery roadmap", () => {
-      render(<ProtocolGraphDisclaimer contractCount={4} />)
-      const note = screen.getByRole("note")
-      expect(note.textContent).toMatch(/scanned 4 contracts/i)
-      expect(note.textContent).toMatch(/automatic discovery/i)
-      expect(note.textContent).toMatch(/bridges/i)
-      expect(note.textContent).toMatch(/cross-chain twins/i)
-    })
+  it("distinguishes supplied from auto-discovered, data-driven", () => {
+    render(<ProtocolGraphDisclaimer contracts={[supplied, discovered]} />)
+    const text = screen.getByRole("note").textContent ?? ""
+    expect(text).toMatch(/1 contract you supplied/i)
+    expect(text).toMatch(/plus 1 automatically discovered dependency/i)
+  })
 
-    it("scales the copy with contractCount (10 contracts → 'scanned 10 contracts')", () => {
-      render(<ProtocolGraphDisclaimer contractCount={10} />)
-      const note = screen.getByRole("note")
-      expect(note.textContent).toMatch(/scanned 10 contracts/i)
-    })
+  it("pluralises supplied + discovered counts", () => {
+    render(
+      <ProtocolGraphDisclaimer
+        contracts={[supplied, supplied, discovered, discovered]}
+      />,
+    )
+    const text = screen.getByRole("note").textContent ?? ""
+    expect(text).toMatch(/2 contracts you supplied/i)
+    expect(text).toMatch(/plus 2 automatically discovered dependencies/i)
+  })
+
+  it("treats a contract with no discoverySource as supplied (legacy/back-compat)", () => {
+    render(<ProtocolGraphDisclaimer contracts={[legacy, legacy]} />)
+    const text = screen.getByRole("note").textContent ?? ""
+    expect(text).toMatch(/2 contracts you supplied/i)
+    expect(text).not.toMatch(/automatically discovered/i)
+  })
+
+  it("describes what discovery does this phase + the multi-hop boundary", () => {
+    render(<ProtocolGraphDisclaimer contracts={[supplied, discovered]} />)
+    const text = screen.getByRole("note").textContent ?? ""
+    expect(text).toMatch(/proxy implementations/i)
+    expect(text).toMatch(/one level deep/i)
+    expect(text).toMatch(/transitive \(multi-hop\).*not yet included/i)
+  })
+
+  it("when nothing was discovered, says so + nudges manual submission", () => {
+    render(<ProtocolGraphDisclaimer contracts={[supplied]} />)
+    const text = screen.getByRole("note").textContent ?? ""
+    expect(text).toMatch(/added no further contracts/i)
+    expect(text).toMatch(/submit related contracts manually/i)
+  })
+
+  it("surfaces a degraded discovery so it never implies full coverage", () => {
+    render(
+      <ProtocolGraphDisclaimer contracts={[supplied, discovered]} discoveryDegraded />,
+    )
+    expect(screen.getByRole("note").textContent).toMatch(/did not complete/i)
+  })
+
+  it("omits the degraded notice when discovery was clean", () => {
+    render(<ProtocolGraphDisclaimer contracts={[supplied, discovered]} />)
+    expect(screen.getByRole("note").textContent).not.toMatch(/did not complete/i)
   })
 })

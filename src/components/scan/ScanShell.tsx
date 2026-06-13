@@ -80,7 +80,10 @@ export function ScanShell({ scan, tier }: ScanShellProps) {
           Static (no scroll phases). The disclaimer below keeps the scope honest. */}
       <ScanRadar contracts={mergedContracts} edges={scan.edges} />
 
-      <ProtocolGraphDisclaimer contractCount={mergedContracts.length} />
+      <ProtocolGraphDisclaimer
+        contracts={mergedContracts}
+        discoveryDegraded={scan.discoveryDegraded}
+      />
 
       <CompositePanel scan={scan} currentStatus={currentStatus} />
 

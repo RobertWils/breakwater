@@ -103,11 +103,17 @@ export function buildStarGraph(scan: {
 
   const related = contracts.filter((c) => c.id !== primary.id)
   related.forEach((c, i) => {
-    // Related blips are bare (no ATC label) to keep the star readable for many
-    // contracts; the ContractList below carries the per-contract detail. Role
-    // is retained for tooltips/future use but isn't rendered as a label.
+    // Plan 05 Fase 1.6 — label every node so a discovered sibling (an
+    // implementation, oracle, …) is identifiable on the radar, not a bare dot:
+    // label = short address (like the primary's), sublabel = role. An
+    // AUTO-discovered node gets a "· auto" provenance hint. Desktop renders the
+    // label+sublabel; mobile keeps only the primary's tag (Radar handles that),
+    // so the busy radar stays readable on small screens.
+    const isAuto = c.discoverySource === "AUTO"
     nodes.push({
       id: c.id,
+      label: shortAddress(c.address),
+      sublabel: isAuto ? `${c.role} · auto` : c.role,
       role: c.role,
       score: contractRadarScore(c),
       position: ringPosition(i, related.length),

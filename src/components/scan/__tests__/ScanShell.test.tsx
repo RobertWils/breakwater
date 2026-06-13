@@ -128,7 +128,9 @@ describe("ScanShell — composition + polling integration (Plan 02 G.3, Phase G.
     render(<ScanShell scan={makeScan({ status: "COMPLETE" })} tier="email" />)
     const note = screen.getByRole("note", { name: /scan scope notice/i })
     expect(note).toBeInTheDocument()
-    expect(note.textContent).toMatch(/core contract address/i)
+    // Plan 05 Fase 1.6: data-driven supplied/discovered copy (no "roadmap").
+    expect(note.textContent).toMatch(/1 contract you supplied/i)
+    expect(note.textContent).toMatch(/submit related contracts manually/i)
   })
 
   it("renders ProtocolGraphDisclaimer with multi-Contract copy when contracts.length >= 2", () => {
