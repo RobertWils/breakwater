@@ -1,11 +1,18 @@
 /**
- * Plan 05 Fase 1.4 — detect-and-attach proxy implementations.
+ * Plan 05 Fase 1.4/1.5 — detect-and-attach discovered contracts.
  *
- * Promotes an already-resolved proxy implementation from detect-AND-WARN to
- * detect-AND-ATTACH: when a manual contract is a proxy whose implementation is
- * not yet a contract in the scan, the implementation is added as a NEW Contract
- * row (role PROXY_IMPLEMENTATION, discoverySource AUTO) so it is scanned in THIS
- * scan, not the next.
+ * Fase 1.4 promoted the resolved proxy implementation from detect-AND-WARN to
+ * detect-AND-ATTACH. Fase 1.5 generalises the engine to ROLE'D CANDIDATES: a
+ * discovery source yields `DiscoveredCandidate { address, role, discoveredAs }`
+ * (the role assigned by the §4 role ladder), and each new candidate is attached
+ * as a flat sibling Contract (discoverySource AUTO, roleSource AUTO) so it is
+ * scanned in THIS scan, not the next.
+ *
+ * Testable core (this commit): the candidate model, dedup, the role-aware
+ * row builders, the race-safe attach, and the DI orchestrator. The only LIVE
+ * candidate source wired here is detectProxy's EIP-1967 implementation (no new
+ * RPC); the §1.1 slot-expansion + §1.2 getter sources push more candidates into
+ * `discoverCandidates` in the follow-up.
  *
  * THREE LOAD-BEARING CONSTRAINTS (recon-enforced — the scope stands or falls
  * on these):
@@ -52,72 +59,94 @@ import {
   generateIdempotencyKey,
 } from "@/lib/scan-modules";
 
+import { assignDiscoveredRole } from "./role-ladder";
+
+/**
+ * A contract discovered from a manual contract's slots/getters, already
+ * classified by the role ladder (§4). `address` is lowercased; `discoveredAs`
+ * is provenance metadata persisted on `Contract.discoveredAs`.
+ */
+export interface DiscoveredCandidate {
+  address: string;
+  role: ContractRole;
+  discoveredAs: string;
+}
+
 // ─── Pure selection ────────────────────────────────────────────────────────
 
 /**
- * Given the implementations resolved from the probe set and the addresses
- * ALREADY present in the scan, return the distinct NEW implementation addresses
- * to attach (lowercased). Drops nulls, dedups against the existing set AND
- * against each other. Non-recursion is the CALLER's responsibility (it passes
- * only the manual contracts' resolved impls); this function only dedups.
+ * Dedup candidates by address (lowercased) against the addresses ALREADY in the
+ * scan AND against each other (first occurrence wins its role), returning the
+ * distinct NEW candidates to attach. Non-recursion is the CALLER's
+ * responsibility (it discovers only from the manual contracts); this function
+ * only dedups.
  */
-export function selectImplsToAttach(
-  resolvedImpls: ReadonlyArray<string | null | undefined>,
+export function selectCandidatesToAttach(
+  candidates: ReadonlyArray<DiscoveredCandidate>,
   existingAddresses: ReadonlyArray<string>,
-): string[] {
+): DiscoveredCandidate[] {
   const seen = new Set<string>();
   for (const a of existingAddresses) seen.add(a.toLowerCase());
 
-  const out: string[] = [];
-  for (const impl of resolvedImpls) {
-    if (!impl) continue;
-    const lower = impl.toLowerCase();
+  const out: DiscoveredCandidate[] = [];
+  for (const c of candidates) {
+    if (!c.address) continue;
+    const lower = c.address.toLowerCase();
     if (seen.has(lower)) continue;
     seen.add(lower);
-    out.push(lower);
+    out.push({ ...c, address: lower });
   }
   return out;
 }
 
 // ─── Pure row builders ───────────────────────────────────────────────────────
 
-/** The Contract create-data for an auto-attached implementation. */
+/** The Contract create-data for an auto-attached, role'd discovered contract. */
 export function buildAttachedContractData(params: {
   scanId: string;
   address: string;
   chain: Chain;
+  /** Role from the §4 ladder; defaults to PROXY_IMPLEMENTATION (Fase 1.4). */
+  role?: ContractRole;
+  /** Provenance metadata (e.g. "IMPL_SLOT", "ORACLE"). */
+  discoveredAs?: string;
 }): Prisma.ContractCreateManyInput {
   return {
     scanId: params.scanId,
     address: params.address,
     chain: params.chain,
-    role: ContractRole.PROXY_IMPLEMENTATION,
+    role: params.role ?? ContractRole.PROXY_IMPLEMENTATION,
     isPrimary: false,
     label: null,
     crossChainTwins: [],
-    // Plan 05 Fase 1.4 — provenance: discovered + role inferred by detection.
+    // Plan 05 — provenance: discovered + role inferred by detection.
     discoverySource: "AUTO",
     roleSource: "AUTO",
+    // Json? column: use the JsonNull sentinel (not a bare null) when absent.
+    discoveredAs: params.discoveredAs ?? Prisma.JsonNull,
   };
 }
 
 /**
- * One ModuleRun per ModuleName for the attached implementation, mirroring
- * submitScan's per-(Contract, module) creation via the SAME `computeSkipReason`.
- * GOVERNANCE ships QUEUED (so the fan-out scans the impl this scan) when it's in
- * `modulesEnabled`; unimplemented modules ship SKIPPED. Using modulesEnabled for
- * the `enabled` check means a scan that didn't enable GOVERNANCE ships the impl's
- * GOVERNANCE run SKIPPED (module_disabled_by_user) — terminal, so no hang.
+ * One ModuleRun per ModuleName for an auto-attached contract, mirroring
+ * submitScan's per-(Contract, module) creation via the SAME `computeSkipReason`
+ * — keyed on the contract's ROLE. For a PROXY_IMPLEMENTATION/TIMELOCK (roles
+ * GOVERNANCE applies to) GOVERNANCE ships QUEUED so the fan-out scans it; for a
+ * TOKEN_CONTRACT/DECLARED_BRIDGE (roles GOVERNANCE does NOT apply to) it ships
+ * SKIPPED (role_not_applicable_to_module) — terminal, so no governance runs on a
+ * token and the scan can't hang. A scan that didn't enable GOVERNANCE ships it
+ * SKIPPED (module_disabled_by_user) — also terminal.
  */
 export function buildModuleRunInputs(
   scanId: string,
   contractId: string,
+  role: ContractRole,
   modulesEnabled: ReadonlyArray<string>,
 ): Prisma.ModuleRunCreateManyInput[] {
   return (Object.values(ModuleName) as ModuleName[]).map((name) => {
     const skipReason = computeSkipReason({
       module: name,
-      role: ContractRole.PROXY_IMPLEMENTATION,
+      role,
       enabled: modulesEnabled.includes(name),
       implemented: IMPLEMENTED_MODULES.has(name),
       // Only FRONTEND requires a domain, and it is unimplemented (module_not_
@@ -136,7 +165,7 @@ export function buildModuleRunInputs(
         // Audit record only — executeGovernanceModule reads the address/role
         // from the Contract row (loadContractContext), not from here.
         contractAddress: "<auto-attached>",
-        contractRole: ContractRole.PROXY_IMPLEMENTATION,
+        contractRole: role,
         discoverySource: "AUTO",
       },
       attemptCount: 0,
@@ -154,29 +183,35 @@ export interface ManualContract {
   chain: Chain;
 }
 
-export interface ProxyAttachDeps {
+export interface StructuralDiscoveryDeps {
   /** The probe set — ONLY discoverySource: MANUAL contracts (non-recursion). */
   loadManualContracts(scanId: string): Promise<ManualContract[]>;
   /** ALL contract addresses in the scan, for dedup (manual + already-attached). */
   loadExistingAddresses(scanId: string): Promise<string[]>;
-  /** Resolve a contract's EIP-1967 implementation (null if not a proxy). */
-  resolveImplementation(address: string): Promise<string | null>;
-  /** Create the impl Contract + its ModuleRuns (idempotent on @@unique). */
-  attachImplementation(params: {
+  /**
+   * Discover role'd candidates from ONE manual contract's slots/getters (depth
+   * 1). Called only on manual contracts, never on attached candidates — that is
+   * the non-recursion boundary.
+   */
+  discoverCandidates(contract: ManualContract): Promise<DiscoveredCandidate[]>;
+  /** Create the candidate Contract + its ModuleRuns (idempotent on @@unique). */
+  attachCandidate(params: {
     scanId: string;
     address: string;
     chain: Chain;
+    role: ContractRole;
+    discoveredAs: string;
   }): Promise<void>;
   log(line: string): void;
 }
 
 export interface AttachResult {
   probed: number;
-  attached: string[];
+  attached: DiscoveredCandidate[];
 }
 
 export async function discoverAndAttach(
-  deps: ProxyAttachDeps,
+  deps: StructuralDiscoveryDeps,
   scanId: string,
 ): Promise<AttachResult> {
   const manual = await deps.loadManualContracts(scanId);
@@ -185,18 +220,25 @@ export async function discoverAndAttach(
   // All contracts in a scan share its chain.
   const chain = manual[0]!.chain;
 
-  // Probe ONLY the manual contracts (non-recursion boundary).
-  const resolved = await Promise.all(
-    manual.map((c) => deps.resolveImplementation(c.address)),
+  // Depth 1: discover ONLY from the manual contracts (non-recursion boundary).
+  const perContract = await Promise.all(
+    manual.map((c) => deps.discoverCandidates(c)),
   );
+  const candidates = perContract.flat();
 
   const existing = await deps.loadExistingAddresses(scanId);
-  const toAttach = selectImplsToAttach(resolved, existing);
+  const toAttach = selectCandidatesToAttach(candidates, existing);
 
-  for (const address of toAttach) {
-    await deps.attachImplementation({ scanId, address, chain });
+  for (const c of toAttach) {
+    await deps.attachCandidate({
+      scanId,
+      address: c.address,
+      chain,
+      role: c.role,
+      discoveredAs: c.discoveredAs,
+    });
     deps.log(
-      `[discovery] attached proxy implementation ${address} (PROXY_IMPLEMENTATION, AUTO)`,
+      `[discovery] attached ${c.address} as ${c.role} (${c.discoveredAs}, AUTO)`,
     );
   }
 
@@ -280,7 +322,7 @@ export async function discoverAndAttachProxyImplementations(
   // snapshot re-reads at its own block later).
   const blockNumber = params.blockNumber ?? (await publicClient.getBlockNumber());
 
-  const deps: ProxyAttachDeps = {
+  const deps: StructuralDiscoveryDeps = {
     async loadManualContracts(scanId) {
       const rows = await prisma.contract.findMany({
         where: { scanId, discoverySource: "MANUAL" },
@@ -295,14 +337,23 @@ export async function discoverAndAttachProxyImplementations(
       });
       return rows.map((r) => r.address);
     },
-    async resolveImplementation(address) {
+    async discoverCandidates(contract) {
+      // Testable-core LIVE source: detectProxy's EIP-1967 implementation only
+      // (reuses Scope-4 RPC + its ABI fetch — no new chain calls). source
+      // IMPL_SLOT → rung 1 of the ladder → PROXY_IMPLEMENTATION. The §1.1
+      // slot-expansion (beacon/UUPS/OZ-legacy/Compound/EIP-1167) and §1.2
+      // getter sources push additional candidates here in the follow-up.
       const result = await detectProxy({
-        protocolAddress: address,
+        protocolAddress: contract.address,
         blockNumber,
       });
-      return result.proxyImplementation;
+      if (!result.proxyImplementation) return [];
+      const { role, discoveredAs } = assignDiscoveredRole({ source: "IMPL_SLOT" });
+      return [
+        { address: result.proxyImplementation.toLowerCase(), role, discoveredAs },
+      ];
     },
-    async attachImplementation({ scanId, address, chain }) {
+    async attachCandidate({ scanId, address, chain, role, discoveredAs }) {
       // Sequential-retry fast-path (findUnique) + concurrent-race tolerance
       // (P2002 on @@unique([scanId, address]) → no-op). Both yield a clean
       // no-op with no degraded flag; only a REAL failure propagates.
@@ -315,11 +366,11 @@ export async function discoverAndAttachProxyImplementations(
           if (existing) return;
 
           const contract = await tx.contract.create({
-            data: buildAttachedContractData({ scanId, address, chain }),
+            data: buildAttachedContractData({ scanId, address, chain, role, discoveredAs }),
             select: { id: true },
           });
           await tx.moduleRun.createMany({
-            data: buildModuleRunInputs(scanId, contract.id, params.modulesEnabled),
+            data: buildModuleRunInputs(scanId, contract.id, role, params.modulesEnabled),
           });
         }),
       );
