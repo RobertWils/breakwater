@@ -51,7 +51,6 @@ import {
   type PrismaClient,
 } from "@prisma/client";
 
-import { detectProxy } from "@/lib/detectors/governance/detect-proxy";
 import { publicClient } from "@/lib/rpc-client";
 import {
   IMPLEMENTED_MODULES,
@@ -59,7 +58,7 @@ import {
   generateIdempotencyKey,
 } from "@/lib/scan-modules";
 
-import { assignDiscoveredRole } from "./role-ladder";
+import { gatherCandidates, makeCandidateSourceDeps } from "./gather-candidates";
 
 /**
  * A contract discovered from a manual contract's slots/getters, already
@@ -322,6 +321,14 @@ export async function discoverAndAttachProxyImplementations(
   // snapshot re-reads at its own block later).
   const blockNumber = params.blockNumber ?? (await publicClient.getBlockNumber());
 
+  // Plan 05 Fase 1.5b — live discovery sources (slots/getters/probes) behind the
+  // DI seam. gatherCandidates isolates per-source failures and reports degraded;
+  // we OR it across contracts and mark the scan discoveryDegraded if any source
+  // failed (a TOTAL failure instead throws → executeScan's wrapper sets the same
+  // flag). Either way discovery continues on what succeeded.
+  const sourceDeps = makeCandidateSourceDeps(blockNumber);
+  let anyDegraded = false;
+
   const deps: StructuralDiscoveryDeps = {
     async loadManualContracts(scanId) {
       const rows = await prisma.contract.findMany({
@@ -338,20 +345,9 @@ export async function discoverAndAttachProxyImplementations(
       return rows.map((r) => r.address);
     },
     async discoverCandidates(contract) {
-      // Testable-core LIVE source: detectProxy's EIP-1967 implementation only
-      // (reuses Scope-4 RPC + its ABI fetch — no new chain calls). source
-      // IMPL_SLOT → rung 1 of the ladder → PROXY_IMPLEMENTATION. The §1.1
-      // slot-expansion (beacon/UUPS/OZ-legacy/Compound/EIP-1167) and §1.2
-      // getter sources push additional candidates here in the follow-up.
-      const result = await detectProxy({
-        protocolAddress: contract.address,
-        blockNumber,
-      });
-      if (!result.proxyImplementation) return [];
-      const { role, discoveredAs } = assignDiscoveredRole({ source: "IMPL_SLOT" });
-      return [
-        { address: result.proxyImplementation.toLowerCase(), role, discoveredAs },
-      ];
+      const { candidates, degraded } = await gatherCandidates(sourceDeps, contract);
+      if (degraded) anyDegraded = true;
+      return candidates;
     },
     async attachCandidate({ scanId, address, chain, role, discoveredAs }) {
       // Sequential-retry fast-path (findUnique) + concurrent-race tolerance
@@ -378,5 +374,16 @@ export async function discoverAndAttachProxyImplementations(
     log: (line) => console.log(`[execute-scan] ${line}`),
   };
 
-  return discoverAndAttach(deps, params.scanId);
+  const result = await discoverAndAttach(deps, params.scanId);
+
+  // Per-source degraded: a source failed but the rest succeeded — mark the scan
+  // and continue (the scan is not failed). Idempotent + race-safe via updateMany.
+  if (anyDegraded) {
+    await prisma.scan.updateMany({
+      where: { id: params.scanId },
+      data: { discoveryDegraded: true },
+    });
+  }
+
+  return result;
 }
