@@ -39,4 +39,12 @@ describe("parseMinimalProxyTarget", () => {
     const badSuffix = `0x363d3d373d3d3d363d73${ADDR}${"a".repeat(30)}`;
     expect(parseMinimalProxyTarget(badSuffix)).toBeNull();
   });
+
+  it("returns null when the target slot is not valid hex (Codex counterexample)", () => {
+    // Right length + prefix + suffix, but the 20-byte target is garbage. A pure
+    // function must not emit "0xzzz…" — validate the target as canonical hex.
+    const badTarget = `0x363d3d373d3d3d363d73${"z".repeat(40)}5af43d82803e903d91602b57fd5bf3`;
+    expect(badTarget.length).toBe(92); // 0x + 90 hex-positions (same shape as canonical)
+    expect(parseMinimalProxyTarget(badTarget)).toBeNull();
+  });
 });

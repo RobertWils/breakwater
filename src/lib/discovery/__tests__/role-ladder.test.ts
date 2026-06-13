@@ -52,14 +52,22 @@ describe("assignDiscoveredRole — top-down ladder, first match wins (§4)", () 
     ).toBe("TIMELOCK");
   });
 
-  it("rung 4: ERC-20 probe → TOKEN_CONTRACT", () => {
-    expect(assignDiscoveredRole({ ...base, isErc20: true }).role).toBe("TOKEN_CONTRACT");
-  });
-
-  it("rung 5: bridge registry → DECLARED_BRIDGE", () => {
+  it("rung 4: bridge registry → DECLARED_BRIDGE", () => {
     expect(assignDiscoveredRole({ ...base, isBridgeRegistry: true }).role).toBe(
       "DECLARED_BRIDGE",
     );
+  });
+
+  it("rung 5: ERC-20 probe → TOKEN_CONTRACT", () => {
+    expect(assignDiscoveredRole({ ...base, isErc20: true }).role).toBe("TOKEN_CONTRACT");
+  });
+
+  it("bridge (rung 4) beats ERC-20 (rung 5) when both fire — authoritative beats heuristic", () => {
+    // Codex counterexample: many bridges respond to token methods. The curated
+    // registry match is authoritative and must win.
+    expect(
+      assignDiscoveredRole({ ...base, isErc20: true, isBridgeRegistry: true }).role,
+    ).toBe("DECLARED_BRIDGE");
   });
 
   it("rung 6: no decisive signal → RELATED with discoveredAs from the getter name", () => {
@@ -108,7 +116,7 @@ describe("assignDiscoveredRole — top-down ladder, first match wins (§4)", () 
     ).toBe("DECLARED_MULTISIG");
   });
 
-  it("TIMELOCK (rung 3) wins over TOKEN_CONTRACT (rung 4)", () => {
+  it("TIMELOCK (rung 3) wins over TOKEN_CONTRACT (rung 5)", () => {
     expect(
       assignDiscoveredRole({ ...base, hasTimelockSelectors: true, isErc20: true }).role,
     ).toBe("TIMELOCK");

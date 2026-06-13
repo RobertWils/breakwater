@@ -12,10 +12,11 @@
  *        → DECLARED_MULTISIG
  *   3. timelock selectors (OZ getMinDelay/PROPOSER_ROLE, Compound delay)
  *        → TIMELOCK
- *   4. ERC-20 probe (totalSupply/balanceOf/decimals)
- *        → TOKEN_CONTRACT
- *   5. bridge registry
+ *   4. bridge registry (AUTHORITATIVE — beats the heuristic ERC-20 probe; many
+ *      bridges respond to token methods, so registry-first)
  *        → DECLARED_BRIDGE
+ *   5. ERC-20 probe (totalSupply/balanceOf/decimals)
+ *        → TOKEN_CONTRACT
  *   6. otherwise
  *        → RELATED, with `discoveredAs` derived from the getter name
  *
@@ -96,14 +97,17 @@ export function assignDiscoveredRole(signals: RoleSignals): RoleAssignment {
     return { role: "TIMELOCK", discoveredAs: "timelock_selectors" };
   }
 
-  // Rung 4 — ERC-20 token.
-  if (signals.isErc20) {
-    return { role: "TOKEN_CONTRACT", discoveredAs: "erc20_probe" };
-  }
-
-  // Rung 5 — bridge registry.
+  // Rung 4 — bridge registry (AUTHORITATIVE, registry-first). A curated
+  // known-bridges match beats the heuristic ERC-20 probe below: many bridges
+  // respond to token methods (wrapped assets), so an authoritative match must
+  // win over a heuristic one.
   if (signals.isBridgeRegistry) {
     return { role: "DECLARED_BRIDGE", discoveredAs: "bridge_registry" };
+  }
+
+  // Rung 5 — ERC-20 token (heuristic probe).
+  if (signals.isErc20) {
+    return { role: "TOKEN_CONTRACT", discoveredAs: "erc20_probe" };
   }
 
   // Rung 6 — RELATED, classified from the getter name where possible.

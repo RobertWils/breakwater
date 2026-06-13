@@ -28,6 +28,11 @@ export function parseMinimalProxyTarget(
   if (!hex.endsWith(SUFFIX)) return null;
 
   const addr = hex.slice(PREFIX.length, PREFIX.length + 40);
+  // Validate the extracted target is a canonical 20-byte hex address. The
+  // prefix/suffix/length checks above don't guarantee the target slot itself
+  // is valid hex (a pure function must not trust its input); mirrors how
+  // detectProxy only returns canonical addresses. Non-hex (e.g. "0xzzz…") → null.
+  if (!/^[0-9a-f]{40}$/.test(addr)) return null;
   if (addr === ZERO_ADDR) return null;
   return `0x${addr}`;
 }
