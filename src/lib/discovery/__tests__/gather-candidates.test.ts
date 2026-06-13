@@ -31,6 +31,9 @@ function fakeDeps(opts: {
   probes?: Record<string, typeof NOTHING>;
   throwTargets?: boolean;
   throwProbeFor?: string;
+  // bytecode is keyed by LOWERCASED candidate address; default true (a contract).
+  bytecode?: Record<string, boolean>;
+  throwBytecodeFor?: string;
 }): { deps: CandidateSourceDeps; probed: string[]; logs: string[] } {
   const probed: string[] = [];
   const logs: string[] = [];
@@ -45,6 +48,10 @@ function fakeDeps(opts: {
       probed.push(address);
       if (opts.throwProbeFor === address) throw new Error("safe API down");
       return opts.probes?.[address] ?? NOTHING;
+    },
+    hasBytecode: async (address) => {
+      if (opts.throwBytecodeFor === address) throw new Error("getCode RPC error");
+      return opts.bytecode?.[address] ?? true; // default: a contract
     },
     log: (line) => logs.push(line),
   };
@@ -138,5 +145,39 @@ describe("gatherCandidates", () => {
   it("no sources, no failures → empty + not degraded", async () => {
     const w = fakeDeps({});
     expect(await gatherCandidates(w.deps, C)).toEqual({ candidates: [], degraded: false });
+  });
+
+  // ── EOA-terminality filter (spec §2 — live-run fix) ──
+  it("drops a discovered EOA (no bytecode) BEFORE attach — not a candidate, not degraded", async () => {
+    const w = fakeDeps({
+      targets: [{ address: "0xEOA", source: "GETTER", getterName: "owner" }],
+      probes: { "0xEOA": NOTHING },
+      bytecode: { "0xeoa": false }, // EOA: no code
+    });
+    const { candidates, degraded } = await gatherCandidates(w.deps, C);
+    expect(candidates).toEqual([]); // never attached → never gets a ModuleRun → never FAILED
+    expect(degraded).toBe(false); // dropping an EOA is expected, not degradation
+  });
+
+  it("keeps contract candidates but drops the EOA among them", async () => {
+    const w = fakeDeps({
+      impls: () => [{ address: "0xIMPL", source: "IMPL_SLOT" }],
+      targets: [{ address: "0xEOA", source: "GETTER", getterName: "owner" }],
+      probes: { "0xEOA": NOTHING },
+      bytecode: { "0ximpl": true, "0xeoa": false },
+    });
+    const { candidates, degraded } = await gatherCandidates(w.deps, C);
+    expect(candidates.map((c) => c.address)).toEqual(["0ximpl"]); // EOA filtered out
+    expect(degraded).toBe(false);
+  });
+
+  it("a getCode FAILURE conservatively drops the candidate AND marks degraded", async () => {
+    const w = fakeDeps({
+      impls: () => [{ address: "0xIMPL", source: "IMPL_SLOT" }],
+      throwBytecodeFor: "0ximpl",
+    });
+    const { candidates, degraded } = await gatherCandidates(w.deps, C);
+    expect(candidates).toEqual([]); // unverifiable → not attached
+    expect(degraded).toBe(true); // couldn't verify → coverage uncertain
   });
 });

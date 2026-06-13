@@ -68,6 +68,13 @@ export interface CandidateSourceDeps {
   resolveOwnerAndGetterTargets(address: string): Promise<OwnerOrGetterTarget[]>;
   /** Role-signal probes on a discovered address (Safe / ERC-20 / timelock / bridge). */
   probeRoleSignals(address: string): Promise<RoleProbeSignals>;
+  /**
+   * Whether the address has contract bytecode (eth_getCode, keyless). EOAs (and
+   * undeployed addresses) have none — per spec §2 they are TERMINAL, never a
+   * scan target, so they must not be attached or they FAIL governance and
+   * pollute coverage.
+   */
+  hasBytecode(address: string): Promise<boolean>;
   log(line: string): void;
 }
 
@@ -124,7 +131,30 @@ export async function gatherCandidates(
     }
   }
 
-  return { candidates, degraded };
+  // EOA-terminality filter (spec §2), BEFORE the attach path so an EOA never
+  // gets a Contract row / ModuleRun to FAIL on. A discovered address with no
+  // bytecode (EOA or undeployed — e.g. a getter's owner/admin) is TERMINAL: not
+  // a scannable contract. It is dropped here (logged as terminal metadata), so
+  // it cannot pollute coverage/grade as a "failed contract". Dropping an EOA is
+  // expected, NOT degradation. A getCode RPC FAILURE is conservatively dropped
+  // AND marks degraded (we couldn't verify it).
+  const scannable: DiscoveredCandidate[] = [];
+  for (const c of candidates) {
+    try {
+      if (await deps.hasBytecode(c.address)) {
+        scannable.push(c);
+      } else {
+        deps.log(
+          `discovered ${c.address} (${c.discoveredAs}) has no bytecode — EOA/undeployed, terminal; not attached`,
+        );
+      }
+    } catch (err) {
+      degraded = true;
+      deps.log(`bytecode check failed for ${c.address}: ${errMsg(err)}`);
+    }
+  }
+
+  return { candidates: scannable, degraded };
 }
 
 // ─── Live wiring (viem + detectProxy + detectSafe) — live-run validated ───────
@@ -280,6 +310,11 @@ export function makeCandidateSourceDeps(blockNumber: bigint): CandidateSourceDep
       const isBridgeRegistry = KNOWN_BRIDGE_ADDRESSES.has(address.toLowerCase());
 
       return { isConfirmedSafe, hasTimelockSelectors, isErc20, isBridgeRegistry };
+    },
+
+    async hasBytecode(address) {
+      const code = await publicClient.getCode({ address: hex(address), blockNumber });
+      return !!code && code !== "0x";
     },
 
     log: (line) => console.log(`[discovery] ${line}`),
